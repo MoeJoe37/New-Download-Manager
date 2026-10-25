@@ -1,0 +1,28 @@
+# build output
+/target/
+*.old.exe
+*.part
+
+# NDM's own material stays local: its language files and tips (the app reads them from Languages\),
+# the Ghidra project and decompiled dumps of NDM, captures and extracted resources.
+/Languages/*
+!/Languages/ndm.lng
+/research/ghidra/*
+!/research/ghidra/Dump.java
+!/research/ghidra/DumpDark.java
+!/research/ghidra/README.md
+!/research/ghidra/run.sh
+/research/data/
+/research/ref/
+/research/rea/
+
+# the icon pictures' originals (copied into assets/ as icon-source.png / icon2d-source.png)
+/NDM 2D icon.png
+/NDM 3D icon.png
+
+# editors / OS / tools
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+__pycache__/
