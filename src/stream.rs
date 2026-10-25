@@ -6,7 +6,7 @@
 //! until they end or the user stops.
 use crate::engine::{self, Job, Limiter, Probe, Seg, Status, RETRIES};
 use crate::remux;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ struct Part {
     key: Option<(String, [u8; 16])>,
     /// HLS media sequence number (new pieces of a live playlist).
     seq: u64,
+    /// Seconds to move this piece's fragments by (DASH: its period's start less its presentationTimeOffset).
+    shift: f64,
 }
 
 #[derive(Default, Debug)]
@@ -171,7 +173,7 @@ fn hls_media(base: &str, text: &str) -> Result<Track, String> {
         } else if let Some(v) = l.strip_prefix("#EXT-X-MAP:") {
             let a = attrs(v);
             let url = join(base, a.get("URI").ok_or("EXT-X-MAP without a URI")?)?;
-            t.init = Some(Part { url, range: a.get("BYTERANGE").map(|r| byterange(r, 0)), key: None, seq: 0 });
+            t.init = Some(Part { url, range: a.get("BYTERANGE").map(|r| byterange(r, 0)), key: None, seq: 0, shift: 0.0 });
         } else if let Some(v) = l.strip_prefix("#EXT-X-TARGETDURATION:") {
             t.target = v.trim().parse().unwrap_or(0.0);
         } else if l == "#EXT-X-ENDLIST" || l == "#EXT-X-PLAYLIST-TYPE:VOD" {
@@ -183,7 +185,7 @@ fn hls_media(base: &str, text: &str) -> Result<Track, String> {
                 end = b + 1;
             }
             let key = key.as_ref().map(|(u, iv)| (u.clone(), iv.unwrap_or((seq as u128).to_be_bytes())));
-            t.parts.push(Part { url: join(base, l)?, range: range.take(), key, seq });
+            t.parts.push(Part { url: join(base, l)?, range: range.take(), key, seq, shift: 0.0 });
             seq += 1;
         }
     }
@@ -270,51 +272,83 @@ struct LiveAt {
     window: f64,
 }
 
-/// `now` = Unix time in seconds (a dynamic manifest's pieces depend on it).
+/// `now` = Unix time in seconds (a dynamic manifest's pieces depend on it). Every Period is joined, video
+/// with video and audio with audio: a period whose initialization piece differs starts with it, and each
+/// piece's `shift` puts its fragments on one timeline (`retime`).
 fn dash(base: &str, text: &str, now: f64) -> Result<Vec<Track>, String> {
     let doc = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
     let mpd = doc.root_element();
-    // ponytail: the first Period only; multi-period streams (ad breaks) keep their first part
-    let period = el(mpd, "Period").ok_or("the manifest has no Period")?;
-    let secs = period.attribute("duration").or(mpd.attribute("mediaPresentationDuration")).map_or(0.0, iso_dur);
-    let live = (mpd.attribute("type") == Some("dynamic")).then(|| {
-        let ast = mpd.attribute("availabilityStartTime").and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok()).map_or(now, |t| t.timestamp_millis() as f64 / 1000.0);
-        let start = period.attribute("start").map_or(0.0, iso_dur);
-        LiveAt { elapsed: now - ast - start, window: mpd.attribute("timeShiftBufferDepth").map_or(30.0, iso_dur) }
-    });
+    let periods: Vec<Node> = kids(mpd, "Period").collect();
+    if periods.is_empty() {
+        return Err("the manifest has no Period".into());
+    }
+    let total = mpd.attribute("mediaPresentationDuration").map_or(0.0, iso_dur);
+    let dynamic = mpd.attribute("type") == Some("dynamic");
+    let ast = mpd.attribute("availabilityStartTime").and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok()).map_or(now, |t| t.timestamp_millis() as f64 / 1000.0);
+    let window = mpd.attribute("timeShiftBufferDepth").map_or(30.0, iso_dur);
     let update = mpd.attribute("minimumUpdatePeriod").map_or(2.0, iso_dur);
-    let b0 = base_of(&base_of(base, mpd), period);
-    let mut tracks = Vec::new();
-    for kind in ["video", "audio"] {
-        let mut best: Option<(u64, Node, Node)> = None;
-        for set in kids(period, "AdaptationSet") {
-            for rep in kids(set, "Representation") {
-                let mime = rep.attribute("mimeType").or(set.attribute("mimeType")).unwrap_or("");
-                if !mime.starts_with(kind) && set.attribute("contentType") != Some(kind) {
-                    continue;
-                }
-                let bw = num(rep.attribute("bandwidth"), 0);
-                if best.is_none_or(|b| bw > b.0) {
-                    best = Some((bw, set, rep));
+    let b_mpd = base_of(base, mpd);
+    // a period starts where it says, else where the one before it ends
+    let (mut starts, mut at) = (Vec::new(), 0.0);
+    for p in &periods {
+        let s = p.attribute("start").map_or(at, iso_dur);
+        at = s + p.attribute("duration").map_or(0.0, iso_dur);
+        starts.push(s);
+    }
+    let mut tracks: Vec<(&str, Track, Option<String>)> = Vec::new(); // kind, track, its latest init piece
+    for (k, period) in periods.iter().enumerate() {
+        let start = starts[k];
+        let secs = period.attribute("duration").map(iso_dur).or_else(|| starts.get(k + 1).map(|n| n - start)).unwrap_or(total - start);
+        let live = dynamic.then_some(LiveAt { elapsed: now - ast - start, window });
+        if live.is_some_and(|l| l.elapsed < 0.0) {
+            continue; // not on air yet
+        }
+        let b0 = base_of(&b_mpd, *period);
+        for kind in ["video", "audio"] {
+            let mut best: Option<(u64, Node, Node)> = None;
+            for set in kids(*period, "AdaptationSet") {
+                for rep in kids(set, "Representation") {
+                    let mime = rep.attribute("mimeType").or(set.attribute("mimeType")).unwrap_or("");
+                    if !mime.starts_with(kind) && set.attribute("contentType") != Some(kind) {
+                        continue;
+                    }
+                    let bw = num(rep.attribute("bandwidth"), 0);
+                    if best.is_none_or(|b| bw > b.0) {
+                        best = Some((bw, set, rep));
+                    }
                 }
             }
-        }
-        if let Some((_, set, rep)) = best {
+            let Some((_, set, rep)) = best else { continue };
             if set.descendants().any(|n| n.tag_name().name() == "ContentProtection") {
                 return Err(PROTECTED.into());
             }
-            let mut t = dash_track(&b0, period, set, rep, secs, kind, live)?;
-            (t.live, t.dash, t.target, t.src) = (live.is_some(), true, update, base.to_string());
-            tracks.push(t);
+            let mut t = dash_track(&b0, *period, set, rep, secs, kind, live, start)?;
+            let init = t.init.as_ref().map(|p| p.url.clone());
+            match tracks.iter_mut().find(|x| x.0 == kind) {
+                None => {
+                    (t.live, t.dash, t.target, t.src) = (live.is_some(), true, update, base.to_string());
+                    tracks.push((kind, t, init));
+                }
+                Some((_, first, last_init)) => {
+                    if init.is_some() && init != *last_init {
+                        first.parts.extend(t.init.take());
+                        *last_init = init;
+                    }
+                    // a period rounded up to whole pieces can list the next one's first piece too
+                    let had: HashSet<(String, Option<(u64, u64)>)> = first.parts.iter().map(|p| (p.url.clone(), p.range)).collect();
+                    first.parts.extend(t.parts.into_iter().filter(|p| !had.contains(&(p.url.clone(), p.range))));
+                }
+            }
         }
     }
     if tracks.is_empty() {
         return Err("the manifest has no video or audio".into());
     }
-    Ok(tracks)
+    Ok(tracks.into_iter().map(|x| x.1).collect())
 }
 
-fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &str, live: Option<LiveAt>) -> Result<Track, String> {
+#[allow(clippy::too_many_arguments)]
+fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &str, live: Option<LiveAt>, start: f64) -> Result<Track, String> {
     let base = base_of(&base_of(b0, set), rep);
     let (id, bw) = (rep.attribute("id").unwrap_or(""), rep.attribute("bandwidth").unwrap_or("0"));
     let mime = rep.attribute("mimeType").or(set.attribute("mimeType")).unwrap_or("");
@@ -323,7 +357,7 @@ fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &st
     // seq: the piece's number (or $Time$ on a timeline), which tells a live manifest's new pieces apart
     let part = |u: &str, range: Option<&str>, seq: u64| -> Result<Part, String> {
         let range = range.and_then(|r| r.split_once('-')).and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)));
-        Ok(Part { url: join(&base, u)?, range, key: None, seq })
+        Ok(Part { url: join(&base, u)?, range, key: None, seq, shift: 0.0 })
     };
     let tmpl: Vec<Node> = [rep, set, period].into_iter().filter_map(|n| el(n, "SegmentTemplate")).collect();
     let ta = |k: &str| tmpl.iter().find_map(|t| t.attribute(k));
@@ -380,6 +414,12 @@ fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &st
         t.parts.push(part("", None, 0)?); // the whole file at BaseURL (SegmentBase)
         t.whole = true;
     }
+    // where this period's fragments go on the joined timeline: its start, less the media time it begins at
+    let attr = |k: &str| ["SegmentTemplate", "SegmentList", "SegmentBase"].iter().flat_map(|n| [rep, set, period].into_iter().filter_map(move |x| el(x, n))).find_map(|e| e.attribute(k));
+    let shift = start - num(attr("presentationTimeOffset"), 0.0) / num(attr("timescale"), 1.0f64).max(1.0);
+    for p in t.parts.iter_mut().chain(t.init.iter_mut()) {
+        p.shift = shift;
+    }
     Ok(t)
 }
 
@@ -391,7 +431,8 @@ fn text(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> Result
         CLOCK.store(t.timestamp_millis() - chrono::Utc::now().timestamp_millis(), Relaxed);
     }
     let base = r.get_url().to_string();
-    Ok((base, r.into_string().map_err(|e| e.to_string())?))
+    let text = r.into_string().map_err(|e| e.to_string())?;
+    Ok((base, text.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(text))) // a byte-order mark
 }
 
 /// `name` with the stream's extension in place of a playlist / container one.
@@ -490,7 +531,7 @@ impl Ctx<'_> {
         let Some((url, iv)) = &p.key else { return Ok(data) };
         let mut keys = self.keys.lock().unwrap();
         if !keys.contains_key(url) {
-            let k = self.bytes(&Part { url: url.clone(), range: None, key: None, seq: 0 }, &AtomicU64::new(0), &|| {})?;
+            let k = self.bytes(&Part { url: url.clone(), range: None, key: None, seq: 0, shift: 0.0 }, &AtomicU64::new(0), &|| {})?;
             keys.insert(url.clone(), k);
         }
         aes_cbc(&keys[url], *iv, &data)
@@ -632,6 +673,8 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     // Live playlists: fetch them again every target duration and queue the new pieces.
     let poll = || {
         let mut last: Vec<u64> = tracks.iter().map(|t| t.parts.last().map_or(0, |p| p.seq)).collect();
+        let key = |p: &Part| format!("{}#{:?}", p.url, p.range);
+        let mut seen: Vec<HashSet<String>> = tracks.iter().map(|t| t.parts.iter().map(key).collect()).collect();
         while !job.stopping() && !all_ended() {
             let wait = tracks.iter().filter(|t| t.live).map(|t| t.target).fold(10.0, f64::min).clamp(1.0, 10.0);
             let until = Instant::now() + Duration::from_secs_f64(wait);
@@ -640,7 +683,7 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
             }
             for (t, tr) in tracks.iter().enumerate().filter(|(t, _)| !ended[*t].load(Relaxed)) {
                 let Ok(now) = refresh(&get, tr, t) else { continue };
-                let new: Vec<Part> = now.parts.into_iter().filter(|p| p.seq > last[t]).collect();
+                let new: Vec<Part> = now.parts.into_iter().filter(|p| if tr.dash { seen[t].insert(key(p)) } else { p.seq > last[t] }).collect();
                 if let Some(p) = new.last() {
                     last[t] = p.seq;
                 }
@@ -667,14 +710,22 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     if job.stopping() && !live {
         return Ok(false); // paused; a stopped live recording is saved as it is
     }
-    let lens: Vec<usize> = lists.into_inner().unwrap().iter().map(Vec::len).collect();
+    let parts: Vec<Vec<Part>> = lists.into_inner().unwrap();
     let mut dest = job.info().path();
-    let pieces = |t: usize| (0..lens[t]).map(move |k| file(t, k)).filter(|f| f.exists()).map(|f| fs::read(f).map_err(|e| e.to_string()));
+    let pieces = |t: usize| (0..parts[t].len()).map(move |k| file(t, k)).filter(|f| f.exists()).map(|f| fs::read(f).map_err(|e| e.to_string()));
     let ext = |t: usize| tracks[t].ext.as_str();
     let fmp4 = |t: usize| (tracks[t].init.is_some() || tracks[t].whole) && ext(t) != "webm";
     use remux::{Kind, Regroup};
+    // fMP4: every fragment moved onto one timeline starting at 0 (periods one after another)
+    let tfile = |t: usize| move |k: usize| file(t, k);
+    let (f0, f1) = (tfile(0), tfile(1.min(n - 1)));
+    let ft: [&dyn Fn(usize) -> PathBuf; 2] = [&f0, &f1];
+    let base = (0..n).filter(|t| fmp4(*t)).filter_map(|t| first_time(timed(tracks[t].whole, &parts[t], ft[t]))).fold(f64::INFINITY, f64::min);
+    let base = if base.is_finite() { base } else { 0.0 };
     let muxed = if n == 2 && fmp4(0) && fmp4(1) {
-        mux_mp4(&mut Regroup::new(&mut pieces(0), Kind::Mp4), &mut Regroup::new(&mut pieces(1), Kind::Mp4), &dest)?
+        let mut v = Regroup::new(retime(timed(tracks[0].whole, &parts[0], ft[0]), base), Kind::Mp4);
+        let mut a = Regroup::new(retime(timed(tracks[1].whole, &parts[1], ft[1]), base), Kind::Mp4);
+        mux_mp4(&mut v, &mut a, &dest)?
     } else if ext(0) == "ts" {
         let mut a = pieces(1.min(n - 1));
         remux::ts_to_mp4(&mut pieces(0), (n == 2).then_some(&mut a as remux::Pieces), &dest)?
@@ -694,7 +745,8 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
             .map(|t| {
                 let out = dir.join(format!("track{t}.{}", ext(t)));
                 let mut w = BufWriter::new(File::create(&out).map_err(|e| e.to_string())?);
-                for p in pieces(t) {
+                let src: Box<dyn Iterator<Item = Result<Vec<u8>, String>>> = if fmp4(t) { Box::new(retime(timed(tracks[t].whole, &parts[t], ft[t]), base)) } else { Box::new(pieces(t)) };
+                for p in src {
                     w.write_all(&p?).map_err(|e| e.to_string())?;
                 }
                 w.flush().map_err(|e| e.to_string())?;
@@ -716,6 +768,115 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     i.size = Some(size);
     i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false }];
     Ok(true)
+}
+
+/// A track's pieces on disk with their timeline shift; a whole file is re-cut into fragments first.
+fn timed<'a>(whole: bool, parts: &'a [Part], file: &'a dyn Fn(usize) -> PathBuf) -> Box<dyn Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a> {
+    let on_disk = (0..parts.len()).filter(move |k| file(*k).exists());
+    let read = move |k: usize| fs::read(file(k)).map_err(|e| e.to_string());
+    if whole {
+        let shift = parts.first().map_or(0.0, |p| p.shift);
+        Box::new(remux::Regroup::new(on_disk.map(read), remux::Kind::Mp4).map(move |u| (u, shift)))
+    } else {
+        Box::new(on_disk.map(move |k| (read(k), parts[k].shift)))
+    }
+}
+
+fn tfdt_of(d: &[u8], moof: Bx) -> Option<u64> {
+    let b = find(d, moof, &[b"traf", b"tfdt"])?;
+    let at = b.1 + 4;
+    Some(if d[b.1] == 1 { u64::from_be_bytes(d.get(at..at + 8)?.try_into().ok()?) } else { be32(d, at) as u64 })
+}
+
+/// When a track's first fragment (moved by its piece's shift) is presented, in seconds.
+fn first_time(it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)>) -> Option<f64> {
+    let mut scale = 0.0;
+    for (p, shift) in it.take(64) {
+        let p = p.ok()?;
+        let top = boxes(&p, 0, p.len());
+        if let Some(s) = top.iter().find(|b| &b.3 == b"moov").and_then(|m| traks(&p, *m).first().map(|t| t.2)) {
+            scale = s;
+        }
+        if let Some(t) = top.iter().find(|b| &b.3 == b"moof").and_then(|m| tfdt_of(&p, *m)) {
+            return (scale > 0.0).then(|| t as f64 / scale + shift);
+        }
+    }
+    None
+}
+
+/// fMP4 pieces with every fragment's decode time moved by its piece's shift less `base` (seconds).
+/// Initialization pieces after the first are left out.
+// ponytail: the first period's codec settings serve every period; ad breaks with other codecs need a re-encode
+fn retime<'a>(it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a, base: f64) -> impl Iterator<Item = Result<Vec<u8>, String>> + 'a {
+    let (mut scale, mut first) = (0.0, true);
+    it.map(move |(p, shift)| {
+        let p = p?;
+        let top = boxes(&p, 0, p.len());
+        let mut out = Vec::with_capacity(p.len() + 16);
+        for b in &top {
+            let raw = &p[b.0..b.2];
+            match &b.3 {
+                b"moov" => {
+                    if let Some(t) = traks(&p, *b).first() {
+                        scale = t.2;
+                    }
+                    if first {
+                        out.extend_from_slice(raw);
+                    }
+                }
+                b"ftyp" if !first => {}
+                b"moof" => {
+                    let delta = ((shift - base) * scale).round() as i64;
+                    out.extend(if delta == 0 { raw.to_vec() } else { moof_shift(raw, delta) });
+                }
+                _ => out.extend_from_slice(raw),
+            }
+        }
+        out.extend_from_slice(&p[top.last().map_or(0, |b| b.2)..]);
+        if top.iter().any(|b| &b.3 == b"moov") {
+            first = false;
+        }
+        Ok(out)
+    })
+}
+
+/// A moof with its tfdt values moved by `delta` ticks. One that outgrows 32 bits becomes version 1; the
+/// truns' data offsets (counted from the moof's start) follow any change in the moof's size.
+fn moof_shift(m: &[u8], delta: i64) -> Vec<u8> {
+    let moof = boxes(m, 0, m.len())[0];
+    let mut body = Vec::new();
+    for c in boxes(m, moof.1, moof.2) {
+        if &c.3 != b"traf" {
+            body.extend_from_slice(&m[c.0..c.2]);
+            continue;
+        }
+        let mut traf = Vec::new();
+        for x in boxes(m, c.1, c.2) {
+            if &x.3 != b"tfdt" {
+                traf.extend_from_slice(&m[x.0..x.2]);
+                continue;
+            }
+            let (v1, at) = (m[x.1] == 1, x.1 + 4);
+            let old = if v1 { u64::from_be_bytes(m[at..at + 8].try_into().unwrap()) } else { be32(m, at) as u64 };
+            let new = (old as i64).saturating_add(delta).max(0) as u64;
+            traf.extend(if !v1 && new <= u32::MAX as u64 { mkbox(b"tfdt", &[&m[x.1..x.1 + 4], &(new as u32).to_be_bytes()[..]].concat()) } else { mkbox(b"tfdt", &[&[1, 0, 0, 0][..], &new.to_be_bytes()].concat()) });
+        }
+        body.extend(mkbox(b"traf", &traf));
+    }
+    let mut out = mkbox(b"moof", &body);
+    let grew = out.len() as i64 - m.len() as i64;
+    if grew != 0 {
+        let o = boxes(&out, 0, out.len())[0];
+        let runs: Vec<Bx> = boxes(&out, o.1, o.2).into_iter().filter(|b| &b.3 == b"traf").flat_map(|t| boxes(&out, t.1, t.2)).filter(|b| &b.3 == b"trun").collect();
+        for r in runs {
+            if be32(&out, r.1) & 1 != 0 {
+                let at = r.1 + 8;
+                let v = i32::from_be_bytes(out[at..at + 4].try_into().unwrap()) as i64 + grew;
+                out[at..at + 4].copy_from_slice(&(v as i32).to_be_bytes());
+            }
+        }
+    }
+    out
 }
 
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
@@ -976,6 +1137,52 @@ mod tests {
     }
 
     #[test]
+    fn dash_periods_join() {
+        let mpd = r#"<MPD mediaPresentationDuration="PT8S"><BaseURL>http://h/</BaseURL>
+ <Period id="a" duration="PT4S"><AdaptationSet mimeType="video/mp4"><Representation id="v" bandwidth="1">
+  <SegmentTemplate timescale="1000" duration="2000" initialization="a/init.mp4" media="a/$Number$.m4s"/></Representation></AdaptationSet></Period>
+ <Period id="b"><AdaptationSet mimeType="video/mp4"><Representation id="v" bandwidth="1">
+  <SegmentTemplate timescale="1000" duration="2000" presentationTimeOffset="90000" initialization="b/init.mp4" media="b/$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>"#;
+        let t = dash("http://h/x.mpd", mpd, 0.0).unwrap();
+        assert_eq!(t.len(), 1);
+        let urls: Vec<&str> = t[0].parts.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(urls, ["http://h/a/1.m4s", "http://h/a/2.m4s", "http://h/b/init.mp4", "http://h/b/1.m4s", "http://h/b/2.m4s"]);
+        assert_eq!((t[0].parts[0].shift, t[0].parts[3].shift), (0.0, 4.0 - 90.0));
+        // a period whose pieces carry on the same numbering: the shared piece is kept once
+        let same = mpd.replace("b/init.mp4", "a/init.mp4").replace("b/$Number$", "a/$Number$").replace(r#"duration="2000" presentationTimeOffset"#, r#"duration="2000" startNumber="2" presentationTimeOffset"#);
+        let t = dash("http://h/x.mpd", &same, 0.0).unwrap();
+        let urls: Vec<&str> = t[0].parts.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(urls, ["http://h/a/1.m4s", "http://h/a/2.m4s", "http://h/a/3.m4s"]);
+    }
+
+    #[test]
+    fn retime_moves_fragments() {
+        let mdhd = mkbox(b"mdhd", &[&[0u8; 12][..], &1000u32.to_be_bytes(), &[0; 4]].concat());
+        let init = [mkbox(b"ftyp", b"iso6"), mkbox(b"moov", &mkbox(b"trak", &[mkbox(b"tkhd", &[0u8; 24]), mkbox(b"mdia", &mdhd)].concat()))].concat();
+        let frag = |t: u32| {
+            let trun = mkbox(b"trun", &[&[0, 0, 0, 1][..], &1u32.to_be_bytes(), &77i32.to_be_bytes()].concat());
+            let traf = mkbox(b"traf", &[mkbox(b"tfhd", &[0, 0, 0, 0, 0, 0, 0, 1]), mkbox(b"tfdt", &[&[0u8; 4][..], &t.to_be_bytes()].concat()), trun].concat());
+            [mkbox(b"moof", &traf), mkbox(b"mdat", b"x")].concat()
+        };
+        // period 1 starts at media time 90 s; period 2 (its own init) lands 5,000,000 s later
+        let items: Vec<(Result<Vec<u8>, String>, f64)> = vec![(Ok(init.clone()), -86.0), (Ok(frag(90_000)), -86.0), (Ok(init), 5_000_004.0), (Ok(frag(2000)), 5_000_004.0)];
+        let base = first_time(items.clone().into_iter()).unwrap();
+        assert_eq!(base, 4.0);
+        let out = retime(items.into_iter(), base).map(Result::unwrap).collect::<Vec<_>>().concat();
+        let top = boxes(&out, 0, out.len());
+        assert_eq!(top.iter().filter(|b| &b.3 == b"moov").count(), 1, "later init pieces left out");
+        let moofs: Vec<Bx> = top.iter().filter(|b| &b.3 == b"moof").copied().collect();
+        assert_eq!(tfdt_of(&out, moofs[0]), Some(0));
+        assert_eq!(tfdt_of(&out, moofs[1]), Some(5_000_002_000));
+        assert_eq!(out[find(&out, moofs[1], &[b"traf", b"tfdt"]).unwrap().1], 1, "version 1 for a 64-bit time");
+        let off = |m: Bx| {
+            let r = find(&out, m, &[b"traf", b"trun"]).unwrap();
+            i32::from_be_bytes(out[r.1 + 8..r.1 + 12].try_into().unwrap())
+        };
+        assert_eq!((off(moofs[0]), off(moofs[1])), (77, 81), "data offsets follow the bigger moof");
+    }
+
+    #[test]
     fn dash_live_window() {
         let mpd = r#"<MPD type="dynamic" availabilityStartTime="2026-01-01T00:00:00Z" timeShiftBufferDepth="PT6S" minimumUpdatePeriod="PT2S">
  <Period start="PT0S"><AdaptationSet mimeType="video/mp4"><Representation id="v" bandwidth="1">
@@ -1217,5 +1424,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
 
 

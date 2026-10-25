@@ -299,6 +299,8 @@ pub struct Settings {
     pub prog_sl_tab: bool,
     pub prog_c_tab: bool,
     pub prog_tab_btns: bool,
+    /// Download progress dialog shows the connections (NDM: dPrDtVis, shown when unset).
+    pub prog_details: bool,
     /// Toolbar skin: "Neon" (NDM's built-in) or a `<NDM>\Toolbar\*.tbi` name (NDM: ToolbarStyle).
     pub tb_skin: String,
     /// Toolbar buttons in order, -1 = separator (Customize...; NDM: ToolbarState_v5.11).
@@ -511,6 +513,7 @@ impl Default for Settings {
             prog_sl_tab: true,
             prog_c_tab: true,
             prog_tab_btns: true,
+            prog_details: true,
             tb_skin: "Neon".into(),
             tb_layout: (0..12).collect(),
             search: String::new(),

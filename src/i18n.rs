@@ -86,7 +86,7 @@ fn lookup(s: &str) -> Option<String> {
 pub fn tr(s: &str) -> String {
     match lookup(s) {
         Some(t) => visual(&punct(s, &t)),
-        None => s.to_string(),
+        None => brand(s),
     }
 }
 
@@ -95,7 +95,7 @@ pub fn tr(s: &str) -> String {
 pub fn tr_os(s: &str) -> String {
     match lookup(s) {
         Some(t) => punct(s, &t),
-        None => s.to_string(),
+        None => brand(s),
     }
 }
 
@@ -160,7 +160,7 @@ pub fn tips() -> Vec<String> {
 /// translate the template, then fill its %s / %d / %ld / %I64d slots in order.
 pub fn trf(en: &str, args: &[&dyn std::fmt::Display]) -> String {
     // fill the slots in reading order, then lay the whole line out (right-to-left languages)
-    let Some(t) = lookup(en).map(|t| punct(en, &t)) else { return fill(en, args) };
+    let Some(t) = lookup(en).map(|t| punct(en, &t)) else { return fill(&brand(en), args) };
     visual(&fill(&t, args))
 }
 
@@ -209,8 +209,12 @@ fn unbranded(k: &str) -> String {
 fn clean(t: &str) -> String {
     let t = t.split("\\t").next().unwrap_or("").replace("\\\\", "\u{2}").replace("\\\"", "\"").replace("\\'", "'");
     let t = t.replace("\\r\\n", "\n").replace("\\n", "\n").replace("&&", "\u{1}").replace('&', "").replace('\u{1}', "&").replace('\u{2}', "\\");
+    brand(&t)
+}
+
+/// NDM's name replaced by ours: "New Download Manager", and "NDM" as a word (not inside e.g. "ndman").
+fn brand(t: &str) -> String {
     let t = t.replace("New Download Manager", "New Download Manager");
-    // "NDM" as a word only (not inside e.g. "ndman")
     let mut out = String::with_capacity(t.len());
     let mut rest = t.as_str();
     while let Some(i) = rest.find("NDM") {

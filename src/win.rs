@@ -168,6 +168,29 @@ pub fn dark_title(hwnd: isize, dark: bool) {
 }
 
 /// Bitmap resource `id` of a PE file (loaded as data, never executed), with `key` made transparent.
+/// The bytes of a resource of a named type in a PE file (NDM's "IMAGE" JPEGs), loaded as data.
+pub fn pe_raw(path: &Path, ty: &str, id: u16) -> Option<Vec<u8>> {
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{FindResourceW, LoadLibraryExW, LoadResource, LockResource, SizeofResource, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE};
+    let (p, t) = (wide(&path.display().to_string()), wide(ty));
+    unsafe {
+        let m = LoadLibraryExW(p.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+        if m.is_null() {
+            return None;
+        }
+        let r = FindResourceW(m, id as usize as *const u16, t.as_ptr());
+        let mut out = None;
+        if !r.is_null() {
+            let data = LockResource(LoadResource(m, r)) as *const u8;
+            if !data.is_null() {
+                out = Some(std::slice::from_raw_parts(data, SizeofResource(m, r) as usize).to_vec());
+            }
+        }
+        FreeLibrary(m);
+        out
+    }
+}
+
 pub fn pe_bitmap(path: &Path, id: u16, key: Option<[u8; 3]>) -> Option<Rgba> {
     use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE};
@@ -244,6 +267,17 @@ pub fn play_sound(path: &str) {
     if Path::new(path).is_file() {
         unsafe { PlaySoundW(wide(path).as_ptr(), std::ptr::null_mut(), SND_ASYNC | SND_FILENAME) };
     }
+}
+
+/// The user's decimal separator (LOCALE_SDECIMAL), as NDM's size formatters read it; "," if unavailable.
+pub fn decimal_sep() -> &'static str {
+    static SEP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SEP.get_or_init(|| {
+        use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LOCALE_SDECIMAL};
+        let mut b = [0u16; 8];
+        let n = unsafe { GetLocaleInfoEx(std::ptr::null(), LOCALE_SDECIMAL, b.as_mut_ptr(), b.len() as i32) };
+        if n > 1 { String::from_utf16_lossy(&b[..n as usize - 1]) } else { ",".into() }
+    })
 }
 
 /// Windows "Choose your default app mode" is Dark.

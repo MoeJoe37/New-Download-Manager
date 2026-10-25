@@ -1,8 +1,8 @@
 //! Remuxing downloaded stream pieces into one file, without ffmpeg:
-//! - MPEG-TS (H.264 / H.265 with AAC, MP3, AC-3 or E-AC-3, what HLS sends) and packed audio -> one MP4,
-//!   as NDM saves HLS videos;
+//! - MPEG-TS (H.264 / H.265 / MPEG-2 video with AAC, MP3, AC-3, E-AC-3 or Opus, what HLS sends) and packed
+//!   audio -> one MP4, as NDM saves HLS videos;
 //! - DASH WebM video + WebM audio -> one WebM.
-//! Anything else (MPEG-2 video, Opus in TS...) answers Ok(false) and the caller keeps the pieces as they are.
+//! Anything else (VC-1, DTS...) answers Ok(false) and the caller keeps the pieces as they are.
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -27,7 +27,7 @@ pub enum Kind {
 /// Downloaded pieces re-cut into whole container units, whatever the piece boundaries were (a single
 /// file fetched in byte ranges): MP4 up to each `moov` / `mdat`, WebM up to each `Tracks` / `Cluster`.
 pub struct Regroup<'a> {
-    inner: Pieces<'a>,
+    inner: Box<dyn Iterator<Item = Result<Vec<u8>, String>> + 'a>,
     kind: Kind,
     buf: Vec<u8>,
     pos: usize,
@@ -35,8 +35,8 @@ pub struct Regroup<'a> {
 }
 
 impl<'a> Regroup<'a> {
-    pub fn new(inner: Pieces<'a>, kind: Kind) -> Regroup<'a> {
-        Regroup { inner, kind, buf: Vec::new(), pos: 0, eof: false }
+    pub fn new(inner: impl Iterator<Item = Result<Vec<u8>, String>> + 'a, kind: Kind) -> Regroup<'a> {
+        Regroup { inner: Box::new(inner), kind, buf: Vec::new(), pos: 0, eof: false }
     }
 
     /// Ok(Some(end, last)) when a whole element starts at `pos`; None = more data needed.
@@ -61,7 +61,19 @@ impl<'a> Regroup<'a> {
                     return Some((at + il + sl, false)); // step inside
                 }
                 if unknown {
-                    return None; // ponytail: live WebM's unknown-size clusters wait for the end of the data
+                    if id != CLUSTER {
+                        return None; // other open-ended elements run to the end of the data
+                    }
+                    // a live cluster without a size ends where an element that can't be inside it starts
+                    let mut e = at + il + sl;
+                    loop {
+                        let (cid, cl) = ebml_id(d, e)?;
+                        if ![0xe7, 0xa3, 0xa0, 0xa7, 0xab].contains(&cid) {
+                            return Some((e, true));
+                        }
+                        let (size, l, _) = vint(d, e + cl)?;
+                        e = (e + cl + l).checked_add(size as usize).filter(|end| *end <= d.len())?;
+                    }
                 }
                 let end = (at + il + sl).checked_add(size as usize)?;
                 (end <= d.len()).then_some((end, id == TRACKS || id == CLUSTER))
@@ -131,8 +143,8 @@ struct Sample {
     /// Audio: the MP4 sample entry and sample rate, and the frame's length in samples.
     entry: Option<(Vec<u8>, u32)>,
     dur: u32,
-    /// Video: H.265 rather than H.264.
-    hevc: bool,
+    /// Video: the MPEG-TS stream type (0x1b H.264, 0x24 H.265, 0x01 / 0x02 MPEG-1 / 2); 0 for audio.
+    codec: u8,
 }
 
 #[derive(Default)]
@@ -144,7 +156,13 @@ struct Ts {
     carry: Vec<u8>,
     uv: (Unwrap, Unwrap),
     ua: Unwrap,
+    /// Opus channel_config_code (from its extension descriptor).
+    opus: u8,
 }
+
+/// Opus in MPEG-TS (ETSI TS 102 366 annex... carried as stream type 0x06 with an "Opus" registration
+/// descriptor); a private code for it here.
+const OPUS: u8 = 0xd0;
 
 fn pts_at(b: &[u8]) -> i64 {
     ((b[0] as i64 >> 1) & 7) << 30 | (b[1] as i64) << 22 | (b[2] as i64 >> 1) << 15 | (b[3] as i64) << 7 | b[4] as i64 >> 1
@@ -201,10 +219,16 @@ impl Ts {
             } else {
                 let mut k = 12 + (((s[10] as usize & 0x0f) << 8) | s[11] as usize);
                 while k + 5 <= end {
-                    let (ty, es) = (s[k], ((s[k + 1] as u16 & 0x1f) << 8) | s[k + 2] as u16);
+                    let (mut ty, es) = (s[k], ((s[k + 1] as u16 & 0x1f) << 8) | s[k + 2] as u16);
+                    let info = (((s[k + 3] as usize & 0x0f) << 8) | s[k + 4] as usize).min(end.saturating_sub(k + 5));
+                    let descs = &s[k + 5..k + 5 + info];
+                    if ty == 0x06 && descs.windows(6).any(|w| w == [0x05, 4, b'O', b'p', b'u', b's']) {
+                        ty = OPUS;
+                        self.opus = descs.windows(4).find(|w| w[0] == 0x7f && w[2] == 0x80).map_or(2, |w| w[3]);
+                    }
                     if [0x01, 0x02, 0x10, 0x1b, 0x24, 0x42, 0xea].contains(&ty) && self.video.is_none() {
                         self.video = Some((es, ty));
-                    } else if [0x03, 0x04, 0x0f, 0x11, 0x81, 0x87].contains(&ty) && self.audio.is_none() {
+                    } else if [0x03, 0x04, 0x0f, 0x11, 0x81, 0x87, OPUS].contains(&ty) && self.audio.is_none() {
                         self.audio = Some((es, ty));
                     }
                     k += 5 + (((s[k + 3] as usize & 0x0f) << 8) | s[k + 4] as usize);
@@ -265,6 +289,9 @@ struct Frame {
     samples: u32,
     /// A dependent E-AC-3 substream: belongs to the frame before it.
     dep: bool,
+    /// E-AC-3: data rate (kb/s), fscod, bsid, acmod, lfeon; and a dependent substream's chan_loc.
+    ec3: Option<[u32; 5]>,
+    chan_loc: u32,
 }
 
 /// Big-endian bit fields packed into bytes.
@@ -304,7 +331,7 @@ fn audio_frame(b: &[u8]) -> Option<Frame> {
         const RATES: [u32; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
         let rate = *RATES.get(sf as usize)?;
         let asc = [((profile + 1) << 3) | sf >> 1, (sf & 1) << 7 | ch << 3];
-        return Some(Frame { len, head, entry: mp4a(0x40, &asc, rate, ch as u16), rate, samples: 1024, dep: false });
+        return Some(Frame { len, head, entry: mp4a(0x40, &asc, rate, ch as u16), rate, samples: 1024, dep: false, ec3: None, chan_loc: 0 });
     }
     if b[0] == 0xff && b[1] & 0xe0 == 0xe0 {
         // MPEG audio: version 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5; layer 3 = I, 2 = II, 1 = III
@@ -328,7 +355,7 @@ fn audio_frame(b: &[u8]) -> Option<Frame> {
         };
         let ch = if b[3] >> 6 == 3 { 1 } else { 2 };
         let oti = if ver == 3 { 0x6b } else { 0x69 };
-        return Some(Frame { len: len as usize, head: 0, entry: mp4a(oti, &[], rate, ch), rate, samples, dep: false });
+        return Some(Frame { len: len as usize, head: 0, entry: mp4a(oti, &[], rate, ch), rate, samples, dep: false, ec3: None, chan_loc: 0 });
     }
     if b[0] == 0x0b && b[1] == 0x77 {
         let bsid = b[5] >> 3;
@@ -361,7 +388,7 @@ fn audio_frame(b: &[u8]) -> Option<Frame> {
             let rate = [48000, 44100, 32000][fscod];
             let ch = [2, 1, 2, 3, 3, 4, 4, 5][acmod as usize] + lfe as u16;
             let dac3 = bx(b"dac3", &[&pack(&[(fscod as u32, 2), (bsid as u32, 5), (bsmod as u32, 3), (acmod, 3), (lfe, 1), ((frmsizecod >> 1) as u32, 5), (0, 5)])]);
-            return Some(Frame { len: words as usize * 2, head: 0, entry: audio_entry(b"ac-3", ch, rate, &dac3), rate, samples: 1536, dep: false });
+            return Some(Frame { len: words as usize * 2, head: 0, entry: audio_entry(b"ac-3", ch, rate, &dac3), rate, samples: 1536, dep: false, ec3: None, chan_loc: 0 });
         }
         if bsid <= 16 {
             // E-AC-3 (ATSC A/52 E.1.2)
@@ -377,16 +404,76 @@ fn audio_frame(b: &[u8]) -> Option<Frame> {
                 ([48000, 44100, 32000][fscod as usize], [1, 2, 3, 6][r.bits(2) as usize])
             };
             let (acmod, lfe) = (r.bits(3), r.bit());
+            r.bits(5); // bsid
+            r.bits(5); // dialnorm
+            if r.bit() == 1 {
+                r.bits(8);
+            }
+            if acmod == 0 {
+                r.bits(5);
+                if r.bit() == 1 {
+                    r.bits(8);
+                }
+            }
+            // a dependent substream's channel map (bit 0 = L ... 15 = LFE): its chan_loc is bits 5..13
+            let chan_loc = if strmtyp == 1 && r.bit() == 1 { (r.bits(16) >> 2) & 0x1ff } else { 0 };
             let len = (frmsiz as usize + 1) * 2;
             let samples = blocks * 256;
-            let ch = [2, 1, 2, 3, 3, 4, 4, 5][acmod as usize] + lfe as u16;
             let kbps = (len as u64 * 8 * rate as u64 / samples as u64 / 1000) as u32;
-            // ponytail: one independent substream; dependent ones (7.1) are kept in the sample but not described
-            let dec3 = bx(b"dec3", &[&pack(&[(kbps, 13), (0, 3), (fscod.min(2), 2), (bsid as u32, 5), (0, 1), (0, 1), (0, 3), (acmod, 3), (lfe, 1), (0, 3), (0, 4), (0, 1)])]);
-            return Some(Frame { len, head: 0, entry: audio_entry(b"ec-3", ch, rate, &dec3), rate, samples, dep: strmtyp == 1 });
+            let p = [kbps, fscod.min(2), bsid as u32, acmod, lfe];
+            let entry = ec3_entry(p, ec3_channels(p, 0), rate, None);
+            return Some(Frame { len, head: 0, entry, rate, samples, dep: strmtyp == 1, ec3: Some(p), chan_loc });
         }
     }
     None
+}
+
+/// Channels of an E-AC-3 independent substream plus those a dependent one adds (chan_loc, ETSI TS 102 366 F.6).
+fn ec3_channels(p: [u32; 5], chan_loc: u32) -> u16 {
+    const ADD: [u16; 9] = [2, 2, 1, 1, 2, 2, 2, 1, 1]; // Lc/Rc, Lrs/Rrs, Cs, Ts, Lsd/Rsd, Lw/Rw, Lvh/Rvh, Cvh, LFE2
+    let extra: u16 = (0..9).filter(|i| chan_loc >> (8 - i) & 1 == 1).map(|i| ADD[i as usize]).sum();
+    [2, 1, 2, 3, 3, 4, 4, 5][p[3] as usize] + p[4] as u16 + extra
+}
+
+/// `ec-3` sample entry: one independent substream, and a dependent one when `dep` (its chan_loc) is given.
+fn ec3_entry(p: [u32; 5], ch: u16, rate: u32, dep: Option<u32>) -> Vec<u8> {
+    let [kbps, fscod, bsid, acmod, lfe] = p;
+    let mut f = vec![(kbps, 13), (0, 3), (fscod, 2), (bsid, 5), (0, 1), (0, 1), (0, 3), (acmod, 3), (lfe, 1), (0, 3), (dep.is_some() as u32, 4)];
+    f.push(dep.map_or((0, 1), |c| (c, 9)));
+    audio_entry(b"ec-3", ch, rate, &bx(b"dec3", &[&pack(&f)]))
+}
+
+fn opus_samples(p: &[u8]) -> u32 {
+    let Some(&toc) = p.first() else { return 0 };
+    let c = (toc >> 3) as usize;
+    let frame = match c {
+        0..=11 => [480, 960, 1920, 2880][c % 4],
+        12..=15 => [480, 960][c % 2],
+        _ => [120, 240, 480, 960][c % 4],
+    };
+    frame * match toc & 3 {
+        0 => 1,
+        1 | 2 => 2,
+        _ => p.get(1).map_or(1, |b| (b & 0x3f) as u32),
+    }
+}
+
+/// `Opus` sample entry with its dOps box, for an MPEG-TS channel_config_code (1-8 channels, Vorbis order).
+fn opus_entry(code: u8) -> Vec<u8> {
+    let ch = if (1..=8).contains(&code) { code } else { 2 };
+    let mut d = vec![0, ch, 0, 0];
+    d.extend(48000u32.to_be_bytes());
+    d.extend([0, 0]);
+    if ch > 2 {
+        const STREAMS: [(u8, u8); 6] = [(2, 1), (2, 2), (3, 2), (4, 2), (5, 2), (5, 3)];
+        const MAP: [&[u8]; 6] = [&[0, 2, 1], &[0, 1, 2, 3], &[0, 4, 1, 2, 3], &[0, 4, 1, 2, 3, 5], &[0, 4, 1, 2, 3, 5, 6], &[0, 6, 1, 2, 3, 4, 5, 7]];
+        let (st, coupled) = STREAMS[ch as usize - 3];
+        d.extend([1, st, coupled]);
+        d.extend_from_slice(MAP[ch as usize - 3]);
+    } else {
+        d.push(0);
+    }
+    audio_entry(b"Opus", ch as u16, 48000, &bx(b"dOps", &[&d]))
 }
 
 /// Audio frames timed from the first timestamp seen, frame by frame.
@@ -397,6 +484,8 @@ struct Audio {
     /// Samples so far and their rate.
     done: u64,
     rate: u32,
+    /// The last independent E-AC-3 frame's parameters and rate.
+    ec3: Option<([u32; 5], u32)>,
 }
 
 impl Audio {
@@ -419,19 +508,55 @@ impl Audio {
             if f.dep {
                 if let Some(s) = out.back_mut().filter(|s| s.audio) {
                     s.data.extend(body);
+                    // the stream has a dependent substream (7.1): describe it in the sample entry
+                    if let (Some((p, rate)), Some(e), Some(d)) = (self.ec3, s.entry.as_mut(), f.ec3) {
+                        let p = [p[0] + d[0], p[1], p[2], p[3], p[4]];
+                        e.0 = ec3_entry(p, ec3_channels(p, f.chan_loc), rate, Some(f.chan_loc));
+                    }
                 }
                 continue;
             }
+            self.ec3 = f.ec3.map(|p| (p, f.rate));
             if self.rate != f.rate {
                 // rate change (or the first frame): restart the count from the time reached so far
                 self.base = Some(self.base.unwrap_or(0) + (self.done * 90000 / self.rate.max(1) as u64) as i64 * (self.rate != 0) as i64);
                 (self.done, self.rate) = (0, f.rate);
             }
             let t = self.base.unwrap_or(0) + (self.done * 90000 / f.rate as u64) as i64;
-            out.push_back(Sample { audio: true, data: body, dts: t, pts: t, entry: Some((f.entry, f.rate)), dur: f.samples, hevc: false });
+            out.push_back(Sample { audio: true, data: body, dts: t, pts: t, entry: Some((f.entry, f.rate)), dur: f.samples, codec: 0 });
             self.done += f.samples as u64;
         }
         self.buf.drain(..at);
+    }
+
+    /// Opus access units, each behind its control header (0x7FE0 prefix, size as 255-runs, trims, extension).
+    fn push_opus(&mut self, pts: Option<i64>, d: &[u8], code: u8, out: &mut VecDeque<Sample>) {
+        if self.base.is_none() {
+            self.base = pts;
+        }
+        let mut at = 0;
+        while at + 2 <= d.len() && d[at] == 0x7f && d[at + 1] & 0xe0 == 0xe0 {
+            let flags = d[at + 1];
+            at += 2;
+            let mut size = 0;
+            while let Some(&b) = d.get(at) {
+                at += 1;
+                size += b as usize;
+                if b != 255 {
+                    break;
+                }
+            }
+            at += 2 * ((flags & 0x10 != 0) as usize + (flags & 0x08 != 0) as usize);
+            if flags & 0x04 != 0 {
+                at += 1 + *d.get(at).unwrap_or(&0) as usize;
+            }
+            let Some(pkt) = d.get(at..at + size) else { break };
+            at += size;
+            let n = opus_samples(pkt);
+            let t = self.base.unwrap_or(0) + (self.done * 90000 / 48000) as i64;
+            out.push_back(Sample { audio: true, data: pkt.to_vec(), dts: t, pts: t, entry: Some((opus_entry(code), 48000)), dur: n, codec: 0 });
+            self.done += n as u64;
+        }
     }
 }
 
@@ -471,8 +596,8 @@ impl Src<'_> {
                     if p.first() == Some(&0x47) {
                         self.ts.feed(&p, &mut pes);
                         let bad = |s: Option<(u16, u8)>, ok: &[u8]| s.is_some_and(|s| !ok.contains(&s.1));
-                        // H.264, H.265; AAC, MPEG-1/2 audio, AC-3, E-AC-3
-                        if (self.video && bad(self.ts.video, &[0x1b, 0x24])) || (self.audio && bad(self.ts.audio, &[0x0f, 0x03, 0x04, 0x81, 0x87])) {
+                        // H.264, H.265, MPEG-1/2 video; AAC, MPEG-1/2 audio, AC-3, E-AC-3, Opus
+                        if (self.video && bad(self.ts.video, &[0x1b, 0x24, 0x01, 0x02])) || (self.audio && bad(self.ts.audio, &[0x0f, 0x03, 0x04, 0x81, 0x87, OPUS])) {
                             return Err(UNSUPPORTED.into());
                         }
                     } else if self.video {
@@ -493,9 +618,10 @@ impl Src<'_> {
             for e in pes {
                 match e {
                     Pes::Video { pts, dts, data } if self.video => {
-                        let hevc = self.ts.video.is_some_and(|v| v.1 == 0x24);
-                        self.q.push_back(Sample { audio: false, data, dts, pts, entry: None, dur: 0, hevc })
+                        let codec = self.ts.video.map_or(0x1b, |v| v.1);
+                        self.q.push_back(Sample { audio: false, data, dts, pts, entry: None, dur: 0, codec })
                     }
+                    Pes::Audio { pts, data } if self.audio && self.ts.audio.is_some_and(|a| a.1 == OPUS) => self.adts.push_opus(pts, &data, self.ts.opus, &mut self.q),
                     Pes::Audio { pts, data } if self.audio => self.adts.push(pts, &data, &mut self.q),
                     _ => {}
                 }
@@ -710,6 +836,26 @@ fn hvc1(vps: &[u8], sps: &[u8], pps: &[u8]) -> (Vec<u8>, (u16, u16)) {
     (visual(b"hvc1", s.size, &bx(b"hvcC", &[&c])), s.size)
 }
 
+// ---------------------------------------------------------------- MPEG-1/2 video
+
+fn start_codes(d: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    (0..d.len().saturating_sub(3)).filter(move |&i| d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1)
+}
+
+/// The sequence header with its extensions (the decoder config) and the picture size.
+fn mpeg2_seq(d: &[u8]) -> Option<(Vec<u8>, (u16, u16))> {
+    let s = start_codes(d).find(|&i| d.get(i + 3) == Some(&0xb3))?;
+    let (a, b, c) = (*d.get(s + 4)? as u16, *d.get(s + 5)? as u16, *d.get(s + 6)? as u16);
+    let end = start_codes(d).filter(|&i| i > s).find(|&i| d.get(i + 3) != Some(&0xb5)).unwrap_or(d.len());
+    Some((d[s..end].to_vec(), (a << 4 | b >> 4, (b & 0x0f) << 8 | c)))
+}
+
+/// picture_coding_type of the first picture: 1 = I, 2 = P, 3 = B.
+fn mpeg2_picture(d: &[u8]) -> Option<u8> {
+    let i = start_codes(d).find(|&i| d.get(i + 3) == Some(&0x00))?;
+    d.get(i + 5).map(|b| (b >> 3) & 7)
+}
+
 // ---------------------------------------------------------------- MP4 writing
 
 fn bx(t: &[u8; 4], parts: &[&[u8]]) -> Vec<u8> {
@@ -814,13 +960,20 @@ fn avc1(sps: &[u8], pps: &[u8], size: (u16, u16)) -> Vec<u8> {
     visual(b"avc1", size, &avcc)
 }
 
-/// `mp4a` with an ES descriptor: object type 0x40 = AAC (with its AudioSpecificConfig), 0x6b / 0x69 = MPEG-1 / 2 audio.
+/// `esds` box: object type `oti`, stream type byte `st` (0x15 audio, 0x11 visual), decoder-specific info.
+fn esds(oti: u8, st: u8, dsi: &[u8]) -> Vec<u8> {
+    let desc = |tag: u8, body: &[u8]| {
+        let n = body.len() as u32;
+        [&[tag, 0x80 | (n >> 21) as u8 & 0x7f, 0x80 | (n >> 14) as u8 & 0x7f, 0x80 | (n >> 7) as u8 & 0x7f, n as u8 & 0x7f][..], body].concat()
+    };
+    let dsi = if dsi.is_empty() { Vec::new() } else { desc(0x05, dsi) };
+    let dcd = desc(0x04, &[&[oti, st, 0, 0, 0][..], &[0; 8], &dsi].concat());
+    full(b"esds", 0, &[&desc(0x03, &[&[0, 0, 0][..], &dcd, &desc(0x06, &[2])].concat())])
+}
+
+/// `mp4a`: object type 0x40 = AAC (with its AudioSpecificConfig), 0x6b / 0x69 = MPEG-1 / 2 audio.
 fn mp4a(oti: u8, asc: &[u8], rate: u32, ch: u16) -> Vec<u8> {
-    let desc = |tag: u8, body: &[u8]| [&[tag, body.len() as u8][..], body].concat();
-    let dsi = if asc.is_empty() { Vec::new() } else { desc(0x05, asc) };
-    let dcd = desc(0x04, &[&[oti, 0x15, 0, 0, 0][..], &[0; 8], &dsi].concat());
-    let es = desc(0x03, &[&[0, 0, 0][..], &dcd, &desc(0x06, &[2])].concat());
-    audio_entry(b"mp4a", ch, rate, &full(b"esds", 0, &[&es]))
+    audio_entry(b"mp4a", ch, rate, &esds(oti, 0x15, asc))
 }
 
 struct Mp4 {
@@ -865,13 +1018,24 @@ impl Mp4 {
             t.adur.push(s.dur);
             return Ok(());
         }
+        if s.codec == 0x01 || s.codec == 0x02 {
+            // MPEG-1/2 video: pictures stored as they are, the sequence header as the decoder config
+            let key = mpeg2_picture(&s.data) == Some(1);
+            if self.v.is_none() {
+                let Some((dsi, size)) = mpeg2_seq(&s.data).filter(|_| key) else { return Ok(()) };
+                let oti = if s.codec == 0x01 { 0x6a } else { 0x61 };
+                self.v = Some(TrackW { scale: 90000, entry: visual(b"mp4v", size, &esds(oti, 0x11, &dsi)), size, start: s.pts, ..Default::default() });
+            }
+            return self.frame(&s.data, s.dts, s.pts, key);
+        }
+        let hevc = s.codec == 0x24;
         let (mut out, mut key) = (Vec::with_capacity(s.data.len() + 16), false);
         for n in nals(&s.data) {
-            if s.hevc && n.len() < 2 {
+            if hevc && n.len() < 2 {
                 continue;
             }
-            let ty = if s.hevc { (n[0] >> 1) & 0x3f } else { n[0] & 0x1f };
-            match (s.hevc, ty) {
+            let ty = if hevc { (n[0] >> 1) & 0x3f } else { n[0] & 0x1f };
+            match (hevc, ty) {
                 (false, 7) | (true, 33) => self.sps = self.sps.take().or_else(|| Some(n.to_vec())),
                 (false, 8) | (true, 34) => self.pps = self.pps.take().or_else(|| Some(n.to_vec())),
                 (true, 32) => self.vps = self.vps.take().or_else(|| Some(n.to_vec())),
@@ -890,7 +1054,7 @@ impl Mp4 {
             if !key {
                 return Ok(()); // start at a key frame
             }
-            let (entry, size) = match (s.hevc, &self.vps, &self.sps, &self.pps) {
+            let (entry, size) = match (hevc, &self.vps, &self.sps, &self.pps) {
                 (true, Some(v), Some(sp), Some(pp)) if sp.len() > 16 => hvc1(v, sp, pp),
                 (false, _, Some(sp), Some(pp)) if sp.len() >= 4 => {
                     let size = sps_size(sp);
@@ -900,9 +1064,14 @@ impl Mp4 {
             };
             self.v = Some(TrackW { scale: 90000, entry, size, start: s.pts, ..Default::default() });
         }
-        let (at, n) = self.put(&out)?;
+        self.frame(&out, s.dts, s.pts, key)
+    }
+
+    /// A video sample, its times continued across discontinuities.
+    fn frame(&mut self, out: &[u8], dts: i64, pts: i64, key: bool) -> Result<(), String> {
+        let (at, n) = self.put(out)?;
         let t = self.v.as_mut().unwrap();
-        let (mut d, mut p) = (s.dts + self.shift, s.pts + self.shift);
+        let (mut d, mut p) = (dts + self.shift, pts + self.shift);
         if let Some(&l) = t.dts.last() {
             if d <= l {
                 // a discontinuity (or a stream that restarted its clock): continue right after the last frame
@@ -949,7 +1118,7 @@ impl Mp4 {
     }
 }
 
-/// HLS MPEG-TS video (H.264 / H.265, with its own audio or a separate rendition: TS or packed audio) -> MP4.
+/// HLS MPEG-TS video (H.264 / H.265 / MPEG-2, with its own audio or a separate rendition: TS or packed audio) -> MP4.
 pub fn ts_to_mp4<'a>(video: Pieces<'a>, audio: Option<Pieces<'a>>, out: &Path) -> Result<bool, String> {
     let r = (|| {
         let mut w = Mp4::create(out)?;
@@ -1377,8 +1546,8 @@ pub mod tests {
         let co = find(&d, traks[1], &[b"mdia", b"minf", b"stbl", b"co64"]).unwrap();
         let off = u64::from_be_bytes(d[co.1 + 8..co.1 + 16].try_into().unwrap()) as usize;
         assert_eq!(d[off], 0x21, "offsets point at the AAC data");
-        // MPEG-2 video isn't remuxed
-        assert!(!ts_to_mp4(&mut vec![segment(0x02, true, 0)].into_iter().map(Ok), None, &out).unwrap());
+        // VC-1 isn't remuxed
+        assert!(!ts_to_mp4(&mut vec![segment(0xea, true, 0)].into_iter().map(Ok), None, &out).unwrap());
         assert!(!out.exists());
     }
 
@@ -1426,6 +1595,83 @@ pub mod tests {
         assert_eq!(stsz(&d, traks[1]), [256, 256]);
         let stts = find(&d, traks[1], &[b"mdia", b"minf", b"stbl", b"stts"]).unwrap();
         assert_eq!(&d[stts.1 + 8..stts.1 + 16], [0, 0, 0, 2, 0, 0, 6, 0], "1536 samples a frame");
+    }
+
+    #[test]
+    fn mpeg2_and_opus_remux() {
+        let sc = [0u8, 0, 0, 1];
+        let seq = [&[0u8, 0, 1, 0xb3, 0x2d, 0x02, 0x40, 0x33, 0xff, 0xff, 0xe0, 0x18][..], &[0, 0, 1, 0xb5, 0x14, 0x8a, 0, 1, 0, 0]].concat();
+        let pic = |pct: u8, n: u8| [&sc[1..], &[0x00, 0x00, pct << 3, 0xff, 0xf8], &sc[1..], &[0x01, 0x12, n]].concat();
+        let mut s = tables(0x02, 0x0f);
+        let first = [&seq[..], &[0, 0, 1, 0xb8, 0, 8, 0, 0], &pic(1, 1)].concat();
+        s.extend(ts_packets(0x100, &pes(0xe0, 3000, Some(0), &first)));
+        s.extend(ts_packets(0x100, &pes(0xe0, 9000, Some(3000), &pic(2, 2))));
+        let out = std::env::temp_dir().join(format!("ndm-m2v-{}.mp4", std::process::id()));
+        assert!(ts_to_mp4(&mut vec![s].into_iter().map(Ok), None, &out).unwrap());
+        let d = fs::read(&out).unwrap();
+        let top = boxes(&d, 0, d.len());
+        let traks: Vec<_> = boxes(&d, top[2].1, top[2].2).into_iter().filter(|b| &b.3 == b"trak").collect();
+        let (v0, v1) = entry_of(&d, traks[0]);
+        assert_eq!(&d[v0 + 4..v0 + 8], b"mp4v");
+        assert_eq!(&d[v0 + 32..v0 + 36], [2, 0xd0, 2, 0x40], "720x576");
+        assert!(d[v0..v1].windows(2).any(|w| w == [0x61, 0x11]), "MPEG-2 Main visual object type");
+        let dsi = v0 + d[v0..v1].windows(4).position(|w| w == [0, 0, 1, 0xb3]).unwrap();
+        assert_eq!(&d[dsi..dsi + seq.len()], &seq[..], "sequence header + extension as the decoder config");
+        assert_eq!(stsz(&d, traks[0]), [(first.len()) as u32, pic(2, 2).len() as u32]);
+        let stss = find(&d, traks[0], &[b"mdia", b"minf", b"stbl", b"stss"]).unwrap();
+        assert_eq!(&d[stss.1 + 4..stss.1 + 12], [0, 0, 0, 1, 0, 0, 0, 1], "only the I picture is a sync sample");
+
+        // Opus: stream type 0x06 with an "Opus" registration and a stereo channel_config_code
+        let mut pat = vec![0, 0, 0xb0, 13, 0, 1, 0xc1, 0, 0, 0, 1, 0xf0, 0x00];
+        pat.extend([0; 4]);
+        let mut pmt = vec![0, 2, 0xb0, 28, 0, 1, 0xc1, 0, 0, 0xe1, 0x01, 0xf0, 0];
+        pmt.extend([0x06, 0xe1, 0x01, 0xf0, 10, 0x05, 4, b'O', b'p', b'u', b's', 0x7f, 2, 0x80, 0x02]);
+        pmt.extend([0; 4]);
+        let au = |n: u8| vec![0x7f, 0xe0, 4, 0xf8, n, n, n]; // CELT 20 ms: 960 samples
+        let mut s = [ts_packets(0, &pat), ts_packets(0x1000, &pmt)].concat();
+        s.extend(ts_packets(0x101, &pes(0xbd, 0, None, &[au(1), au(2)].concat())));
+        assert!(ts_to_mp4(&mut vec![s].into_iter().map(Ok), None, &out).unwrap());
+        let d = fs::read(&out).unwrap();
+        let _ = fs::remove_file(&out);
+        let top = boxes(&d, 0, d.len());
+        let traks: Vec<_> = boxes(&d, top[2].1, top[2].2).into_iter().filter(|b| &b.3 == b"trak").collect();
+        let (a0, a1) = entry_of(&d, traks[0]);
+        assert_eq!(&d[a0 + 4..a0 + 8], b"Opus");
+        let dops = a0 + d[a0..a1].windows(4).position(|w| w == b"dOps").unwrap() + 4;
+        assert_eq!(&d[dops..dops + 11], [0, 2, 0, 0, 0, 0, 0xbb, 0x80, 0, 0, 0]);
+        assert_eq!(stsz(&d, traks[0]), [4, 4]);
+        let stts = find(&d, traks[0], &[b"mdia", b"minf", b"stbl", b"stts"]).unwrap();
+        assert_eq!(&d[stts.1 + 8..stts.1 + 16], [0, 0, 0, 2, 0, 0, 3, 0xc0], "960 samples each");
+    }
+
+    #[test]
+    fn eac3_dependent_substream() {
+        // 5.1 independent substream (768 bytes) + a dependent one adding Lrs/Rrs (7.1, 256 bytes)
+        let mut ind = pack(&[(0x0b77, 16), (0, 2), (0, 3), (383, 11), (0, 2), (3, 2), (7, 3), (1, 1), (16, 5), (0, 5), (0, 1)]);
+        ind.resize(768, 0);
+        let mut dep = pack(&[(0x0b77, 16), (1, 2), (0, 3), (127, 11), (0, 2), (3, 2), (2, 3), (0, 1), (16, 5), (0, 5), (0, 1), (1, 1), (0x0200, 16)]);
+        dep.resize(256, 0);
+        let mut a = Audio::default();
+        let mut q = VecDeque::new();
+        a.push(Some(0), &[ind, dep].concat(), &mut q);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].data.len(), 1024, "both substreams in one sample");
+        let e = &q[0].entry.as_ref().unwrap().0;
+        assert_eq!(&e[24..26], [0, 8], "7.1");
+        let want = pack(&[(192 + 64, 13), (0, 3), (0, 2), (16, 5), (0, 1), (0, 1), (0, 3), (7, 3), (1, 1), (0, 3), (1, 4), (0x080, 9)]);
+        assert!(e.windows(want.len()).any(|w| w == want), "dec3 with one dependent substream at Lrs/Rrs");
+    }
+
+    #[test]
+    fn regroup_live_webm_clusters() {
+        let open = |tc: u8, data: &[u8]| [&[0x1f, 0x43, 0xb6, 0x75, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..], &ebml(0xe7, &[tc]), &ebml(0xa3, &[&[0x81, 0, 0, 0x80][..], data].concat())].concat();
+        let head = webm(1, &[], 1).concat();
+        let w = [head.clone(), open(0, b"aa"), open(20, b"bb")].concat();
+        let cut: Vec<Vec<u8>> = w.chunks(3).map(<[u8]>::to_vec).collect();
+        let units: Vec<Vec<u8>> = Regroup::new(cut.into_iter().map(Ok), Kind::Webm).map(Result::unwrap).collect();
+        assert_eq!(units.len(), 3, "header + tracks, then each open cluster on its own");
+        assert_eq!(units[1], open(0, b"aa"));
+        assert_eq!(units.concat(), w);
     }
 
     #[test]

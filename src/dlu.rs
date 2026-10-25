@@ -271,8 +271,10 @@ impl<'a> D<'a> {
         let r = self.rect(x, y, w, h);
         let c = pal(self.ui);
         let p = self.ui.painter();
-        p.rect_filled(r, 0.0, if self.ui.visuals().dark_mode { c.field } else { Color32::from_gray(230) });
-        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
+        // msctls_progress32 isn't darkened: NDM's bars stay light in dark mode (E6E6E6 in a BCBCBC frame)
+        let _ = c;
+        p.rect_filled(r, 0.0, Color32::from_gray(230));
+        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::from_gray(188)), egui::StrokeKind::Inside);
         let fill = Rect::from_min_size(r.min + Vec2::splat(1.0), Vec2::new((r.width() - 2.0) * frac.clamp(0.0, 1.0), r.height() - 2.0));
         p.rect_filled(fill, 0.0, WIN_GREEN);
     }
@@ -366,6 +368,11 @@ impl<'a> D<'a> {
     }
 
     /// A list-view box with a header row; returns the inner rect for rows.
+    /// px per DLU across, as this dialog lays out.
+    pub fn dx(&self) -> f32 {
+        self.dx
+    }
+
     pub fn listview(&mut self, x: f32, y: f32, w: f32, h: f32, cols: &[(&str, f32)]) -> Rect {
         let r = self.rect(x, y, w, h);
         let c = pal(self.ui);

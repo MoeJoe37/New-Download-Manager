@@ -27,6 +27,21 @@ pub struct Opts {
     pub levels_other: u32,
     pub no_parent: bool,
     pub masks: String,
+    /// Step 1 "Advanced": don't open these (logout) pages, wildcards allowed.
+    pub logout_on: bool,
+    pub logout: String,
+    /// Step 3 "Advanced": explore pages within these paths/domains only / not within these.
+    pub explore_in_on: bool,
+    pub explore_in: String,
+    pub explore_not_on: bool,
+    pub explore_not: String,
+    /// Step 4 "Advanced": download files within these paths/domains only / not within these.
+    pub files_in_on: bool,
+    pub files_in: String,
+    pub files_not_on: bool,
+    pub files_not: String,
+    /// Step 2: add the checked files to the main list and queue when the grabber closes.
+    pub add_on_close: bool,
 }
 
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -36,11 +51,15 @@ pub struct Found {
     pub name: String,
     pub text: String,
     pub checked: bool,
+    /// The explored page that links to it ("Link View").
+    pub page: String,
 }
 
 #[derive(Default)]
 pub struct State {
     pub pages: usize,
+    /// The pages explored, in order ("Link View" in the results window).
+    pub page_list: Vec<String>,
     /// Links looked at ("Explored" in NDM Grabber Statistics, template 271).
     pub explored: usize,
     pub files: Vec<Found>,
@@ -70,6 +89,23 @@ pub fn mask_match(masks: &str, name: &str) -> bool {
     }
     let name = name.to_ascii_lowercase();
     !name.is_empty() && masks.split([',', ';', ' ']).map(str::trim).filter(|m| !m.is_empty()).any(|m| wild(m.to_ascii_lowercase().as_bytes(), name.as_bytes()))
+}
+
+/// `u` lies within one of the `;`-separated paths/domains: "example.com" (and its subdomains),
+/// "example.com/docs/" (a path prefix), or a wildcard pattern matched against host + path.
+pub fn in_paths(list: &str, u: &Url) -> bool {
+    let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+    let at = format!("{host}{}", u.path()).to_ascii_lowercase();
+    list.split(';').map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty()).any(|e| {
+        let e = e.trim_start_matches("http://").trim_start_matches("https://").to_string();
+        if e.contains(['*', '?']) {
+            mask_match(&e, &at)
+        } else if e.contains('/') {
+            at.starts_with(&e)
+        } else {
+            host == e || host.ends_with(&format!(".{e}"))
+        }
+    })
 }
 
 /// Links in href= / src= attributes, resolved against `base`, with the text right after the tag.
@@ -177,13 +213,20 @@ pub fn run(opts: Opts, agent: ureq::Agent, c: Arc<Crawl>) {
         for (l, text) in all {
             let name = crate::engine::url_name(l.as_str());
             if mask_match(&opts.masks, &name) {
-                let wanted = !mask_match(&opts.exclude, &name) && (!opts.files_same_site || same_site(&l));
+                let wanted = !mask_match(&opts.exclude, &name)
+                    && (!opts.files_same_site || same_site(&l))
+                    && (!opts.files_in_on || in_paths(&opts.files_in, &l))
+                    && !(opts.files_not_on && in_paths(&opts.files_not, &l));
                 if wanted && files.insert(l.to_string()) && (!opts.hide_dups || names.insert(name.to_ascii_lowercase())) {
-                    found.push(Found { url: l.to_string(), name: crate::engine::sanitize(&name), text, checked: true });
+                    found.push(Found { url: l.to_string(), name: crate::engine::sanitize(&name), text, checked: true, page: base.to_string() });
                 }
                 continue;
             }
             if !is_page(&l) || !seen.insert(l.to_string()) {
+                continue;
+            }
+            let at = |list: &str| in_paths(list, &l) || mask_match(list, l.as_str());
+            if (opts.logout_on && at(&opts.logout)) || (opts.explore_in_on && !in_paths(&opts.explore_in, &l)) || (opts.explore_not_on && in_paths(&opts.explore_not, &l)) {
                 continue;
             }
             let same = same_site(&l);
@@ -195,6 +238,7 @@ pub fn run(opts: Opts, agent: ureq::Agent, c: Arc<Crawl>) {
         }
         let mut s = c.state.lock().unwrap();
         s.pages += 1;
+        s.page_list.push(base.to_string());
         s.files.extend(found);
     }
     let stopped = c.stop.load(Relaxed);
@@ -209,6 +253,16 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn path_filters() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(in_paths("example.com", &u("https://cdn.example.com/a.zip")));
+        assert!(!in_paths("example.com", &u("https://example.org/a.zip")));
+        assert!(in_paths("other.net; example.com/docs/", &u("http://example.com/docs/x/y.pdf")));
+        assert!(!in_paths("example.com/docs/", &u("http://example.com/img/y.pdf")));
+        assert!(in_paths("*/logout*", &u("https://example.com/user/logout.php")));
+    }
 
     #[test]
     fn domains() {
