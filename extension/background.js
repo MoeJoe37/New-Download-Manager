@@ -11,19 +11,26 @@ function mediaType(mime, path, types) {
   return [ext, byMime].find(t => t && types.includes(t)) || '';
 }
 
-async function send(url, extra) {
+// The app's native messaging host (ndm.exe itself, registered by the app at startup) starts the app when
+// it isn't running.
+const launch = () => chrome.runtime.sendNativeMessage('com.ndm.host', { kind: 'launch' }).catch(() => {});
+chrome.action.onClicked.addListener(launch);
+
+// true: the app took it, false: the app declined it, null: the app couldn't be reached (even after starting it)
+async function post(url, extra) {
   const cookies = (await chrome.cookies.getAll({ url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
-  try {
-    const r = await fetch(API, {
-      method: 'POST',
-      headers: { 'X-NDM': '1', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, cookies, ...extra }),
-    });
-    return r.status === 200;
-  } catch {
-    return false;
+  const body = JSON.stringify({ url, cookies, ...extra });
+  for (let i = 0; i < 40; i++) {
+    try {
+      const r = await fetch(API, { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body });
+      return r.status === 200;
+    } catch {}
+    if (i === 0) await launch();
+    await new Promise(r => setTimeout(r, 250)); // up to 10 s for the app to start
   }
+  return null;
 }
+const send = async (url, extra) => !!(await post(url, extra));
 
 // Special keys held in the page (Options -> General -> Keys..., NDM template 229), reported by content.js.
 let held = [];
@@ -36,18 +43,37 @@ const keysHeld = (k, which) => {
 };
 const PAGE_LIKE = /^(text\/|image\/|application\/(x-)?javascript|application\/json)/i;
 
-chrome.downloads.onCreated.addListener(async item => {
-  const url = item.finalUrl || item.url;
-  if (!/^https?:/i.test(url)) return;
-  const k = (await refreshConfig()).keys;
-  if (k && keysHeld(k, 'prevent')) return; // the browser keeps it
-  // force keys without the link-click check: take over whatever starts while they are held
-  const force = !!k && !k.check_mouse && keysHeld(k, 'force') && !(k.skip_html && PAGE_LIKE.test(item.mime || ''));
-  if (await send(url, { referrer: item.referrer || '', filename: item.filename || '', mime: item.mime || '', force })) {
-    await chrome.downloads.cancel(item.id).catch(() => {});
-    chrome.downloads.erase({ id: item.id });
-  }
+// Like NDM's extension: the browser's download bubble is off (NDM: downloads.setShelfEnabled(false)),
+// a download is paused when created and its file name (Chrome's Save As dialog) held until the app decides.
+chrome.downloads.setUiOptions?.({ enabled: false }).catch(() => {});
+const web = item => /^https?:/i.test(item.finalUrl || item.url);
+
+chrome.downloads.onCreated.addListener(item => {
+  if (!web(item)) return;
+  chrome.downloads.pause(item.id).catch(() => {});
+  if (!chrome.downloads.onDeterminingFilename) handle(item, () => {}); // Firefox has no filename step
 });
+chrome.downloads.onDeterminingFilename?.addListener((item, suggest) => {
+  if (!web(item)) return false;
+  handle(item, suggest);
+  return true; // suggest() later: no Save As dialog meanwhile
+});
+
+async function handle(item, suggest) {
+  const k = (await refreshConfig()).keys;
+  // the prevent keys (Options -> General -> Keys...) leave it to the browser
+  const taken = k && keysHeld(k, 'prevent') ? false : await post(item.finalUrl || item.url, { referrer: item.referrer || '', filename: item.filename || '', mime: item.mime || '',
+    // force keys without the link-click check: take over whatever starts while they are held
+    force: !!k && !k.check_mouse && keysHeld(k, 'force') && !(k.skip_html && PAGE_LIKE.test(item.mime || '')) });
+  if (taken === false) {
+    // declined by the app's file types / exceptions: the browser downloads it as usual
+    suggest();
+    return chrome.downloads.resume(item.id).catch(() => {});
+  }
+  // taken by the app, or the app can't be reached: the browser doesn't download it
+  await chrome.downloads.cancel(item.id).catch(() => {});
+  chrome.downloads.erase({ id: item.id });
+}
 
 // The app's Options decide the context menu items (NDM template 334) and the panel exceptions (370).
 let config = { menu_dl: true, menu_all: true, panel_skip: '', keys: null }, configAt = 0, menus = '';

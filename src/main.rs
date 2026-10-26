@@ -102,8 +102,17 @@ const DARK_TREE: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 const BAR: Color32 = Color32::from_rgb(38, 120, 220);
 
+/// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon, like NDM.
+fn tray_start() -> bool {
+    std::env::args().any(|a| a.eq_ignore_ascii_case("/tray"))
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if win::is_host_launch(&args) {
+        win::native_host(TITLE);
+        return Ok(());
+    }
     if args.first().is_some_and(|a| a == UPDATED) {
         // started by Update now: wait for the old copy to finish saving and exit (15 s at most)
         for _ in 0..75 {
@@ -126,6 +135,7 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
+    win::register_host(core::store_path().parent().unwrap());
     let (w, h, rgba) = app_icon();
     let opts = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
@@ -1102,13 +1112,10 @@ impl App {
         }
         let c = ctx.clone();
         core.spawn_background(move || c.request_repaint());
-        // A hidden window doesn't repaint, so a download arriving while in the tray brings it back.
         let (c, h) = (ctx.clone(), hwnd.clone());
         core.spawn_server(tx, move || {
-            let h = h.load(Relaxed);
-            if !win::visible(h) {
-                win::show(h);
-            }
+            // only the download's dialog shows; the main window stays in the tray (win::pump)
+            win::wake(h.load(Relaxed));
             c.request_repaint();
         });
         let tray = App::tray(ctx, &core, &hwnd);
@@ -1158,7 +1165,7 @@ impl App {
             theme_check: 0,
             langs: i18n::list(),
         };
-        if app.core.settings().tips_startup {
+        if app.core.settings().tips_startup && !tray_start() {
             let text = app.next_tip();
             app.open(Dialog::Tip { text });
         }
@@ -5948,6 +5955,7 @@ impl eframe::App for App {
         if self.hwnd.load(Relaxed) == 0 {
             if let Ok(RawWindowHandle::Win32(h)) = frame.window_handle().map(|h| h.as_raw()) {
                 self.hwnd.store(h.hwnd.get(), Relaxed);
+                win::pump(h.hwnd.get());
                 win::dark_title(h.hwnd.get(), self.dark);
                 let c = ctx.clone();
                 win::accept_drops(h.hwnd.get(), move || c.request_repaint());
@@ -5967,6 +5975,12 @@ impl eframe::App for App {
             let total: f64 = self.core.jobs().iter().map(|j| j.speed()).sum();
             let _ = tray.set_tooltip(Some(if total > 0.0 { format!("{TITLE}\n{}", rate(total)) } else { TITLE.to_string() }));
         }
+        // eframe shows the window after its first frame: started for the browser, it goes back to the tray
+        static TRAYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let h = self.hwnd.load(Relaxed);
+        if tray_start() && win::visible(h) && !TRAYED.swap(true, Relaxed) {
+            win::hide(h);
+        }
         while let Ok(inc) = self.rx.try_recv() {
             self.incoming(ctx, inc);
         }
@@ -5974,6 +5988,8 @@ impl eframe::App for App {
         for url in win::take_drops() {
             self.incoming(ctx, Incoming { url, force: true, ..Default::default() });
         }
+        // after the incoming downloads: their dialogs need frames while the main window is in the tray
+        win::PUMP.store(!self.dialogs.is_empty(), Relaxed);
         let want = self.core.settings().drop_target;
         if want != self.drop_shown {
             // NDM's drop-target picture (icon group 346, 48 px) from the installed NDM, else NDM's icon
