@@ -113,8 +113,16 @@ chrome.webRequest.onResponseStarted.addListener(async d => {
   chrome.tabs.sendMessage(d.tabId, { kind: 'media', count: list.length }).catch(() => {});
 }, { urls: ['<all_urls>'], types: ['media', 'xmlhttprequest', 'other', 'object'] }, ['responseHeaders']);
 
-chrome.tabs.onUpdated.addListener((tabId, change) => {
+chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   if (change.url) chrome.storage.session.remove(key(tabId));
+  // the Site Grabber's manual login page: once the user has logged in, the app explores with these cookies
+  if (change.status !== 'complete' || !/^https?:/i.test(tab.url || '')) return;
+  const want = (await refreshConfig()).want_cookies;
+  const host = new URL(tab.url).hostname.toLowerCase();
+  const main = h => h.split('.').slice(-2).join('.');
+  if (!want || (host !== want && !host.endsWith('.' + want) && main(host) !== main(want))) return;
+  const cookies = (await chrome.cookies.getAll({ url: tab.url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
+  fetch('http://127.0.0.1:9614/cookies', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ url: tab.url, cookies }) }).catch(() => {});
 });
 chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove(key(tabId)));
 

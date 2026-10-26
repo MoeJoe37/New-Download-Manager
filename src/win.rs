@@ -13,6 +13,34 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
+/// The WinINet ("IE") cache's copy of `url`: (local file, its Last-Modified as an HTTP date), like NDM
+/// 0x5bcaf0 + 0x5ca0f0: a normal cache entry whose file still exists and has a modification time.
+pub fn url_cache(url: &str) -> Option<(std::path::PathBuf, String)> {
+    use windows_sys::Win32::Networking::WinInet::{GetUrlCacheEntryInfoW, INTERNET_CACHE_ENTRY_INFOW, NORMAL_CACHE_ENTRY};
+    let u = wide(url);
+    let mut len = 0u32;
+    unsafe {
+        GetUrlCacheEntryInfoW(u.as_ptr(), std::ptr::null_mut(), &mut len);
+        if len < size_of::<INTERNET_CACHE_ENTRY_INFOW>() as u32 {
+            return None;
+        }
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)]; // 8-aligned for the struct
+        let e = buf.as_mut_ptr() as *mut INTERNET_CACHE_ENTRY_INFOW;
+        if GetUrlCacheEntryInfoW(u.as_ptr(), e, &mut len) == 0 || (*e).CacheEntryType & NORMAL_CACHE_ENTRY == 0 || (*e).lpszLocalFileName.is_null() {
+            return None;
+        }
+        let p = (*e).lpszLocalFileName;
+        let n = (0..).take_while(|&k| *p.add(k) != 0).count();
+        let file = std::path::PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+        let ft = (*e).LastModifiedTime;
+        let ticks = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+        // FILETIME = 100 ns since 1601; NDM formats it "%a, %d %b %Y %H:%M:%S GMT"
+        let secs = (ticks / 10_000_000).checked_sub(11_644_473_600)?;
+        let when = chrono::DateTime::from_timestamp(secs as i64, 0)?;
+        file.is_file().then(|| (file, when.format("%a, %d %b %Y %H:%M:%S GMT").to_string()))
+    }
+}
+
 /// Read a bitmap's pixels as top-down BGRA.
 unsafe fn dib(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
     let mut bi: BITMAPINFO = zeroed();
@@ -168,29 +196,6 @@ pub fn dark_title(hwnd: isize, dark: bool) {
 }
 
 /// Bitmap resource `id` of a PE file (loaded as data, never executed), with `key` made transparent.
-/// The bytes of a resource of a named type in a PE file (NDM's "IMAGE" JPEGs), loaded as data.
-pub fn pe_raw(path: &Path, ty: &str, id: u16) -> Option<Vec<u8>> {
-    use windows_sys::Win32::Foundation::FreeLibrary;
-    use windows_sys::Win32::System::LibraryLoader::{FindResourceW, LoadLibraryExW, LoadResource, LockResource, SizeofResource, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE};
-    let (p, t) = (wide(&path.display().to_string()), wide(ty));
-    unsafe {
-        let m = LoadLibraryExW(p.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-        if m.is_null() {
-            return None;
-        }
-        let r = FindResourceW(m, id as usize as *const u16, t.as_ptr());
-        let mut out = None;
-        if !r.is_null() {
-            let data = LockResource(LoadResource(m, r)) as *const u8;
-            if !data.is_null() {
-                out = Some(std::slice::from_raw_parts(data, SizeofResource(m, r) as usize).to_vec());
-            }
-        }
-        FreeLibrary(m);
-        out
-    }
-}
-
 pub fn pe_bitmap(path: &Path, id: u16, key: Option<[u8; 3]>) -> Option<Rgba> {
     use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE};

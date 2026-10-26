@@ -87,6 +87,8 @@ pub struct Info {
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
     pub stream: bool,
+    /// A Site Grabber download with "Look up files in IE cache before downloading" (NDM: +0xafb).
+    pub ie_cache: bool,
 }
 
 impl Info {
@@ -653,13 +655,32 @@ impl Job {
             return crate::stream::run(self, agent, global);
         }
         let mut first = None;
+        // "Look up files in IE cache before downloading" NDM: a cached copy is offered to the
+        // server as If-Modified-Since; on 304 Not Modified (0x7573) the cached file is copied into place.
+        let cached = if self.info().ie_cache && !probed && !is_ftp(&url) { crate::win::url_cache(&url) } else { None };
         if !probed {
             // Like NDM (0x589960) the first request is the download itself, `bytes=0-`; no separate probe.
             let (p, r): (Probe, Body) = if is_ftp(&url) {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
                 (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), stream: false }, r)
             } else {
-                let r = call(request(agent, &url, &referrer, &cookies).set("Range", "bytes=0-"))?;
+                let mut req = request(agent, &url, &referrer, &cookies).set("Range", "bytes=0-");
+                if let Some((_, since)) = &cached {
+                    req = req.set("If-Modified-Since", since);
+                }
+                let r = call(req)?;
+                if let (304, Some((file, _))) = (r.status(), &cached) {
+                    drop(r);
+                    let mut i = self.info();
+                    if i.name.is_empty() {
+                        i.name = unique_name(&i.folder, &sanitize(&url_name(&url)), &|_| false);
+                    }
+                    fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
+                    let n = fs::copy(file, i.path()).map_err(|e| e.to_string())?;
+                    (i.size, i.probed) = (Some(n), true);
+                    i.segs = vec![Seg { next: n, stop: Some(n), ..Default::default() }];
+                    return Ok(true);
+                }
                 if r.header("Content-Type").is_some_and(crate::stream::is_manifest_type) {
                     drop(r);
                     self.info().stream = true;
@@ -1043,6 +1064,58 @@ mod tests {
         run(&j);
         assert_eq!(j.info().status, Status::Complete);
         assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ie_cache_not_modified() {
+        use std::io::{BufRead, BufReader, Write};
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::Networking::WinInet::{CommitUrlCacheEntryW, CreateUrlCacheEntryW, DeleteUrlCacheEntryW, NORMAL_CACHE_ENTRY};
+        // a server that answers 304 when asked If-Modified-Since, else sends "fresh"
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/cached.txt", l.local_addr().unwrap());
+        thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let (mut ims, mut r) = (false, BufReader::new(&s));
+                let mut line = String::new();
+                while r.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    ims |= line.to_ascii_lowercase().starts_with("if-modified-since:");
+                    line.clear();
+                }
+                let reply = if ims { "HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n".to_string() } else { "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh".to_string() };
+                let _ = (&s).write_all(reply.as_bytes());
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("ndm-test-iec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let (wu, ext) = (w(&url), w("txt"));
+        // WinINet only commits files it handed out itself (CreateUrlCacheEntryW)
+        let mut name = [0u16; 260];
+        let made = unsafe { CreateUrlCacheEntryW(wu.as_ptr(), 0, ext.as_ptr(), name.as_mut_ptr(), 0) };
+        let cache_file = std::path::PathBuf::from(String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(0)]));
+        let t = FILETIME { dwLowDateTime: 0xd53e_8000, dwHighDateTime: 0x01d9_0000 }; // some time in 2022
+        let ok = made != 0
+            && fs::write(&cache_file, "cached copy").is_ok()
+            && unsafe { CommitUrlCacheEntryW(wu.as_ptr(), name.as_ptr(), FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }, t, NORMAL_CACHE_ENTRY, std::ptr::null(), 0, ext.as_ptr(), std::ptr::null()) } != 0;
+        if !ok {
+            eprintln!("ie_cache_not_modified skipped: CommitUrlCacheEntryW failed ({})", std::io::Error::last_os_error());
+            return; // no WinINet cache on this machine (e.g. a service account): nothing to look up
+        }
+        let found = crate::win::url_cache(&url);
+        let out = dir.join("out");
+        let j = Job::new(Info { ie_cache: true, name: "f.txt".into(), ..info(url.clone(), &out) });
+        run(&j);
+        let plain = Job::new(Info { name: "g.txt".into(), ..info(url.clone(), &out) });
+        run(&plain);
+        unsafe { DeleteUrlCacheEntryW(wu.as_ptr()) };
+        let (_, since) = found.expect("the entry just committed");
+        assert!(since.ends_with(" GMT") && since.contains("2022"), "{since}");
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read_to_string(j.info().path()).unwrap(), "cached copy", "304: the cached file is used");
+        assert_eq!(fs::read_to_string(plain.info().path()).unwrap(), "fresh", "without the option the server's copy");
         let _ = fs::remove_dir_all(&dir);
     }
 

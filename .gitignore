@@ -16,9 +16,10 @@
 /research/ref/
 /research/rea/
 
-# the icon pictures' originals (copied into assets/ as icon-source.png / icon2d-source.png)
+# the user's original pictures (assets/ has icon-source.png, icon2d-source.png and grabber.jpg from them)
 /NDM 2D icon.png
 /NDM 3D icon.png
+/grabber picture.png
 
 # editors / OS / tools
 .vscode/

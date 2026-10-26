@@ -463,19 +463,26 @@ const GRAB_TB: f32 = 30.0;
 /// Wizard step captions ("NDM Site Grabber. Step %d --- %s"), in NDM's order.
 const GRAB_STEPS: [&str; 4] = ["Set start page", "Save files to", "Set explorer filters", "Set file filters"];
 /// File-type filters offered by the wizard's drop-down lists.
-const GRAB_FILTERS: [(&str, &str); 6] = [
+/// Open a web address in the default browser.
+fn open_url(u: &str) {
+    let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", u]).spawn();
+}
+
+const GRAB_FILTERS: [(&str, &str); 7] = [
     ("All Files", "*.*"),
     ("Images Files", "*.jpg;*.jpeg;*.png;*.gif;*.webp;*.bmp"),
     ("Audio Files", "*.mp3;*.flac;*.wav;*.ogg;*.m4a"),
     ("Video Files", "*.mp4;*.mkv;*.avi;*.webm;*.mov"),
     ("Compressed", "*.zip;*.rar;*.7z;*.gz;*.tar"),
     ("Documents", "*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx"),
+    ("Web content", "*.htm;*.html;*.css;*.js;*.jpg;*.jpeg;*.png;*.gif;*.webp;*.svg;*.ico;*.woff;*.woff2"),
 ];
 
 /// A grabber menu command (menu 256).
 enum GrabCmd {
     New,
     Save,
+    SaveTpl,
     Recent(String),
     Schedule,
     Close,
@@ -768,6 +775,15 @@ enum Dialog {
     Grabber { step: u8, adv: bool, node: usize, opts: grabber::Opts, save_mode: u8, save_cat: String, folder: String, crawl: Option<Arc<grabber::Crawl>> },
     /// "NDM Grabber Statistics" (template 271), from the grabber toolbar's last button.
     GrabStats { crawl: Arc<grabber::Crawl> },
+    /// "Template Name" (template 268) for Project -> "Save current settings as a template"; `replace` =
+    /// asking "The template with such name already exists..." (20603).
+    GrabTpl { name: String, proj: Box<core::GrabProject>, replace: bool },
+    /// "Load project" (template 270): the saved projects.
+    GrabLoad { sel: Option<usize> },
+    /// "Settings of NDM Grabber" (template 262), edited copy.
+    GrabSettings { explore: String, dl: String, link: bool, iec: bool, adv: bool },
+    /// "Manual login page": the page is open in the browser; OK explores with the browser's cookies.
+    GrabManual { url: String },
     About,
     /// "Customize Toolbar" (comctl32 template 200, CToolBarCtrl::Customize from NDM's toolbar menu): the
     /// edited button order (-1 = separator) and the selected rows of both lists.
@@ -811,6 +827,12 @@ struct App {
     refreshing: Option<u64>,
     /// Login typed in "Connecting to the site" for the grabber to explore again with.
     grab_auth: Option<(String, String)>,
+    /// Manual login page done: the browser's cookies for the grabber to explore with.
+    grab_cookies: Option<String>,
+    /// Project -> Load... (template 270): the project the grabber window opens next.
+    grab_load: Option<String>,
+    /// Grabber Thumbnails View: decoded pictures (None = not a picture).
+    thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
     /// The grabber's "Add Filter" popup text.
     grab_filter_buf: String,
     /// Explorer's type names by extension (grabber "File Type" column).
@@ -1009,8 +1031,8 @@ struct Res {
     icons: HashMap<u16, egui::TextureHandle>,
     /// Download progress connection bar: ends, background, downloaded, start marker (358, 359, 361, 362).
     bars: Option<[egui::TextureHandle; 4]>,
-    /// Grabber: the wizard's picture NDM"IMAGE" 384, a JPEG) and toolbar 260's 24 px strips
-    /// (bitmaps 265 normal, 266 hot, and a greyed copy).
+    /// Grabber: the wizard's picture (NDM's own, assets/grabber.jpg, in the place of NDM's) and toolbar
+    /// 260's 24 px strips (bitmaps 265 normal, 266 hot, and a greyed copy).
     grab_pic: Option<egui::TextureHandle>,
     grab_tb: Option<[egui::TextureHandle; 3]>,
 }
@@ -1018,6 +1040,10 @@ struct Res {
 impl Res {
     fn load(ctx: &egui::Context) -> Res {
         let mut r = Res::default();
+        if let Ok(img) = image::load_from_memory_with_format(include_bytes!("../assets/grabber.jpg"), image::ImageFormat::Jpeg) {
+            let px = img.to_rgba8();
+            r.grab_pic = Some(ctx.load_texture("grabpic", egui::ColorImage::from_rgba_unmultiplied([px.width() as usize, px.height() as usize], px.as_raw()), egui::TextureOptions::LINEAR));
+        }
         let Some(exe) = ndm_dir().map(|d| d.join("NDM")) else { return r };
         // 16x13 tree images keyed on (192,192,192): folders, categories, unfinished/finished, queues
         for id in [214u16, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 282, 311, 312, 313, 315, 316, 329] {
@@ -1032,10 +1058,6 @@ impl Res {
         let bar = |id: u16| win::pe_bitmap(&exe, id, None).map(|(w, h, px)| ctx.load_texture(format!("ndmbar{id}"), egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::NEAREST));
         if let (Some(a), Some(b), Some(c), Some(d)) = (bar(358), bar(359), bar(361), bar(362)) {
             r.bars = Some([a, b, c, d]);
-        }
-        if let Some(img) = win::pe_raw(&exe, "IMAGE", 384).and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Jpeg).ok()) {
-            let px = img.to_rgba8();
-            r.grab_pic = Some(ctx.load_texture("ndmgrabpic", egui::ColorImage::from_rgba_unmultiplied([px.width() as usize, px.height() as usize], px.as_raw()), egui::TextureOptions::LINEAR));
         }
         if let (Some(n), Some(h)) = (win::pe_bitmap(&exe, 265, Some([192, 192, 192])), win::pe_bitmap(&exe, 266, Some([192, 192, 192]))) {
             let mut g = n.clone();
@@ -1093,6 +1115,9 @@ impl App {
             expanded,
             refreshing: None,
             grab_auth: None,
+            grab_cookies: None,
+            grab_load: None,
+            thumbs: HashMap::new(),
             grab_filter_buf: String::new(),
             type_names: HashMap::new(),
             drop_shown: false,
@@ -1223,16 +1248,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     }
 
     /// Add the grabber's checked files to the list (queued); `start` also starts the queue.
-    fn grab(&mut self, crawl: &grabber::Crawl, save_mode: u8, save_cat: &str, folder: &str, start: bool) {
-        self.core.grab_files(&mut crawl.state.lock().unwrap().files, save_mode, save_cat, folder, start);
+    fn grab(&mut self, crawl: &grabber::Crawl, opts: &grabber::Opts, save_mode: u8, save_cat: &str, folder: &str, start: bool) {
+        self.core.grab_files(&mut crawl.state.lock().unwrap().files, opts, save_mode, save_cat, folder, start);
     }
 
     /// Explore with the wizard's settings in the background.
     fn crawl(&self, ctx: &egui::Context, opts: &grabber::Opts) -> Arc<grabber::Crawl> {
         let c = Arc::new(grabber::Crawl::default());
-        let (o, a, c2, ctx2) = (opts.clone(), self.core.agent(&opts.start), c.clone(), ctx.clone());
+        let (o, a, c2, ctx2, t) = (opts.clone(), self.core.agent(&opts.start), c.clone(), ctx.clone(), self.core.grab_tuning());
         std::thread::spawn(move || {
-            grabber::run(o, a, c2);
+            grabber::run(o, a, c2, t);
             ctx2.request_repaint();
         });
         c
@@ -1416,7 +1441,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             for l in inc.links {
                 let name = engine::sanitize(&engine::url_name(&l.url));
                 let checked = types.split_whitespace().any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(&core::ext(&name)));
-                st.files.push(grabber::Found { url: l.url, name, text: l.text, checked, page: String::new() });
+                st.files.push(grabber::Found { url: l.url, name, text: l.text, checked, ..Default::default() });
             }
             (st.pages, st.done) = (1, true);
             st.status = format!("{} links", st.files.len());
@@ -2828,6 +2853,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 (title, tpl(406.0, if *adv && *step != 1 { 307.0 } else { 210.0 }).map(|s| s + Vec2::new(0.0, GRAB_MENU)))
             }
             Dialog::GrabStats { .. } => ("NDM Grabber Statistics".into(), tpl(111.0, 103.0)),
+            Dialog::GrabTpl { .. } => ("Template Name".into(), tpl(186.0, 70.0)),
+            Dialog::GrabLoad { .. } => ("Load project".into(), tpl(257.0, 138.0)),
+            Dialog::GrabSettings { .. } => ("Settings of NDM Grabber".into(), tpl(292.0, 139.0)),
+            Dialog::GrabManual { .. } => ("Manual login page".into(), tpl(260.0, 70.0)),
         };
         let size = fixed.unwrap_or(Vec2::new(380.0, 170.0));
         let id = ViewportId::from_hash_of(("dlg", key));
@@ -4685,7 +4714,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let ok = d.button(296.0, 198.0, 50.0, 14.0, "OK", times.0.is_some() && times.1.is_some());
                 if ok {
                     (sc.start_at, sc.stop_at) = (times.0.unwrap(), times.1.unwrap());
-                    let p = (**p).clone();
+                    let mut p = (**p).clone();
+                    p.opts.overwrite |= p.periodic; // grabber.chm "Scheduler": synchronization replaces changed files
                     let periodic_now = p.periodic && p.sched.again_on && !p.sched.start_on;
                     if let Some(x) = self.core.settings().grab_projects.iter_mut().find(|x| x.opts.name == p.opts.name) {
                         *x = p.clone();
@@ -4799,6 +4829,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 !(add || d.button(247.0, 217.0, 50.0, 14.0, "Cancel", true))
             }
             Dialog::Grabber { step, adv, node, opts, save_mode, save_cat, folder, crawl } => {
+                if let Some(n) = self.grab_load.take() {
+                    self.project_cmd(0, &n);
+                    return false;
+                }
+                if let Some(ck) = self.grab_cookies.take() {
+                    opts.cookies = ck;
+                    *crawl = Some(self.crawl(ctx, opts));
+                }
                 if let Some(c) = crawl.clone() {
                     let (finished, login) = { let s = c.state.lock().unwrap(); (s.done, s.need_login.clone()) };
                     if let Some(realm) = login {
@@ -4813,7 +4851,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         return true;
                     }
                     if opts.start_all && finished && !c.auto_started.swap(true, Relaxed) {
-                        self.grab(&c, *save_mode, save_cat, folder, true);
+                        self.grab(&c, opts, *save_mode, save_cat, folder, true);
                     }
                     let (keep, back, again) = self.grabber_results(ctx, ui, &c, opts, *save_mode, save_cat, folder, node);
                     if back {
@@ -4825,7 +4863,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         *crawl = Some(self.crawl(ctx, opts));
                     }
                     if !keep && opts.add_on_close {
-                        self.grab(&c, *save_mode, save_cat, folder, false);
+                        self.grab(&c, opts, *save_mode, save_cat, folder, false);
                     }
                     if !keep && !opts.name.trim().is_empty() {
                         // closing the results window saves the project (template 269 unless "don't show")
@@ -4858,6 +4896,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
                         self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)) });
                     }
+                    Some(GrabCmd::SaveTpl) => {
+                        let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
+                        self.open(Dialog::GrabTpl { name: String::new(), proj: Box::new(proj), replace: false });
+                    }
                     Some(GrabCmd::Recent(n)) => {
                         self.project_cmd(0, &n);
                         return false;
@@ -4868,10 +4910,21 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 let mut body = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(full.min + Vec2::new(0.0, GRAB_MENU), full.max)));
                 let mut d = dlu::D::new(&mut body);
-                // the picture on the left NDM"IMAGE" 384 in a black frame, static 1801)
+                // the picture on the left (static 1801, in a black frame), cropped to fill it without stretching
                 let pic = d.rect(7.0, 7.0, 85.0, 160.0);
                 match self.res.grab_pic.as_ref() {
-                    Some(t) => drop(d.ui.painter().image(t.id(), pic, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE)),
+                    Some(t) => {
+                        let [w, h] = t.size().map(|v| v as f32);
+                        let (box_a, img_a) = (pic.width() / pic.height(), w / h);
+                        let uv = if img_a > box_a {
+                            let k = box_a / img_a;
+                            Rect::from_min_max(egui::pos2((1.0 - k) / 2.0, 0.0), egui::pos2((1.0 + k) / 2.0, 1.0))
+                        } else {
+                            let k = img_a / box_a;
+                            Rect::from_min_max(egui::pos2(0.0, (1.0 - k) / 2.0), egui::pos2(1.0, (1.0 + k) / 2.0))
+                        };
+                        d.ui.painter().image(t.id(), pic, uv, Color32::WHITE);
+                    }
                     None => drop(d.ui.painter().rect_filled(pic, 0.0, Color32::from_rgb(28, 93, 178))),
                 }
                 d.ui.painter().rect_stroke(pic, 0.0, egui::Stroke::new(1.0_f32, Color32::BLACK), egui::StrokeKind::Inside);
@@ -4886,8 +4939,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d.label(106.0, 29.0, 287.0, 9.0, "Start page/address");
                         d.edit(106.0, 39.0, 289.0, 14.0, &mut opts.start, true);
                         d.label(106.0, 56.0, 147.0, 9.0, "Project template");
-                        // ponytail: NDM's project templates (34020) aren't kept; "Custom settings" only
-                        d.combo(106.0, 66.0, 289.0, 14.0, "gtpl", &mut tr("Custom settings"), &[], false);
+                        let mut names: Vec<String> = grabber::TEMPLATES.iter().map(|t| t.to_string()).collect();
+                        names.extend(self.core.settings().grab_templates.iter().map(|t| t.opts.name.clone()));
+                        let shown: Vec<String> = names.iter().enumerate().map(|(k, n)| if k < grabber::TEMPLATES.len() { tr(n) } else { n.clone() }).collect();
+                        let cur_k = names.iter().position(|n| *n == opts.template).unwrap_or(0);
+                        let mut cur = shown[cur_k].clone();
+                        if d.combo(106.0, 66.0, 289.0, 14.0, "gtpl", &mut cur, &shown.iter().map(String::as_str).collect::<Vec<_>>(), true) {
+                            if let Some(k) = shown.iter().position(|s| *s == cur) {
+                                self.apply_template(&names[k], opts, save_mode, save_cat);
+                            }
+                        }
                         d.text(106.0, 80.0, 290.0, 26.0, "If you select a project template, the wizard will make the required project settings for the selected template on the next steps. Note that you may always change any settings manually.");
                         d.hline(106.0, 111.0, 289.0);
                         d.check(106.0, 115.0, 161.0, 10.0, &mut opts.auth, "Use authorization");
@@ -4901,8 +4962,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         if *adv {
                             d.hline(7.0, 176.0, 396.0);
-                            d.check_off(105.0, 184.0, 289.0, 10.0, "Enter login and password manually at the following web page:");
-                            d.edit(105.0, 196.0, 290.0, 14.0, &mut String::new(), false);
+                            d.check(105.0, 184.0, 289.0, 10.0, &mut opts.manual_on, "Enter login and password manually at the following web page:");
+                            d.edit(105.0, 196.0, 290.0, 14.0, &mut opts.manual, opts.manual_on);
                             d.check(106.0, 220.0, 288.0, 10.0, &mut opts.logout_on, "Don't open the logout page:");
                             d.edit(105.0, 232.0, 290.0, 14.0, &mut opts.logout, opts.logout_on);
                             d.text(106.0, 248.0, 286.0, 24.0, "Many sites have a logout page(s) that the Grabber should not open.  You may use asterisk wildcard here to specify a pattern for different logout pages.");
@@ -4926,14 +4987,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         let m2 = *save_mode == 2;
                         d.edit(130.0, 89.0, 256.0, 14.0, folder, m2);
-                        d.check_off(130.0, 107.0, 198.0, 10.0, "Use original relative subfolders");
+                        d.at(130.0, 107.0, 198.0, 10.0, |ui| ui.add_enabled(m2, egui::Checkbox::new(&mut opts.subfolders, tr("Use original relative subfolders"))));
                         if d.button(331.0, 106.0, 55.0, 14.0, "Browse...", m2) {
                             if let Some(p) = rfd::FileDialog::new().set_directory(folder.as_str()).pick_folder() {
                                 *folder = p.display().to_string();
                             }
                         }
-                        d.check_off(110.0, 128.0, 280.0, 10.0, "Convert the links in downloaded html files to the local files for offline browsing");
-                        d.check_off(110.0, 144.0, 282.0, 10.0, "Overwrite existing files");
+                        d.check(110.0, 128.0, 280.0, 10.0, &mut opts.convert, "Convert the links in downloaded html files to the local files for offline browsing");
+                        d.check(110.0, 144.0, 282.0, 10.0, &mut opts.overwrite, "Overwrite existing files");
                         d.check(110.0, 156.0, 284.0, 19.0, &mut opts.add_on_close, "Add checked files to NDM main list and to download queue on closing the grabber");
                     }
                     2 => {
@@ -4958,7 +5019,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         on(&mut d, 109.0, 91.0, 240.0, "Ignore popup windows"); // NDM never opens popups
                         d.at(109.0, 104.0, 240.0, 10.0, |ui| ui.add_enabled(ws, egui::Checkbox::new(&mut opts.no_parent, tr("Don't explore parent directories"))));
                         d.check(109.0, 117.0, 240.0, 10.0, &mut opts.main_domain, "Explore all sites within the main domain");
-                        d.check_off(109.0, 130.0, 240.0, 10.0, "Process JavaScript");
+                        d.check(109.0, 130.0, 240.0, 10.0, &mut opts.js, "Process JavaScript");
                         if link(&mut d, 141.0, 274.0, "Use this option carefully. What is the risk?", Color32::GRAY) {
                             help("grabber.chm", "", true);
                         }
@@ -4980,7 +5041,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d.label(106.0, 36.0, 198.0, 9.0, "Don't download the following files (file types)");
                         self.grab_filter(&mut d, 46.0, &mut opts.exclude, true);
                         d.check(106.0, 69.0, 237.0, 10.0, &mut opts.files_same_site, "Search files on this site only");
-                        d.check(106.0, 87.0, 294.0, 10.0, &mut opts.hide_dups, "Hide duplicate files found in different locations");
+                        let sub = opts.subfolders && *save_mode == 2;
+                        d.at(106.0, 87.0, 294.0, 10.0, |ui| ui.add_enabled(!sub, egui::Checkbox::new(&mut opts.hide_dups, tr("Hide duplicate files found in different locations"))));
                         d.check(106.0, 105.0, 262.0, 10.0, &mut opts.start_all, "Start downloading all matched files at once");
                         d.text(106.0, 116.0, 292.0, 34.0, "You can explore the site at first, check the files that you need, and download them in the main Grabber window, or add them to the main list of NDM. This option downloads all explored files immediately.");
                         if d.button(305.0, 153.0, 73.0, 14.0, &adv_label, true) {
@@ -4988,14 +5050,22 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         if *adv {
                             d.hline(7.0, 177.0, 393.0);
-                            // ponytail: the explorer doesn't ask for sizes, so the size filter stays off
                             d.group(10.0, 183.0, 101.0, 76.0, "Download if file size is");
-                            d.check_off(20.0, 195.0, 79.0, 10.0, "Not less than");
-                            d.edit(20.0, 206.0, 33.0, 13.0, &mut "1".to_string(), false);
-                            d.combo(56.0, 206.0, 41.0, 13.0, "gmin", &mut tr("KB"), &[], false);
-                            d.check_off(20.0, 228.0, 81.0, 10.0, "Not more than");
-                            d.edit(20.0, 239.0, 33.0, 13.0, &mut "10".to_string(), false);
-                            d.combo(56.0, 239.0, 41.0, 13.0, "gmax", &mut tr("MB"), &[], false);
+                            let units: Vec<String> = grabber::SIZE_UNITS.iter().map(|u| tr(u)).collect();
+                            let unit_refs: Vec<&str> = units.iter().map(String::as_str).collect();
+                            for (k, y, t) in [(0usize, 195.0, "Not less than"), (1, 228.0, "Not more than")] {
+                                let on = if k == 0 { &mut opts.min_on } else { &mut opts.max_on };
+                                d.check(20.0, y, 81.0, 10.0, on, t);
+                                let on = *on;
+                                let mut n = opts.size[k].to_string();
+                                if d.edit(20.0, y + 11.0, 33.0, 13.0, &mut n, on).changed() {
+                                    opts.size[k] = n.trim().parse().unwrap_or(0);
+                                }
+                                let mut u = units[opts.units[k] as usize % 3].clone();
+                                if d.combo(56.0, y + 11.0, 41.0, 13.0, ["gmin", "gmax"][k], &mut u, &unit_refs, on) {
+                                    opts.units[k] = units.iter().position(|x| *x == u).unwrap_or(0) as u8;
+                                }
+                            }
                             d.check(126.0, 182.0, 268.0, 10.0, &mut opts.files_in_on, "Download the files located within the following paths/domains only :");
                             d.edit(126.0, 193.0, 268.0, 27.0, &mut opts.files_in, opts.files_in_on);
                             d.check(126.0, 225.0, 268.0, 10.0, &mut opts.files_not_on, "Don't download the files located within the following paths/domains:");
@@ -5014,11 +5084,133 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if d.button(221.0, 190.0 + o, 60.0, 14.0, "Next >", ok) {
                     if *step < 3 {
                         (*step, *adv) = (*step + 1, false);
+                    } else if opts.manual_on {
+                        // NDM opens a browser window here; NDM opens the page in the user's browser and the
+                        // extension hands back the site's cookies once the user has logged in
+                        match url::Url::parse(opts.manual.trim()).ok().filter(|u| u.scheme().starts_with("http")) {
+                            Some(u) => {
+                                *self.core.login_wait.lock().unwrap() = u.host_str().map(str::to_ascii_lowercase);
+                                self.core.login_cookies.lock().unwrap().clear();
+                                open_url(u.as_str());
+                                self.open(Dialog::GrabManual { url: u.to_string() });
+                            }
+                            None => self.open(Dialog::Info { title: "Manual login page".into(), text: "Please enter manual login page or uncheck the corresponding checkbox".into() }),
+                        }
                     } else {
                         *crawl = Some(self.crawl(ctx, opts));
                     }
                 }
                 !d.button(324.0, 190.0 + o, 60.0, 14.0, "Close", true)
+            }
+            Dialog::GrabTpl { name, proj, replace } => {
+                // template 268; NDM: built-in names are reserved, an existing one is replaced on Yes
+                let mut d = dlu::D::new(ui);
+                if *replace {
+                    d.text(7.0, 7.0, 172.0, 18.0, "The template with such name already exists. Do you want to replace the template?");
+                } else {
+                    d.text(7.0, 7.0, 172.0, 18.0, "Please enter a name for the grabber template");
+                }
+                d.edit(6.0, 29.0, 173.0, 14.0, name, !*replace);
+                let n = name.trim().to_string();
+                let ok = d.button(34.0, 49.0, 50.0, 14.0, if *replace { "Yes" } else { "OK" }, !n.is_empty());
+                let cancel = d.button(102.0, 49.0, 50.0, 14.0, if *replace { "No" } else { "Cancel" }, true);
+                if ok && grabber::TEMPLATES.iter().any(|t| t.eq_ignore_ascii_case(&n) || tr(t).eq_ignore_ascii_case(&n)) {
+                    self.open(Dialog::Info { title: "Template Name".into(), text: "This name is reserved. Please select another name for your template.".into() });
+                    return true;
+                }
+                let exists = self.core.settings().grab_templates.iter().any(|t| t.opts.name == n);
+                if ok && exists && !*replace {
+                    *replace = true;
+                    return true;
+                }
+                if ok {
+                    let mut t = (**proj).clone();
+                    (t.opts.name, t.opts.start, t.opts.login, t.opts.pass, t.opts.cookies, t.opts.template, t.files, t.pages) = (n.clone(), String::new(), String::new(), String::new(), String::new(), String::new(), vec![], 0);
+                    let mut s = self.core.settings();
+                    s.grab_templates.retain(|x| x.opts.name != n);
+                    s.grab_templates.push(t);
+                    drop(s);
+                    self.core.save();
+                }
+                if cancel && *replace {
+                    *replace = false;
+                    return true;
+                }
+                !(ok || cancel)
+            }
+            Dialog::GrabLoad { sel } => {
+                // template 270: the saved projects; OK or a double click opens one in the grabber
+                let mut d = dlu::D::new(ui);
+                let names: Vec<String> = self.core.settings().grab_projects.iter().map(|p| p.opts.name.clone()).collect();
+                let lr = d.listview(7.0, 7.0, 186.0, 124.0, &[]);
+                let mut open = false;
+                d.ui.scope_builder(egui::UiBuilder::new().max_rect(lr.shrink(2.0)), |ui| {
+                    egui::ScrollArea::vertical().id_salt("gload").auto_shrink(false).show(ui, |ui| {
+                        for (k, n) in names.iter().enumerate() {
+                            let r = ui.selectable_label(*sel == Some(k), n.as_str());
+                            if r.clicked() {
+                                *sel = Some(k);
+                            }
+                            if r.double_clicked() {
+                                (*sel, open) = (Some(k), true);
+                            }
+                        }
+                    });
+                });
+                open |= d.button(200.0, 7.0, 50.0, 14.0, "OK", true);
+                let cancel = d.button(200.0, 24.0, 50.0, 14.0, "Cancel", true);
+                if open {
+                    match sel.and_then(|k| names.get(k)) {
+                        Some(n) => self.grab_load = Some(n.clone()),
+                        None => {
+                            self.open(Dialog::Info { title: "Load project".into(), text: "Please select the project name!".into() });
+                            return true;
+                        }
+                    }
+                }
+                !(open || cancel)
+            }
+            Dialog::GrabSettings { explore, dl, link, iec, adv } => {
+                // template 262, checked like NDM (explore 1-20, download 1-10)
+                let mut d = dlu::D::new(ui);
+                d.edit(7.0, 6.0, 21.0, 14.0, explore, true);
+                d.label(33.0, 10.0, 239.0, 10.0, "files to explore at the same time (1 to 10)");
+                d.edit(7.0, 25.0, 22.0, 14.0, dl, true);
+                d.label(33.0, 28.0, 239.0, 8.0, "files to download at the same time (1 to 10)");
+                d.text(7.0, 43.0, 278.0, 18.0, "Please note that a web server may reject requests if you set a large number of files to explore (download) at the same time.");
+                d.hline(7.0, 66.0, 276.0);
+                d.check(7.0, 75.0, 278.0, 10.0, iec, "Look up files in IE cache before downloading");
+                d.check(7.0, 89.0, 278.0, 10.0, link, "Use link texts as download descriptions when adding files to NDM main list");
+                d.check(7.0, 103.0, 278.0, 8.0, adv, "Use Advanced web page processing");
+                let ok = d.button(164.0, 118.0, 50.0, 14.0, "OK", true);
+                if ok {
+                    let (e, n) = (explore.trim().parse::<usize>().ok().filter(|v| (1..=20).contains(v)), dl.trim().parse::<usize>().ok().filter(|v| (1..=10).contains(v)));
+                    let bad = if e.is_none() { Some("Invalid number of files explored at the same time. Please set a correct number.") } else if n.is_none() { Some("Invalid number of files downloaded at the same time. Please set a correct number.") } else { None };
+                    if let Some(text) = bad {
+                        self.open(Dialog::Info { title: "Settings of NDM Grabber".into(), text: text.into() });
+                        return true;
+                    }
+                    let mut s = self.core.settings();
+                    (s.grab_explore, s.grab_dl, s.grab_link_text, s.grab_ie_cache, s.grab_adv) = (e.unwrap(), n.unwrap(), *link, *iec, *adv);
+                    drop(s);
+                    self.core.save();
+                }
+                !(ok || d.button(235.0, 118.0, 50.0, 14.0, "Cancel", true))
+            }
+            Dialog::GrabManual { url } => {
+                let mut d = dlu::D::new(ui);
+                d.label(7.0, 7.0, 246.0, 9.0, "Enter login and password manually at the following web page:");
+                d.label(7.0, 20.0, 246.0, 9.0, url.clone());
+                let ok = d.button(140.0, 49.0, 50.0, 14.0, "OK", true);
+                let cancel = d.button(203.0, 49.0, 50.0, 14.0, "Cancel", true);
+                if ok || cancel {
+                    *self.core.login_wait.lock().unwrap() = None;
+                    let ck = std::mem::take(&mut *self.core.login_cookies.lock().unwrap());
+                    if ok {
+                        self.grab_cookies = Some(ck);
+                    }
+                }
+                !(ok || cancel)
             }
             Dialog::GrabStats { crawl } => {
                 // template 271
@@ -5252,12 +5444,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let masks = self.core.settings().file_types.split_whitespace().map(|e| format!("*.{}", e.trim_start_matches('.'))).collect::<Vec<_>>().join(",");
         let start = links(&clipboard()).into_iter().next().unwrap_or_else(|| "https://".into());
         let n = self.core.settings().grab_projects.len() + 1;
-        grabber::Opts { name: format!("project_{n}"), start, levels: 2, no_parent: true, masks, main_domain: true, hide_dups: true, ..Default::default() }
+        grabber::Opts { name: format!("project_{n}"), start, levels: 2, no_parent: true, masks, main_domain: true, hide_dups: true, size: [1, 10], units: [0, 1], ..Default::default() }
     }
 
     /// The grabber's menu bar NDMmenu 256: Project / Options / Help).
-    fn grab_menu(&self, ui: &mut egui::Ui, saved: bool) -> Option<GrabCmd> {
-        let mut cmd = None;
+    fn grab_menu(&mut self, ui: &mut egui::Ui, saved: bool) -> Option<GrabCmd> {
+        let (mut cmd, mut load, mut settings) = (None, false, false);
         let recent: Vec<String> = self.core.settings().grab_projects.iter().rev().take(4).map(|p| p.opts.name.clone()).collect();
         egui::menu::bar(ui, |ui| {
             ui.menu_button(tr("Project"), |ui| {
@@ -5265,13 +5457,18 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     cmd = Some(GrabCmd::New);
                     ui.close_menu();
                 }
-                // ponytail: saved projects open from the main window's "Grabber projects" tree; no Load dialog (270)
-                ui.add_enabled(false, egui::Button::new(tr("Load...")));
+                if ui.button(tr("Load...")).clicked() {
+                    load = true;
+                    ui.close_menu();
+                }
                 if ui.button(tr("Save")).clicked() {
                     cmd = Some(GrabCmd::Save);
                     ui.close_menu();
                 }
-                ui.add_enabled(false, egui::Button::new(tr("Save current settings as a template")));
+                if ui.button(tr("Save current settings as a template")).clicked() {
+                    cmd = Some(GrabCmd::SaveTpl);
+                    ui.close_menu();
+                }
                 ui.separator();
                 ui.add_enabled_ui(!recent.is_empty(), |ui| {
                     ui.menu_button(tr("Recent Projects"), |ui| {
@@ -5290,7 +5487,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
             });
             ui.menu_button(tr("Options"), |ui| {
-                ui.add_enabled(false, egui::Button::new(tr("Grabber Settings")));
+                if ui.button(tr("Grabber Settings")).clicked() {
+                    settings = true;
+                    ui.close_menu();
+                }
                 if ui.add_enabled(saved, egui::Button::new(tr("Schedule the project"))).clicked() {
                     cmd = Some(GrabCmd::Schedule);
                     ui.close_menu();
@@ -5300,7 +5500,41 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 help("grabber.chm", "", true);
             }
         });
+        if load {
+            if self.core.settings().grab_projects.is_empty() {
+                self.open(Dialog::Info { title: "Load project".into(), text: "There are no saved projects of NDM grabber".into() });
+            } else {
+                self.open(Dialog::GrabLoad { sel: None });
+            }
+        }
+        if settings {
+            let s = self.core.settings();
+            let d = Dialog::GrabSettings { explore: s.grab_explore.to_string(), dl: s.grab_dl.to_string(), link: s.grab_link_text, iec: s.grab_ie_cache, adv: s.grab_adv };
+            drop(s);
+            self.open(d);
+        }
         cmd
+    }
+
+    /// Project template `name` (combo 1511): NDM's built-ins as NDM sets them, or one the
+    /// user saved. The project's name, start page and login stay.
+    fn apply_template(&self, name: &str, opts: &mut grabber::Opts, save_mode: &mut u8, save_cat: &mut String) {
+        let mask = |f: &str| GRAB_FILTERS.iter().find(|x| x.0 == f).map_or("*.*", |x| x.1).to_string();
+        let cat = |c: &str, cur: &str| if self.core.settings().category_names().iter().any(|n| n == c) { c.to_string() } else { cur.to_string() };
+        opts.template = name.to_string();
+        let Some(k) = grabber::TEMPLATES.iter().position(|t| *t == name) else {
+            let Some(t) = self.core.settings().grab_templates.iter().find(|t| t.opts.name == name).cloned() else { return };
+            let keep = opts.clone();
+            *opts = grabber::Opts { name: keep.name, start: keep.start, auth: keep.auth, login: keep.login, pass: keep.pass, manual_on: keep.manual_on, manual: keep.manual, cookies: keep.cookies, template: keep.template, ..t.opts };
+            (*save_mode, *save_cat) = (t.save_mode, t.save_cat);
+            return;
+        };
+        if let Some((mode, c)) = grabber::builtin_template(k, opts, &mask) {
+            *save_mode = mode;
+            if let Some(c) = c {
+                *save_cat = cat(c, save_cat);
+            }
+        }
     }
 
     /// A file-type filter: NDM's drop-down list ("All Files  ( *.* )", ...) and its "Add Filter" button,
@@ -5341,6 +5575,49 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         });
     }
 
+    /// Grabber "Thumbnails View": the found pictures in a grid, drawn from the file once it is downloaded.
+    fn grab_thumbs(&mut self, ui: &mut egui::Ui, rect: Rect, items: &[(String, Option<PathBuf>)]) {
+        const CELL: f32 = 104.0;
+        let mut decoded = 0;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            egui::ScrollArea::vertical().id_salt("gthumbs").auto_shrink(false).show(ui, |ui| {
+                let cols = ((rect.width() / CELL) as usize).max(1);
+                for row in items.chunks(cols) {
+                    let (r, _) = ui.allocate_exact_size(Vec2::new(rect.width() - 14.0, CELL + 16.0), Sense::hover());
+                    for (k, (name, path)) in row.iter().enumerate() {
+                        let cell = Rect::from_min_size(r.min + Vec2::new(k as f32 * CELL + 4.0, 4.0), Vec2::splat(CELL - 8.0));
+                        ui.painter().rect_stroke(cell, 0.0, egui::Stroke::new(1.0_f32, Color32::from_gray(190)), egui::StrokeKind::Inside);
+                        // ponytail: decoded on the UI thread, at most 3 a frame; cached for the session
+                        let tex = path.as_ref().and_then(|p| {
+                            if !self.thumbs.contains_key(p) && decoded < 3 {
+                                decoded += 1;
+                                let t = image::open(p).ok().map(|img| {
+                                    let px = img.thumbnail(192, 192).to_rgba8();
+                                    ui.ctx().load_texture(p.display().to_string(), egui::ColorImage::from_rgba_unmultiplied([px.width() as usize, px.height() as usize], px.as_raw()), egui::TextureOptions::LINEAR)
+                                });
+                                self.thumbs.insert(p.clone(), t);
+                            }
+                            self.thumbs.get(p).cloned().flatten()
+                        });
+                        match tex {
+                            Some(t) => {
+                                let [w, h] = t.size().map(|v| v as f32);
+                                let s = ((cell.width() - 6.0) / w).min((cell.height() - 6.0) / h).min(1.0);
+                                ui.painter().image(t.id(), Rect::from_center_size(cell.center(), Vec2::new(w, h) * s), Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                            }
+                            None => drop(ui.painter().text(cell.center(), Align2::CENTER_CENTER, "🖼", FontId::proportional(28.0), Color32::GRAY)),
+                        }
+                        let clip = Rect::from_min_size(egui::pos2(cell.left(), cell.bottom()), Vec2::new(cell.width(), 16.0));
+                        ui.painter().with_clip_rect(clip).text(clip.center(), Align2::CENTER_CENTER, name, FontId::proportional(11.0), ui.visuals().text_color());
+                    }
+                }
+            });
+        });
+        if decoded > 0 {
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// The Grabber's main window (template 241 under menu 256 and toolbar 260): the explored files with NDM's
     /// columns, a tree to filter them (All Files, Link View by page, Folder View by site), the toolbar's
     /// commands. Returns (keep the window, back to the wizard, explore again).
@@ -5375,6 +5652,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
                 drop(st);
                 self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)) });
+            }
+            Some(GrabCmd::SaveTpl) => {
+                let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), ..Default::default() };
+                self.open(Dialog::GrabTpl { name: String::new(), proj: Box::new(proj), replace: false });
             }
             Some(GrabCmd::Recent(n)) => {
                 self.project_cmd(0, &n);
@@ -5486,14 +5767,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let font = egui::TextStyle::Body.resolve(d.ui.style());
         let ink = d.ui.visuals().text_color();
         let line = dlu::pal(d.ui).line;
-        let save_dir = |name: &str, url: &str| match save_mode {
-            1 => self.core.settings().folder_for(save_cat),
-            2 => folder.to_string(),
-            _ => {
-                let s = self.core.settings();
-                s.folder_for(&s.category_for(name, url))
-            }
-        };
+        let save_dir = |name: &str, url: &str| self.core.grab_dir(name, url, save_mode, save_cat, folder, opts.subfolders);
+        if *node != 0 {
         d.ui.scope_builder(egui::UiBuilder::new().max_rect(lr.shrink(1.0)), |ui| {
             egui::ScrollArea::horizontal().id_salt("glist").auto_shrink(false).show(ui, |ui| {
                 ui.set_min_width(width);
@@ -5522,7 +5797,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             Status::Downloading | Status::Connecting => format!("{}%", i.size.filter(|s| *s > 0).map_or(0, |s| i.done() * 100 / s)),
                             Status::Stopped => String::new(),
                         });
-                        let cells = [String::new(), types[n].clone(), job.as_ref().and_then(|i| i.size).map(human).unwrap_or_default(), status, f.text.clone(), f.url.clone(), Path::new(&save_dir(name, &f.url)).join(name).display().to_string()];
+                        let cells = [String::new(), types[n].clone(), job.as_ref().and_then(|i| i.size).or(f.size).map(human).unwrap_or_default(), status, f.text.clone(), f.url.clone(), Path::new(&save_dir(name, &f.url)).join(name).display().to_string()];
                         let mut x = row.left();
                         for (ci, text) in cells.iter().enumerate() {
                             let w = COLS[ci].1 * dx;
@@ -5535,6 +5810,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 });
             });
         });
+        } else {
+            let items: Vec<(String, Option<PathBuf>)> = {
+                let s = c.state.lock().unwrap();
+                rows.iter().map(|(k, name, _)| (name.clone(), jobs.get(&s.files[*k].url).map(|j| j.info().clone()).filter(|i| i.status == Status::Complete).map(|i| i.path()))).collect()
+            };
+            self.grab_thumbs(d.ui, lr.shrink(1.0), &items);
+        }
         d.hline(7.0, 258.0, 494.0);
         // statics 1501-1506: five small sunken boxes along the bottom
         for k in 0..5 {
@@ -5552,9 +5834,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Some(0) | Some(7) => again = true,
             Some(1) => c.stop.store(true, Relaxed),
             Some(k @ (2 | 3)) => c.state.lock().unwrap().files.iter_mut().for_each(|f| f.checked = k == 2),
-            Some(4) => self.grab(c, save_mode, save_cat, folder, true),
-            Some(5) => jobs.values().filter(|j| j.running()).for_each(|j| j.stop()),
-            Some(6) => self.grab(c, save_mode, save_cat, folder, false),
+            Some(4) => self.grab(c, opts, save_mode, save_cat, folder, true),
+            Some(5) => {
+                let ids: HashSet<u64> = jobs.values().map(|j| j.info().id).collect();
+                self.core.grab_dl_ids.lock().unwrap().retain(|id| !ids.contains(id));
+                jobs.values().filter(|j| j.running()).for_each(|j| j.stop());
+            }
+            Some(6) => self.grab(c, opts, save_mode, save_cat, folder, false),
             Some(8) => self.project_cmd(1, opts.name.trim()),
             Some(9) => self.open(Dialog::GrabStats { crawl: c.clone() }),
             _ => {}

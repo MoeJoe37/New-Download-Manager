@@ -292,6 +292,15 @@ pub struct Settings {
     /// name is unique" of "Saving the project of NDM Grabber" (template 269).
     pub grab_projects: Vec<GrabProject>,
     pub grab_quiet: bool,
+    /// "Save current settings as a template" (34020, name box 268): `opts.name` is the template's name.
+    pub grab_templates: Vec<GrabProject>,
+    /// Grabber Settings (template 262, saved by NDM as GrabberSts nATSTFiles 1-20,
+    /// nDwnlATSTFiles 1-10, bUseTL, bUseIEC, bUseAdvWPP). Defaults from CSpiderSettings' constructor 0x53c050.
+    pub grab_explore: usize,
+    pub grab_dl: usize,
+    pub grab_link_text: bool,
+    pub grab_ie_cache: bool,
+    pub grab_adv: bool,
     /// File -> Show drop target (NDM: ShowDropTarget).
     pub drop_target: bool,
     /// When updates were last checked (NDM checks every 2 weeks).
@@ -508,6 +517,13 @@ impl Default for Settings {
             expanded: vec!["all".into()],
             grab_projects: Vec::new(),
             grab_quiet: false,
+            grab_templates: Vec::new(),
+            // NDM: +0xb0 = 4, +0x11c = 4, +0x112 / +0x113 / +0x114 = 1
+            grab_explore: 4,
+            grab_dl: 4,
+            grab_link_text: true,
+            grab_ie_cache: true,
+            grab_adv: true,
             drop_target: false,
             update_checked: 0,
             prog_sl_tab: true,
@@ -701,6 +717,14 @@ pub struct Core {
     grab_again: Mutex<HashMap<String, Instant>>,
     grab_running: Mutex<HashSet<String>>,
     grab_watch: Mutex<Vec<(Vec<u64>, Sched)>>,
+    /// Grabbed batches (job id, address) whose pages get their links converted once all have finished.
+    grab_convert: Mutex<Vec<Vec<(u64, String)>>>,
+    /// "Start Download checked files": downloads the grabber runs itself, Grabber Settings' N at a time.
+    pub grab_dl_ids: Mutex<Vec<u64>>,
+    /// Manual login page: the site whose cookies the browser extension should send (`POST /cookies`), and
+    /// the latest it sent.
+    pub login_wait: Mutex<Option<String>>,
+    pub login_cookies: Mutex<String>,
     /// When-done options (exit / power off / open a file) due now, applied by the UI like a finished queue's.
     pub sched_done: Mutex<Vec<Sched>>,
 }
@@ -769,6 +793,10 @@ impl Core {
             grab_again: Mutex::default(),
             grab_running: Mutex::default(),
             grab_watch: Mutex::default(),
+            grab_convert: Mutex::default(),
+            grab_dl_ids: Mutex::default(),
+            login_wait: Mutex::default(),
+            login_cookies: Mutex::default(),
             sched_done: Mutex::default(),
         });
         core.apply_settings();
@@ -1106,29 +1134,48 @@ impl Core {
         stop.into_iter().for_each(|q| self.stop_queue(q));
     }
 
-    /// Add the grabber's checked files to the main list (queued), unticking them; `start` starts the main
-    /// queue. Save To: 0 = each file's category folder, 1 = `save_cat`'s folder, 2 = `folder`.
-    pub fn grab_files(&self, files: &mut [crate::grabber::Found], save_mode: u8, save_cat: &str, folder: &str, start: bool) -> Vec<u64> {
-        let folder = match save_mode {
-            1 => Some(self.settings().folder_for(save_cat)),
-            2 => Some(folder.to_string()),
-            _ => None,
-        };
-        let mut ids = vec![];
+    pub fn grab_tuning(&self) -> crate::grabber::Tuning {
+        let s = self.settings();
+        crate::grabber::Tuning { explore: s.grab_explore, adv: s.grab_adv }
+    }
+
+    /// Folder of a grabbed file. Save To: 0 = its category's folder, 1 = `save_cat`'s, 2 = `folder`
+    /// (+ the site's own folders with "Use original relative subfolders").
+    pub fn grab_dir(&self, name: &str, url: &str, save_mode: u8, save_cat: &str, folder: &str, subfolders: bool) -> String {
+        let s = self.settings();
+        match save_mode {
+            1 => s.folder_for(save_cat),
+            2 if subfolders => url::Url::parse(url).map_or(folder.into(), |u| Path::new(folder).join(crate::grabber::site_dir(&u)).display().to_string()),
+            2 => folder.into(),
+            _ => s.folder_for(&s.category_for(name, url)),
+        }
+    }
+
+    /// Add the grabber's checked files to the main list, unticking them: queued in the main queue, or with
+    /// `start` downloaded by the grabber itself (Grabber Settings' N at a time, `tick_grabber`).
+    /// Existing names get NDM's grabber numbering (index_2.html) unless "Overwrite existing files".
+    pub fn grab_files(&self, files: &mut [crate::grabber::Found], opts: &crate::grabber::Opts, save_mode: u8, save_cat: &str, folder: &str, start: bool) -> Vec<u64> {
+        let mut batch = vec![];
+        let (link_text, ie_cache) = { let s = self.settings(); (s.grab_link_text, s.grab_ie_cache) };
         for f in files.iter_mut().filter(|f| f.checked) {
             f.checked = false;
             let mut i = self.new_info(&f.url);
-            (i.description, i.queued) = (f.text.clone(), true);
-            if let Some(folder) = &folder {
-                i.folder = folder.clone();
-                i.category = self.settings().category_for(&f.name, &f.url);
-                i.name = self.unique_name(folder, &f.name);
+            (i.queued, i.cookies, i.ie_cache) = (!start, opts.cookies.clone(), ie_cache);
+            if link_text {
+                i.description = f.text.clone();
             }
-            ids.push(i.id);
+            i.folder = self.grab_dir(&f.name, &f.url, save_mode, save_cat, folder, opts.subfolders);
+            i.category = self.settings().category_for(&f.name, &f.url);
+            i.name = if opts.overwrite { f.name.clone() } else { crate::grabber::numbered(&f.name, &|n| self.unique_name(&i.folder, n) == n) };
+            batch.push((i.id, f.url.clone()));
             self.add(i);
         }
+        let ids = batch.iter().map(|b| b.0).collect();
+        if opts.convert && !batch.is_empty() {
+            self.grab_convert.lock().unwrap().push(batch);
+        }
         if start {
-            self.start_queue(MAIN_QUEUE);
+            self.grab_dl_ids.lock().unwrap().extend(&ids);
         }
         ids
     }
@@ -1179,6 +1226,48 @@ impl Core {
             }
             !over
         });
+        drop(watch);
+        // the grabber's own downloads: N at a time; finished, failed, stopped by the user or deleted leave the list
+        let n = self.settings().grab_dl.clamp(1, 10);
+        let mut dl = self.grab_dl_ids.lock().unwrap();
+        let mut active = 0;
+        dl.retain(|id| {
+            let Some(j) = self.find(*id) else { return false };
+            let (st, started) = (j.info().status.clone(), j.info().done() > 0 || j.running());
+            if j.running() {
+                active += 1;
+                return true;
+            }
+            if st != Status::Stopped || started {
+                return false;
+            }
+            if active < n && !self.quota_blocked() {
+                self.start(&j);
+                active += 1;
+            }
+            true
+        });
+        drop(dl);
+        // ponytail: pending conversions live in memory only; a restart before the batch ends skips them
+        let mut conv = self.grab_convert.lock().unwrap();
+        conv.retain(|batch| {
+            let infos: Vec<(String, Info)> = batch.iter().filter_map(|(id, u)| Some((u.clone(), self.find(*id)?.info().clone()))).collect();
+            if !infos.iter().all(|(_, i)| matches!(i.status, Status::Complete | Status::Error(_))) {
+                return true;
+            }
+            let local: HashMap<String, PathBuf> = infos.iter().filter(|(_, i)| i.status == Status::Complete).map(|(u, i)| (u.clone(), i.path())).collect();
+            for (u, p) in &local {
+                let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                let (Ok(base), true) = (url::Url::parse(u), ["htm", "html", "shtml", "xhtml", "php", "asp", "aspx", "jsp"].contains(&ext.as_str())) else { continue };
+                let Ok(bytes) = std::fs::read(p) else { continue };
+                // non-UTF-8 pages go through Latin-1 so every byte comes back unchanged (new links are ASCII)
+                let utf8 = std::str::from_utf8(&bytes).is_ok();
+                let html: String = if utf8 { String::from_utf8_lossy(&bytes).into() } else { bytes.iter().map(|&b| b as char).collect() };
+                let out = crate::grabber::localize(&html, &base, p, &|l| local.get(l.as_str()).cloned());
+                let _ = std::fs::write(p, if utf8 { out.into_bytes() } else { out.chars().map(|c| c as u8).collect() });
+            }
+            false
+        });
     }
 
     /// One scheduled run of a grabber project, in the background.
@@ -1191,7 +1280,7 @@ impl Core {
             let mut files = p.files.clone();
             if p.action != 2 {
                 let c = Arc::new(crate::grabber::Crawl::default());
-                crate::grabber::run(p.opts.clone(), core.agent(&p.opts.start), c.clone());
+                crate::grabber::run(p.opts.clone(), core.agent(&p.opts.start), c.clone(), core.grab_tuning());
                 let st = c.state.lock().unwrap();
                 // a periodic project only fetches what is new since its last run
                 let old: HashSet<&str> = p.files.iter().map(|f| f.url.as_str()).collect();
@@ -1203,7 +1292,7 @@ impl Core {
                 }
             }
             if p.action != 0 {
-                let ids = core.grab_files(&mut files, p.save_mode, &p.save_cat, &p.folder, true);
+                let ids = core.grab_files(&mut files, &p.opts, p.save_mode, &p.save_cat, &p.folder, true);
                 let sc = &p.sched;
                 if sc.exit_done || sc.off_done || sc.open_on {
                     core.grab_watch.lock().unwrap().push((ids, sc.clone()));
@@ -1321,9 +1410,21 @@ impl Core {
                         let types: Vec<&str> = st.panel_types.iter().filter(|t| t.1).map(|t| t.0.as_str()).collect();
                         serde_json::json!({ "menu_dl": st.menu_dl, "menu_all": st.menu_all, "panel_skip": st.panel_skip, "keys": st.keys,
                             "panel_types": types, "panel_min": st.panel_min, "panel_mini": st.panel_mini, "panel_nocap": st.panel_nocap,
-                            "panel_drm": st.panel_drm, "sel_mode": st.sel_mode, "sel_sites": st.sel_sites, "sel_mini": st.sel_mini })
+                            "panel_drm": st.panel_drm, "sel_mode": st.sel_mode, "sel_sites": st.sel_sites, "sel_mini": st.sel_mini,
+                            "want_cookies": *core.login_wait.lock().unwrap() })
                     };
                     reply("200 OK", &c.to_string());
+                    continue;
+                }
+                if let Some((_, body, _)) = req.as_ref().filter(|(path, ..)| path == "/cookies") {
+                    // the grabber's manual login page: the browser's cookies for the site the user logged in to
+                    let inc: Incoming = serde_json::from_slice(body).unwrap_or_default();
+                    let host = url::Url::parse(&inc.url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
+                    let want = core.login_wait.lock().unwrap().clone().unwrap_or_default();
+                    if !want.is_empty() && crate::grabber::same_domain(&host, &want) {
+                        *core.login_cookies.lock().unwrap() = inc.cookies;
+                    }
+                    reply("200 OK", "");
                     continue;
                 }
                 let accepted = req.and_then(|(_, body, ua)| serde_json::from_slice::<Incoming>(&body).ok().map(|i| (i, ua)))
@@ -1356,7 +1457,7 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
     }
     let origin_ok = h.get("origin").is_none_or(|o| o.starts_with("chrome-extension://") || o.starts_with("moz-extension://"));
     let path = line.strip_prefix("POST ")?.split(' ').next()?.to_string();
-    if !["/add", "/config"].contains(&path.as_str()) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
+    if !["/add", "/config", "/cookies"].contains(&path.as_str()) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
         return None;
     }
     let len: usize = h.get("content-length").map_or(Some(0), |l| l.parse().ok())?;

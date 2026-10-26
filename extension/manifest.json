@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "New Download Manager Integration",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Hands browser downloads to New Download Manager and shows a download panel on web video and audio players and on selected links.",
   "permissions": ["downloads", "cookies", "contextMenus", "webRequest", "storage"],
   "host_permissions": ["<all_urls>"],
