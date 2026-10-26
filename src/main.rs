@@ -26,7 +26,7 @@ const TITLE: &str = "New Download Manager 1.0";
 /// Where new versions are published: a GitHub "owner/repo" whose latest release carries the new ndm.exe
 /// (Help -> Check for updates, About -> Check for Update, and NDM's automatic check every 2 weeks).
 /// Empty = no update source; the check says so.
-const UPDATE_REPO: &str = "";
+const UPDATE_REPO: &str = "MoeJoe37/New-Download-Manager";
 /// First argument of the copy started by "Update now".
 const UPDATED: &str = "/updated";
 /// NDM 21120.
@@ -322,7 +322,7 @@ fn ef2_round_trip() {
 }
 
 fn links(text: &str) -> Vec<String> {
-    text.split_whitespace().filter(|w| ["http://", "https://", "ftp://"].iter().any(|p| w.starts_with(p))).map(str::to_string).collect()
+    text.split_whitespace().filter(|w| ["http://", "https://", "ftp://"].iter().any(|p| w.starts_with(p)) || stream::is_media_url(w)).map(str::to_string).collect()
 }
 
 /// The browser's own extensions page, for the browsers the extension (Chromium MV3) runs in.
@@ -781,6 +781,8 @@ enum Dialog {
     /// "NDM is waiting for the new address to resume the file" + Stop waiting (template 344,
     /// CMsgWaitingNewLinkDlg 0x4fee60) while "Refresh download address" waits for the browser.
     WaitLink { name: String },
+    /// "Dial up" (template 184, CDialUpProgress): `Core::ensure_online`'s status, Redial now and Cancel.
+    DialUp,
     /// The Site Grabber: wizard `step` (0 start page, 1 save files to, 2 explorer filters, 3 file filters, NDM's
     /// order); `adv` = the page's "Advanced >>" half shown; with `crawl` the results window, `node` = its tree
     /// selection (0 Thumbnails View, 1 All Files, 2 Link View, 3 Folder View, 4 / 5 main-domain / other
@@ -1101,7 +1103,9 @@ impl Res {
 impl App {
     fn new(ctx: &egui::Context) -> App {
         let core = Core::load();
-        let dark = core.settings().dark_support && win::system_dark();
+        let on = core.settings().adv_integration;
+        core.apply_integration(on);
+        let dark =core.settings().dark_support && win::system_dark();
         *LIST_FONT.lock().unwrap() = core.settings().list_font.clone();
         i18n::load(&core.settings().language.clone());
         style(ctx, dark);
@@ -1504,7 +1508,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let text = clipboard();
         let url = text.lines().next().unwrap_or("").trim().to_string();
         // NDM also takes mms:// and rtmp://; the engine speaks http(s) and ftp only
-        let web = url.len() > 6 && ["http://", "https://", "ftp://"].iter().any(|p| url.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)));
+        let web = url.len() > 6 && (["http://", "https://", "ftp://"].iter().any(|p| url.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p))) || stream::is_media_url(&url));
         let ext = core::ext(&engine::url_name(&url));
         let wanted = self.core.settings().file_types.split_whitespace().any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(&ext));
         if web && wanted && !self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::AddUrl { .. })) {
@@ -1536,7 +1540,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             self.on_done.insert(info.id, (true, false));
         }
         info.parent = inc.referrer.clone(); // the extension sends the tab URL
-        (info.referrer, info.cookies) = (inc.referrer, inc.cookies);
+        (info.referrer, info.cookies, info.browser_proxy) = (inc.referrer, inc.cookies, inc.proxy);
         let slot: ProbeSlot = Arc::default();
         let hint = inc.filename.rsplit(['/', '\\']).next().map(engine::sanitize).filter(|n| n != "download").unwrap_or_default();
         let name = if hint.is_empty() { engine::sanitize(&engine::url_name(&info.url)) } else { hint.clone() };
@@ -1753,12 +1757,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
     // ---------- main window ----------
 
-    /// Main menu, NDM's menu resource 129 item for item. Items this app doesn't implement are disabled.
+    /// Main menu, NDM's menu resource 129 item for item.
     fn menu(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, sel: &[u64]) {
-        let off = |ui: &mut egui::Ui, t: &str| {
-            let t = &tr(t);
-            ui.add_enabled(false, egui::Button::new(t));
-        };
         egui::menu::bar(ui, |ui| {
             // NDM's menu bar pads each item differently (measured with GetMenuItemRect at 125%, item width
             // minus the label's width in the menu font): Tasks 42, File 28, Downloads 52, View 33, Help 29 px
@@ -2002,15 +2002,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
             pad(ui, 29.0);
             ui.menu_button(mn("Help"), |ui| {
-                for (t, file) in [("Help contents", "ndman.chm"), ("Grabber Help", "grabber.chm")] {
+                // NDM's tutorials are its installed tutor.chm / scheduler.chm (CDownloaderDlg::OnTutorials)
+                for (t, file) in [("Help contents", "ndman.chm"), ("Grabber Help", "grabber.chm"), ("Tutorials", "tutor.chm"), ("Scheduler and queues", "scheduler.chm")] {
                     if ui.add_enabled(help(file, "", false), egui::Button::new(tr(t))).clicked() {
                         help(file, "", true);
                         ui.close_menu();
                     }
-                }
-                // ponytail: NDM's online pages (tutorials, home page, support) aren't NDM's; left greyed
-                for t in ["Tutorials", "Scheduler and queues"] {
-                    off(ui, t);
                 }
                 if ui.button(tr("Tip of the Day...")).clicked() {
                     let text = self.next_tip();
@@ -2870,6 +2867,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::GrabLogin { .. } => ("Connecting to the site".into(), tpl(273.0, 138.0)),
             Dialog::Export { .. } => ("Export download list".into(), tpl(214.0, 47.0)),
             Dialog::WaitLink { .. } => (TITLE.into(), tpl(240.0, 46.0)),
+            Dialog::DialUp => ("Dial up".into(), tpl(186.0, 55.0)),
             Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 89.0)),
             Dialog::Update { .. } => ("Quick Update".into(), tpl(186.0, 34.0)),
             Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), tpl(286.0, 137.0)),
@@ -3335,7 +3333,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let ext_dir = extension_dir();
                 let mut d = dlu::D::new(ui);
                 let names = ["General", "File types", "Save to", "Downloads", "Connection", "", "Proxy / Socks", "Sites Logins", "Dial Up / VPN", "Sounds"];
-                if let Some(a) = self.adv_done.take() {
+                if let Some(mut a) = self.adv_done.take() {
+                    if let Some((on, h, p, u, pw)) = a.http.take() {
+                        (s.proxy_http, s.proxy_host, s.proxy_port, s.proxy_user, s.proxy_pass) = (on, h, p, u, pw);
+                        if on {
+                            s.proxy_mode = 3;
+                        }
+                    }
                     s.adv = a;
                 }
                 for f in self.opt_patch.drain(..) {
@@ -3358,7 +3362,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         if d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup").changed() {}
                         d2.check_off(13.0, 37.0, 248.0, 10.0, "Run module for click monitoring in IE-based browsers (MSN, Avant, etc)");
                         d2.check(13.0, 49.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
-                        d2.check_off(13.0, 61.0, 240.0, 10.0, "Use advanced browser integration");
+                        d2.check(13.0, 61.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
                         d2.group(4.0, 73.0, 261.0, 144.0, "Capture downloads from the following browsers:");
                         let list = d2.listview(13.0, 84.0, 241.0, 84.0, &[("Browser", 120.0), ("Type of integration", 119.0)]);
                         let sel_id = egui::Id::new("browser_sel");
@@ -3628,29 +3632,43 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.ui.data_mut(|m| m.insert_temp(sel_id, sel));
                     }
                     7 => {
-                        // Dial Up / VPN (template 185): not implemented, drawn disabled.
+                        // Dial Up / VPN (template 185, COptDialUp): Windows' connections; Apply stores the user
+                        // name (and with "Save password" the password) in Windows, as NDM does (RasSetEntryDialParams).
                         let (x, y) = e(0.0, 0.0);
                         let icon = self.res.icon(275);
                         let mut d2 = dlu::D::new_offset(d.ui, x, y).with_dx(PAGE_DX);
                         d2.page_header(icon, 47.0, "Dial up / VPN settings");
-                        d2.check_off(8.0, 30.0, 247.0, 10.0, "Use Windows Dial Up / VPN Networking");
+                        d2.check(8.0, 30.0, 247.0, 10.0, &mut s.dial_on, "Use Windows Dial Up / VPN Networking");
+                        let on = s.dial_on;
                         d2.group(7.0, 44.0, 254.0, 110.0, "Connection options");
-                        let mut none = String::new();
                         for (y, t) in [(62.0, "Connection:"), (84.0, "User name:"), (106.0, "Password:")] {
-                            d2.label_r(16.0, y, 59.0, 10.0, RichText::new(t).weak());
+                            d2.label_r(16.0, y, 59.0, 10.0, if on { RichText::new(tr(t)) } else { RichText::new(tr(t)).weak() });
                         }
-                        d2.combo(80.0, 59.0, 156.0, 14.0, "dialup", &mut none, &[], false);
-                        d2.edit(80.0, 82.0, 117.0, 14.0, &mut none, false);
-                        d2.password(80.0, 103.0, 117.0, 14.0, &mut none, false);
-                        d2.check_off(80.0, 123.0, 115.0, 10.0, "Save password");
-                        d2.button(201.0, 134.0, 50.0, 14.0, "Apply", false);
+                        let id = egui::Id::new("dialup_form");
+                        let (mut user, mut pass, mut save) = d2.ui.data_mut(|m| m.get_temp::<(String, String, bool)>(id)).unwrap_or_default();
+                        let entries = win::ras_entries();
+                        if s.dial_entry.is_empty() {
+                            s.dial_entry = entries.first().cloned().unwrap_or_default();
+                        }
+                        let list: Vec<&str> = entries.iter().map(String::as_str).collect();
+                        d2.combo(80.0, 59.0, 156.0, 14.0, "dialup", &mut s.dial_entry, &list, on);
+                        d2.edit(80.0, 82.0, 117.0, 14.0, &mut user, on);
+                        d2.password(80.0, 103.0, 117.0, 14.0, &mut pass, on);
+                        d2.check(80.0, 123.0, 115.0, 10.0, &mut save, "Save password");
+                        if d2.button(201.0, 134.0, 50.0, 14.0, "Apply", on && !s.dial_entry.is_empty()) {
+                            if let Err(e) = win::ras_save(&s.dial_entry, &user, &pass, save) {
+                                self.open(Dialog::Info { title: "Dial Up / VPN".into(), text: e });
+                            }
+                        }
+                        d2.ui.data_mut(|m| m.insert_temp(id, (user, pass, save)));
                         d2.group(7.0, 158.0, 254.0, 54.0, "Redial options");
-                        d2.label_r(13.0, 172.0, 132.0, 10.0, RichText::new(tr("Redial attempts (zero if endlessly):")).weak());
-                        d2.edit(151.0, 169.0, 28.0, 14.0, &mut none, false);
-                        d2.label(184.0, 172.0, 68.0, 10.0, RichText::new(tr("times")).weak());
-                        d2.label_r(14.0, 192.0, 131.0, 10.0, RichText::new(tr("Time between redial attempts:")).weak());
-                        d2.edit(151.0, 189.0, 28.0, 14.0, &mut none, false);
-                        d2.label(184.0, 192.0, 69.0, 10.0, RichText::new(tr("seconds")).weak());
+                        let weak = |t: &str| if on { RichText::new(tr(t)) } else { RichText::new(tr(t)).weak() };
+                        d2.label_r(13.0, 172.0, 132.0, 10.0, weak("Redial attempts (zero if endlessly):"));
+                        d2.drag(151.0, 169.0, 28.0, 14.0, &mut s.dial_redial, 0, 999);
+                        d2.label(184.0, 172.0, 68.0, 10.0, weak("times"));
+                        d2.label_r(14.0, 192.0, 131.0, 10.0, weak("Time between redial attempts:"));
+                        d2.drag(151.0, 189.0, 28.0, 14.0, &mut s.dial_wait, 1, 3600);
+                        d2.label(184.0, 192.0, 69.0, 10.0, weak("seconds"));
                     }
                     8 => {
                         // Sounds (template 195, CSoundsSettings 0x5120c0): a tick and a .wav per event; Browse and
@@ -3701,7 +3719,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             (s.proxy_host, s.proxy_port, s.proxy_mode) = (h.trim().to_string(), p.trim().to_string(), 3);
                             (s.proxy_bypass_on, s.proxy_bypass) = (!bypass.is_empty(), bypass.replace(';', " ").replace("<local>", "").trim().to_string());
                         }
-                        d2.check_off(13.0, 27.0, 243.0, 19.0, "Use proxy/socks from a browser's request if there are download errors for the downloads intercepted from the browser");
+                        d2.check(13.0, 27.0, 243.0, 19.0, &mut s.proxy_browser, "Use proxy/socks from a browser's request if there are download errors for the downloads intercepted from the browser");
                         d2.hline(8.0, 50.0, 254.0);
                         if d2.radio(7.0, 55.0, 248.0, 10.0, s.proxy_mode == 0, "No proxy/socks") {
                             s.proxy_mode = 0;
@@ -3744,7 +3762,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.check(11.0, 244.0, 219.0, 10.0, &mut s.ftp_pasv, "Use FTP in PASV mode");
                     }
                 }
-                if let Some(adv) = adv {
+                if let Some(mut adv) = adv {
+                    adv.http = Some((s.proxy_mode == 3 && s.proxy_http, s.proxy_host.clone(), s.proxy_port.clone(), s.proxy_user.clone(), s.proxy_pass.clone()));
                     self.open(Dialog::AdvProxy { adv });
                 }
                 if let Some(o) = open {
@@ -3772,6 +3791,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let dark_changed = self.core.settings().dark_support != s.dark_support;
                     *self.core.settings() = s.clone();
                     self.core.apply_settings();
+                    self.core.apply_integration(s.adv_integration);
                     self.core.save();
                     if autostart_changed {
                         win::set_autostart(s.autostart);
@@ -3901,7 +3921,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             sched.open_file = p.display().to_string();
                         }
                     }
-                    d2.check_off(7.0, 186.0, 203.0, 10.0, "Hang up modem when done");
+                    d2.check(7.0, 186.0, 203.0, 10.0, &mut sched.hangup, "Hang up modem when done");
                     d2.check(7.0, 197.0, 207.0, 10.0, &mut sched.exit_done, "Exit New Download Manager when done");
                     d2.check(7.0, 208.0, 182.0, 10.0, &mut sched.off_done, "Turn off computer when done");
                     let kinds = ["Shut down", "Sleep", "Hibernate"];
@@ -4149,9 +4169,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     d.edit(146.0, y + 20.0, 52.0, 14.0, user, on);
                     d.password(202.0, y + 20.0, 52.0, 14.0, pass, on);
                 };
-                // HTTP and FTP proxies live on the Proxy / Socks page here; NDM repeats them in this dialog
+                // the Proxy / Socks page's HTTP proxy, repeated here as in NDM
                 d.group(7.0, 3.0, 254.0, 41.0, "");
-                d.check_off(13.0, 0.0, 69.0, 10.0, "Use HTTP Proxy");
+                let mut http = adv.http.take().unwrap_or_default();
+                d.check(13.0, 0.0, 69.0, 12.0, &mut http.0, "Use HTTP Proxy");
+                let on = http.0;
+                row(&mut d, 3.0, on, &mut http.1, &mut http.2, &mut http.3, &mut http.4);
+                adv.http = Some(http);
                 d.group(7.0, 50.0, 254.0, 41.0, "");
                 d.check(13.0, 47.0, 74.0, 12.0, &mut adv.https_on, "Use HTTPS Proxy");
                 let on = adv.https_on;
@@ -4638,6 +4662,20 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 !(ok || d.button(157.0, 24.0, 50.0, 14.0, "Cancel", true))
             }
+            Dialog::DialUp => {
+                let Some(text) = self.core.dial_text.lock().unwrap().clone() else { return false };
+                let mut d = dlu::D::new(ui);
+                d.text(7.0, 7.0, 172.0, 22.0, text.as_str());
+                // Redial shows while waiting between attempts (NDM moves the buttons over, 0x43a1f0)
+                if text.contains('\n') && d.button(6.0, 34.0, 50.0, 14.0, "Redial", true) {
+                    self.core.dial_now.store(true, Relaxed);
+                }
+                if d.button(63.0, 34.0, 50.0, 14.0, "Cancel", true) {
+                    self.core.dial_cancel.store(true, Relaxed);
+                }
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+                true
+            }
             Dialog::WaitLink { name } => {
                 let mut d = dlu::D::new(ui);
                 d.text(7.0, 5.0, 226.0, 17.0, format!("{}\n{name}", tr("NDM is waiting for the new address to resume the file:")));
@@ -4760,7 +4798,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.edit(318.0, 97.0, 59.0, 14.0, &mut sc.stop_at, sc.stop_on);
                 d.hline(218.0, 114.0, 197.0);
                 d.text(212.0, 118.0, 214.0, 18.0, "Note: NDM should be running in system tray at the specified time to start a scheduled project");
-                d.check_off(9.0, 145.0, 185.0, 10.0, "Hang up modem when done");
+                d.check(9.0, 145.0, 185.0, 10.0, &mut sc.hangup, "Hang up modem when done");
                 d.check(9.0, 158.0, 191.0, 10.0, &mut sc.exit_done, "Exit New Download Manager when done");
                 d.check(9.0, 170.0, 188.0, 10.0, &mut sc.off_done, "Turn off computer when done");
                 let kinds = ["Shut down", "Sleep", "Hibernate"].map(tr);
@@ -6116,6 +6154,9 @@ impl eframe::App for App {
         }
         let light = std::mem::take(&mut self.light_titles);
         win::own_dialogs(self.hwnd.load(Relaxed), self.dark, retitle, &light);
+        if self.core.dial_text.lock().unwrap().is_some() && !self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::DialUp)) {
+            self.open(Dialog::DialUp);
+        }
         let quota_msg = self.core.quota_msg.lock().unwrap().take();
         if let Some(text) = quota_msg {
             self.open(Dialog::QuotaHit { text });
@@ -6126,6 +6167,9 @@ impl eframe::App for App {
         for s in done {
             if s.open_on && !s.open_file.trim().is_empty() {
                 explore(s.open_file.trim());
+            }
+            if s.hangup {
+                win::ras_hangup_all();
             }
             if s.off_done {
                 power_off(s.off_kind, s.off_force);
@@ -6142,6 +6186,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         win::exit_splash(&i18n::tr_os("Exit NDM"), &i18n::tr_os("Saving settings..."));
+        self.core.apply_integration(false);
         self.core.shutdown();
     }
 }

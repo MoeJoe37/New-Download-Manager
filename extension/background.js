@@ -16,10 +16,21 @@ function mediaType(mime, path, types) {
 const launch = () => chrome.runtime.sendNativeMessage('com.ndm.host', { kind: 'launch' }).catch(() => {});
 chrome.action.onClicked.addListener(launch);
 
+// The browser's own proxy, for the app's "Use proxy/socks from a browser's request" (Options -> Proxy / Socks).
+async function browserProxy() {
+  const v = (await chrome.proxy?.settings.get({}).catch(() => null))?.value || {};
+  if (v.mode === 'pac_script') return v.pacScript?.url ? `pac:${v.pacScript.url}` : '';
+  const r = v.rules?.singleProxy || v.rules?.proxyForHttps || v.rules?.proxyForHttp;
+  if (v.mode === 'fixed_servers' && r) return `${/^socks[45]$/.test(r.scheme) ? r.scheme : 'http'}://${r.host}:${r.port || 80}`;
+  // Firefox: { proxyType: 'manual', http: 'h:p', socks: 'h:p', socksVersion } or a PAC address
+  if (v.proxyType === 'manual') return v.http ? `http://${v.http}` : v.socks ? `socks${v.socksVersion || 5}://${v.socks}` : '';
+  return v.proxyType === 'autoConfig' && v.autoConfigUrl ? `pac:${v.autoConfigUrl}` : '';
+}
+
 // true: the app took it, false: the app declined it, null: the app couldn't be reached (even after starting it)
 async function post(url, extra) {
   const cookies = (await chrome.cookies.getAll({ url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
-  const body = JSON.stringify({ url, cookies, ...extra });
+  const body = JSON.stringify({ url, cookies, proxy: await browserProxy(), ...extra });
   for (let i = 0; i < 40; i++) {
     try {
       const r = await fetch(API, { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body });

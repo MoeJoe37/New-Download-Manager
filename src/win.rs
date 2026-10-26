@@ -331,6 +331,124 @@ pub fn system_proxy() -> (bool, String, String) {
     (r == 0 && on != 0, text("ProxyServer"), text("ProxyOverride"))
 }
 
+// ---------- Windows Dial Up / VPN (RAS), as NDMuses rasapi32 (0x4396b0, 0x43acc0, 0x4390a0) ----------
+
+fn from_wide(s: &[u16]) -> String {
+    String::from_utf16_lossy(&s[..s.iter().position(|c| *c == 0).unwrap_or(s.len())])
+}
+
+fn ras_error(code: u32) -> String {
+    use windows_sys::Win32::NetworkManagement::Rras::RasGetErrorStringW;
+    let mut buf = [0u16; 512];
+    if unsafe { RasGetErrorStringW(code, buf.as_mut_ptr(), 512) } == 0 { from_wide(&buf) } else { format!("Error {code}") }
+}
+
+/// Windows' dial-up / VPN connections (the phonebook entries).
+pub fn ras_entries() -> Vec<String> {
+    use windows_sys::Win32::NetworkManagement::Rras::{RasEnumEntriesW, RASENTRYNAMEW};
+    let mut v: Vec<RASENTRYNAMEW> = (0..64).map(|_| unsafe { zeroed() }).collect();
+    v[0].dwSize = size_of::<RASENTRYNAMEW>() as u32;
+    let (mut bytes, mut n) = ((v.len() * size_of::<RASENTRYNAMEW>()) as u32, 0u32);
+    if unsafe { RasEnumEntriesW(std::ptr::null(), std::ptr::null(), v.as_mut_ptr(), &mut bytes, &mut n) } != 0 {
+        return vec![];
+    }
+    v[..n as usize].iter().map(|e| from_wide(&e.szEntryName)).collect()
+}
+
+fn ras_conns() -> Vec<windows_sys::Win32::NetworkManagement::Rras::RASCONNW> {
+    use windows_sys::Win32::NetworkManagement::Rras::{RasEnumConnectionsW, RASCONNW};
+    let mut v: Vec<RASCONNW> = (0..16).map(|_| unsafe { zeroed() }).collect();
+    v[0].dwSize = size_of::<RASCONNW>() as u32;
+    let (mut bytes, mut n) = ((v.len() * size_of::<RASCONNW>()) as u32, 0u32);
+    if unsafe { RasEnumConnectionsW(v.as_mut_ptr(), &mut bytes, &mut n) } != 0 {
+        return vec![];
+    }
+    v.truncate(n as usize);
+    v
+}
+
+/// Is a dial-up / VPN connection up?
+pub fn ras_connected() -> bool {
+    use windows_sys::Win32::NetworkManagement::Rras::{RasGetConnectStatusW, RASCONNSTATUSW, RASCS_Connected};
+    ras_conns().iter().any(|c| {
+        let mut st: RASCONNSTATUSW = unsafe { zeroed() };
+        st.dwSize = size_of::<RASCONNSTATUSW>() as u32;
+        unsafe { RasGetConnectStatusW(c.hrasconn, &mut st) == 0 && st.rasconnstate == RASCS_Connected }
+    })
+}
+
+/// The entry's dial parameters with the user name and password Windows keeps for it.
+fn ras_params(entry: &str) -> windows_sys::Win32::NetworkManagement::Rras::RASDIALPARAMSW {
+    use windows_sys::Win32::NetworkManagement::Rras::{RasGetEntryDialParamsW, RASDIALPARAMSW};
+    let mut p: RASDIALPARAMSW = unsafe { zeroed() };
+    p.dwSize = size_of::<RASDIALPARAMSW>() as u32;
+    let name = wide(entry);
+    p.szEntryName[..name.len().min(256)].copy_from_slice(&name[..name.len().min(256)]);
+    let mut has_pass = 0;
+    unsafe { RasGetEntryDialParamsW(std::ptr::null(), &mut p, &mut has_pass) };
+    p
+}
+
+fn put(dst: &mut [u16], s: &str) {
+    let w = wide(s);
+    let n = w.len().min(dst.len());
+    dst[..n].copy_from_slice(&w[..n]);
+    dst[n - 1] = 0;
+}
+
+/// User name (and, with `save`, the password) Windows keeps for `entry` (Dial Up page's Apply).
+pub fn ras_save(entry: &str, user: &str, pass: &str, save: bool) -> Result<(), String> {
+    use windows_sys::Win32::NetworkManagement::Rras::RasSetEntryDialParamsW;
+    let mut p = ras_params(entry);
+    put(&mut p.szUserName, user);
+    put(&mut p.szPassword, if save { pass } else { "" });
+    match unsafe { RasSetEntryDialParamsW(std::ptr::null(), &p, !save as i32) } {
+        0 => Ok(()),
+        e => Err(ras_error(e)),
+    }
+}
+
+/// Dials `entry` (synchronously) with Windows' saved user name and password.
+pub fn ras_dial(entry: &str) -> Result<(), String> {
+    use windows_sys::Win32::NetworkManagement::Rras::{RasDialW, RasHangUpW};
+    let p = ras_params(entry);
+    let mut h = std::ptr::null_mut();
+    match unsafe { RasDialW(std::ptr::null(), std::ptr::null(), &p, 0, std::ptr::null(), &mut h) } {
+        0 => Ok(()),
+        e => {
+            if !h.is_null() {
+                unsafe { RasHangUpW(h) };
+            }
+            Err(ras_error(e))
+        }
+    }
+}
+
+/// "Hang up modem when done": every dial-up / VPN connection NDM.
+pub fn ras_hangup_all() {
+    use windows_sys::Win32::NetworkManagement::Rras::RasHangUpW;
+    for c in ras_conns() {
+        unsafe { RasHangUpW(c.hrasconn) };
+    }
+}
+
+/// Sets Windows' proxy (Internet Settings, as `system_proxy` reads it) and tells running programs.
+pub fn set_system_proxy(on: bool, server: &str, bypass: &str) {
+    use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
+    use windows_sys::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_DWORD, REG_SZ};
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings");
+    let enable = on as u32;
+    unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), wide("ProxyEnable").as_ptr(), REG_DWORD, (&enable as *const u32).cast(), 4);
+        for (name, v) in [("ProxyServer", server), ("ProxyOverride", bypass)] {
+            let v = wide(v);
+            RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), wide(name).as_ptr(), REG_SZ, v.as_ptr().cast(), v.len() as u32 * 2);
+        }
+        InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_SETTINGS_CHANGED, std::ptr::null(), 0);
+        InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_REFRESH, std::ptr::null(), 0);
+    }
+}
+
 /// The proxy ("host:port") a PAC script picks for `url`, evaluated by WinHTTP; None = DIRECT or failure.
 pub fn pac_proxy(pac: &str, url: &str) -> Option<String> {
     use windows_sys::Win32::Foundation::GlobalFree;

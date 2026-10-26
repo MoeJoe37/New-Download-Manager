@@ -89,6 +89,9 @@ pub struct Info {
     pub stream: bool,
     /// A Site Grabber download with "Look up files in IE cache before downloading" (NDM: +0xafb).
     pub ie_cache: bool,
+    /// The browser's own proxy when the extension handed the download over ("http://h:p", "socks5://h:p"
+    /// or "pac:URL"), used after a failure with "Use proxy/socks from a browser's request".
+    pub browser_proxy: String,
 }
 
 impl Info {
@@ -482,6 +485,10 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
     if crate::stream::is_manifest(url) {
         return crate::stream::probe(agent, url, referrer, cookies);
     }
+    if crate::stream::is_media_url(url) {
+        // a live mms / rtmp / rtsp stream: no size until it is recorded
+        return Ok(Probe { name: sanitize(&url_name(url)), size: None, ranges: false, modified: String::new(), stream: true });
+    }
     if is_ftp(url) {
         let (size, ranges, _) = ftp_open(url, 0)?;
         return Ok(Probe { name: sanitize(&url_name(url)), size, ranges, modified: String::new(), stream: false });
@@ -509,7 +516,7 @@ fn pct_decode(s: &str) -> String {
     percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned()
 }
 
-fn disposition_name(h: &str) -> Option<String> {
+pub fn disposition_name(h: &str) -> Option<String> {
     let mut plain = None;
     for p in h.split(';').map(str::trim) {
         if let Some(v) = strip_ci(p, "filename*=") {
@@ -651,6 +658,9 @@ impl Job {
             i.last_try = chrono::Local::now().timestamp();
             (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.probed)
         };
+        if crate::stream::is_media_url(&url) {
+            return crate::stream::run_media(self);
+        }
         if crate::stream::is_manifest(&url) || self.info().stream {
             return crate::stream::run(self, agent, global);
         }

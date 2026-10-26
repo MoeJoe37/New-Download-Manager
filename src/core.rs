@@ -14,6 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const PORT: u16 = 9614;
+/// "Use advanced browser integration": Windows' proxy for http points here (see `apply_integration`).
+pub const PROXY_PORT: u16 = 9615;
 
 /// NDM's default categories (and their file types); the user edits them in "NDM categories" (template 204).
 pub const CATEGORIES: [(&str, &str); 5] = [
@@ -69,6 +71,8 @@ pub struct Sched {
     /// "Turn off computer when done": 0 Shut down, 1 Sleep, 2 Hibernate; "Force processes to terminate".
     pub off_kind: u8,
     pub off_force: bool,
+    /// "Hang up modem when done" (Dial Up / VPN).
+    pub hangup: bool,
 }
 
 impl Default for Sched {
@@ -93,6 +97,7 @@ impl Default for Sched {
             open_file: String::new(),
             off_kind: 0,
             off_force: false,
+            hangup: false,
         }
     }
 }
@@ -175,6 +180,16 @@ pub struct Settings {
     pub cat_dirs: std::collections::BTreeMap<String, String>,
     pub confirm_delete: bool,
     pub autostart: bool,
+    /// Options -> General -> "Use advanced browser integration" (NDM: its network driver; NDM: `proxy_conn`).
+    pub adv_integration: bool,
+    /// Dial Up / VPN page (185; NDM's isUseWinDialUp, DialUpEntry, mRedialTime): the connection to dial,
+    /// redial attempts (0 = endlessly) and seconds between them. User name and password live in Windows.
+    pub dial_on: bool,
+    pub dial_entry: String,
+    pub dial_redial: u32,
+    pub dial_wait: u32,
+    /// Windows' proxy (on, server, bypass) from before NDM's was set, put back when it's turned off.
+    pub saved_proxy: Option<(bool, String, String)>,
     pub only_queue: bool,
     pub user_agent: String,
     /// Don't take over browser downloads from these sites (space separated).
@@ -187,6 +202,9 @@ pub struct Settings {
     /// "Use this proxy for protocols: http https" (NDM template 140).
     pub proxy_http: bool,
     pub proxy_https: bool,
+    /// Proxy / Socks page: "Use proxy/socks from a browser's request if there are download errors for the
+    /// downloads intercepted from the browser" (`Info::browser_proxy`, `Core::start_now`).
+    pub proxy_browser: bool,
     /// "Do not use proxy server for addresses beginning with:" (space separated, `*` wildcards).
     pub proxy_bypass_on: bool,
     pub proxy_bypass: String,
@@ -373,6 +391,10 @@ pub const SOUND_EVENTS: [&str; 4] = ["Download complete", "Download failed", "Qu
 #[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct AdvProxy {
+    /// The Proxy / Socks page's manual HTTP proxy (on, host, port, user, password), which NDM's advanced
+    /// dialog repeats as "Use HTTP Proxy"; only carried while the dialog is open.
+    #[serde(skip)]
+    pub http: Option<(bool, String, String, String, String)>,
     pub https_on: bool,
     pub https_host: String,
     pub https_port: String,
@@ -452,6 +474,12 @@ impl Default for Settings {
             cat_dirs: Default::default(),
             confirm_delete: true,
             autostart: false,
+            adv_integration: false,
+            dial_on: false,
+            dial_entry: String::new(),
+            dial_redial: 10,
+            dial_wait: 30,
+            saved_proxy: None,
             only_queue: false,
             user_agent: String::new(),
             skip_sites: String::new(),
@@ -460,6 +488,7 @@ impl Default for Settings {
             ftp_pasv: true,
             proxy_http: true,
             proxy_https: true,
+            proxy_browser: false,
             proxy_bypass_on: false,
             proxy_bypass: String::new(),
             adv: AdvProxy { socks5: true, ..Default::default() },
@@ -553,7 +582,8 @@ impl Settings {
             // PAC: Windows' WinHTTP runs FindProxyForURL; the first proxy it names is used
             2 => crate::win::pac_proxy(&self.pac_url, url).map_or(String::new(), |hp| proxy_url("http", &hp, "", "", "")),
             1 => {
-                let (on, server, bypass) = crate::win::system_proxy();
+                // NDM's own downloads don't go through NDM's proxy
+                let (on, server, bypass) = self.saved_proxy.clone().unwrap_or_else(crate::win::system_proxy);
                 if !on || bypassed(&bypass.replace(';', " ").replace("<local>", ""), host) {
                     return String::new();
                 }
@@ -647,6 +677,8 @@ pub struct Incoming {
     pub filename: String,
     pub mime: String,
     pub force: bool,
+    /// The browser's proxy (`Info::browser_proxy`).
+    pub proxy: String,
     /// "Download all links": the page's links; `url` is the page.
     pub links: Vec<Link>,
     /// From the command line (NDM's `/d URL /p /f /n /a /q /s`, ndman.chm "Command Line"):
@@ -730,6 +762,11 @@ pub struct Core {
     pub login_cookies: Mutex<String>,
     /// When-done options (exit / power off / open a file) due now, applied by the UI like a finished queue's.
     pub sched_done: Mutex<Vec<Sched>>,
+    /// Dial Up / VPN (`ensure_online`): one dial at a time, its status for the "Dial up" box, Cancel / Redial.
+    dial_lock: Mutex<()>,
+    pub dial_text: Mutex<Option<String>>,
+    pub dial_cancel: std::sync::atomic::AtomicBool,
+    pub dial_now: std::sync::atomic::AtomicBool,
 }
 
 pub fn store_path() -> PathBuf {
@@ -805,6 +842,10 @@ impl Core {
             login_wait: Mutex::default(),
             login_cookies: Mutex::default(),
             sched_done: Mutex::default(),
+            dial_lock: Mutex::default(),
+            dial_text: Mutex::default(),
+            dial_cancel: Default::default(),
+            dial_now: Default::default(),
         });
         core.apply_settings();
         core
@@ -897,7 +938,67 @@ impl Core {
         self.jobs.lock().unwrap().retain(|x| !Arc::ptr_eq(x, &j));
     }
 
-    pub fn start(&self, job: &Arc<Job>) {
+    /// "Use Windows Dial Up / VPN Networking" (Options page 185, NDM / CDialUpProgress
+    /// 0x43acc0): before a download connects, the chosen connection is dialled unless one is up, with the
+    /// user name and password Windows keeps for it. A failed dial is redialled after "Time between redial
+    /// attempts" (attempts 0 = endlessly), shown in NDM's "Dial up" box (184, `dial_text`). Downloads
+    /// starting meanwhile wait for the same dial.
+    pub fn ensure_online(&self) -> Result<(), String> {
+        let (on, entry, tries, wait) = {
+            let s = self.settings();
+            (s.dial_on, s.dial_entry.clone(), s.dial_redial, s.dial_wait)
+        };
+        if !on || entry.is_empty() {
+            return Ok(());
+        }
+        let _one = self.dial_lock.lock().unwrap();
+        if crate::win::ras_connected() {
+            return Ok(());
+        }
+        self.dial_cancel.store(false, Relaxed);
+        let say = |t: Option<String>| *self.dial_text.lock().unwrap() = t;
+        let mut n = 1;
+        let r = loop {
+            say(Some(crate::i18n::tr("Connecting ...")));
+            let e = match crate::win::ras_dial(&entry) {
+                Ok(()) => break Ok(()),
+                Err(e) => e,
+            };
+            if tries > 0 && n >= tries {
+                break Err(e);
+            }
+            n += 1;
+            // ponytail: a dial in progress can't be cancelled (RasDial runs synchronously); the wait can
+            for left in (1..=wait.max(1)).rev() {
+                if self.dial_cancel.load(Relaxed) || self.dial_now.swap(false, Relaxed) {
+                    break;
+                }
+                say(Some(format!("{e}\n{}", crate::i18n::trf("Redial  %ld", &[&left]))));
+                thread::sleep(Duration::from_secs(1));
+            }
+            if self.dial_cancel.load(Relaxed) {
+                break Err(e);
+            }
+        };
+        say(None);
+        r
+    }
+
+    pub fn start(self: &Arc<Self>, job: &Arc<Job>) {
+        if self.settings().dial_on && !crate::win::ras_connected() {
+            // dial first, off the UI thread; the download starts once connected
+            let (core, job) = (self.clone(), job.clone());
+            job.info().status = Status::Connecting;
+            thread::spawn(move || match core.ensure_online() {
+                Ok(()) => core.start_now(&job),
+                Err(e) => job.info().status = Status::Error(e),
+            });
+            return;
+        }
+        self.start_now(job);
+    }
+
+    fn start_now(&self, job: &Arc<Job>) {
         let url = job.info().url.clone();
         {
             let s = self.settings();
@@ -908,7 +1009,15 @@ impl Core {
                 job.info().conns = *n;
             }
         }
-        job.start(self.agent(&url), self.limiter.clone());
+        // a download from the browser that failed before goes through the browser's own proxy
+        let (bp, ua, on) = (job.info().browser_proxy.clone(), self.settings().user_agent.clone(), self.settings().proxy_browser);
+        let bp = match bp.strip_prefix("pac:") {
+            Some(pac) => crate::win::pac_proxy(pac, &url).map_or(String::new(), |hp| proxy_url("http", &hp, "", "", "")),
+            None => bp,
+        };
+        // ponytail: used from the next start (Resume, queue retries), not by restarting the failed one at once
+        let agent = if on && !bp.is_empty() && job.fails.load(Relaxed) > 0 { engine::agent(&bp, &ua) } else { self.agent(&url) };
+        job.start(agent, self.limiter.clone());
     }
 
     pub fn queue_running(&self, q: u32) -> bool {
@@ -985,7 +1094,7 @@ impl Core {
     /// Options -> Connection "Download limits". The window starts with the first counted byte and lasts
     /// `quota_hours`; reaching 98% of the quota stops every download until the window ends, then the
     /// stopped downloads resume (NDM's "will be resumed automatically at ..." message).
-    fn tick_quota(&self) {
+    fn tick_quota(self: &Arc<Self>) {
         let (on, mb, hours, warn) = {
             let s = self.settings();
             (s.quota_on, s.quota_mb, s.quota_hours.clamp(1, 23), s.quota_warn)
@@ -1032,7 +1141,7 @@ impl Core {
         self.quota.lock().unwrap().stopped.is_some()
     }
 
-    fn tick_queue(&self) {
+    fn tick_queue(self: &Arc<Self>) {
         if self.quota_blocked() {
             return;
         }
@@ -1301,7 +1410,7 @@ impl Core {
             if p.action != 0 {
                 let ids = core.grab_files(&mut files, &p.opts, p.save_mode, &p.save_cat, &p.folder, true);
                 let sc = &p.sched;
-                if sc.exit_done || sc.off_done || sc.open_on {
+                if sc.exit_done || sc.off_done || sc.open_on || sc.hangup {
                     core.grab_watch.lock().unwrap().push((ids, sc.clone()));
                 }
             }
@@ -1331,6 +1440,33 @@ impl Core {
     }
 
     /// Stop everything (so segment progress is final), then save.
+    /// "Use advanced browser integration" (`on`), done without NDM's network driver: Windows' proxy for
+    /// plain http is set to NDM's (`proxy_conn`) and the user's own proxy kept for the other protocols;
+    /// off puts the old setting back. Run at start (on), on Options OK and at exit (off, so http works
+    /// while NDM isn't running).
+    pub fn apply_integration(&self, on: bool) {
+        let mut s = self.settings();
+        match (on, s.saved_proxy.clone()) {
+            (true, None) => {
+                let old = crate::win::system_proxy();
+                let mut server = vec![format!("http=127.0.0.1:{PROXY_PORT}")];
+                if old.0 && old.1.contains('=') {
+                    server.extend(old.1.split(';').filter(|p| !p.trim().is_empty() && !p.starts_with("http=")).map(String::from));
+                } else if old.0 && !old.1.trim().is_empty() {
+                    server.extend(["https", "ftp"].map(|k| format!("{k}={}", old.1.trim())));
+                }
+                let bypass = if old.0 && !old.2.is_empty() { old.2.clone() } else { "<local>".into() };
+                crate::win::set_system_proxy(true, &server.join(";"), &bypass);
+                s.saved_proxy = Some(old);
+            }
+            (false, Some((was_on, server, bypass))) => {
+                crate::win::set_system_proxy(was_on, &server, &bypass);
+                s.saved_proxy = None;
+            }
+            _ => {}
+        }
+    }
+
     pub fn shutdown(&self) {
         let jobs = self.jobs();
         jobs.iter().for_each(|j| j.stop());
@@ -1397,7 +1533,22 @@ impl Core {
     /// Localhost endpoint for the browser extension: POST /add with `X-NDM: 1`.
     /// Web pages can't send that header cross-origin without a CORS preflight, which we refuse,
     /// and we also reject any Origin that isn't a browser extension.
-    pub fn spawn_server(self: &Arc<Self>, tx: Sender<Incoming>, notify: impl Fn() + Send + 'static) {
+    pub fn spawn_server(self: &Arc<Self>, tx: Sender<Incoming>, notify: impl Fn() + Send + Sync + 'static) {
+        let notify = Arc::new(notify);
+        if let Ok(l) = TcpListener::bind(("127.0.0.1", PROXY_PORT)) {
+            let (core, tx, notify) = (self.clone(), tx.clone(), notify.clone());
+            thread::spawn(move || {
+                for c in l.incoming().flatten() {
+                    let (core, tx, notify) = (core.clone(), tx.clone(), notify.clone());
+                    thread::spawn(move || {
+                        if let Some(inc) = proxy_conn(&core, c) {
+                            let _ = tx.send(inc);
+                            notify();
+                        }
+                    });
+                }
+            });
+        }
         let core = self.clone();
         thread::spawn(move || {
             let l = match TcpListener::bind(("127.0.0.1", PORT)) {
@@ -1447,6 +1598,68 @@ impl Core {
     }
 }
 
+/// One program's connection to NDM's http proxy ("Use advanced browser integration"): the request goes
+/// to the server; a download the browser-capture rules want (`captures`, `wants`) is returned for the app
+/// and the program gets NDM's 204 (its driver's "HTTP/1.0 204 Intercepted by the NDM Advanced
+/// Integration", ndmwfp64.sys); anything else is passed through unchanged.
+fn proxy_conn(core: &Core, client: std::net::TcpStream) -> Option<Incoming> {
+    let head = |r: &mut dyn BufRead| -> Option<(String, Vec<(String, String)>)> {
+        let mut first = String::new();
+        r.read_line(&mut first).ok()?;
+        let mut h = vec![];
+        loop {
+            let mut l = String::new();
+            if r.read_line(&mut l).ok()? == 0 || l.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = l.split_once(':') {
+                h.push((k.trim().to_string(), v.trim().to_string()));
+            }
+        }
+        Some((first.trim_end().to_string(), h))
+    };
+    let get = |h: &[(String, String)], k: &str| h.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map_or(String::new(), |x| x.1.clone());
+    let hop = |k: &str| ["connection", "proxy-connection", "keep-alive", "proxy-authorization"].iter().any(|x| k.eq_ignore_ascii_case(x));
+    let mut cr = BufReader::new(client.try_clone().ok()?);
+    let (line, h) = head(&mut cr)?;
+    let mut p = line.splitn(3, ' ');
+    let (method, target, ver) = (p.next()?.to_string(), p.next()?.to_string(), p.next().unwrap_or("HTTP/1.1").to_string());
+    let u = url::Url::parse(&target).ok().filter(|u| u.scheme() == "http")?;
+    let mut out = &client;
+    let Ok(mut server) = std::net::TcpStream::connect((u.host_str()?, u.port_or_known_default()?)) else {
+        let _ = out.write_all(b"HTTP/1.0 502 Bad Gateway\r\n\r\n");
+        return None;
+    };
+    // ponytail: one request per connection (Connection: close both ways); keep-alive if pages get slow
+    let mut req = format!("{method} {} {ver}\r\n", &u[url::Position::BeforePath..]);
+    h.iter().filter(|(k, _)| !hop(k)).for_each(|(k, v)| req += &format!("{k}: {v}\r\n"));
+    server.write_all(format!("{req}Connection: close\r\n\r\n").as_bytes()).ok()?;
+    let body: u64 = get(&h, "content-length").parse().unwrap_or(0);
+    std::io::copy(&mut (&mut cr).take(body), &mut server).ok()?;
+    let mut sr = BufReader::new(server.try_clone().ok()?);
+    let (status, rh) = head(&mut sr)?;
+    let code = status.split(' ').nth(1).unwrap_or("");
+    if method == "GET" && (code == "200" || code == "206") {
+        let inc = Incoming {
+            url: target.clone(),
+            referrer: get(&h, "referer"),
+            cookies: get(&h, "cookie"),
+            filename: engine::disposition_name(&get(&rh, "content-disposition")).unwrap_or_default(),
+            mime: get(&rh, "content-type").split(';').next().unwrap_or("").trim().to_string(),
+            ..Default::default()
+        };
+        if core.captures(&get(&h, "user-agent")) && core.wants(&inc) {
+            let _ = out.write_all(b"HTTP/1.0 204 Intercepted by NDM\r\n\r\n");
+            return Some(inc);
+        }
+    }
+    let mut resp = format!("{status}\r\n");
+    rh.iter().filter(|(k, _)| !hop(k)).for_each(|(k, v)| resp += &format!("{k}: {v}\r\n"));
+    out.write_all(format!("{resp}Connection: close\r\n\r\n").as_bytes()).ok()?;
+    let _ = std::io::copy(&mut sr, &mut out);
+    None
+}
+
 /// An extension request: (path, body, User-Agent) of `POST /add` or `POST /config`.
 fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
     let mut r = BufReader::new(s);
@@ -1476,6 +1689,59 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Changes Windows' real proxy setting for a moment: run by hand (`cargo test -- --ignored`).
+    #[test]
+    #[ignore]
+    fn integration_restores_system_proxy() {
+        let core = Core::load();
+        core.settings().saved_proxy = None;
+        let before = crate::win::system_proxy();
+        core.apply_integration(true);
+        let (on, server, _) = crate::win::system_proxy();
+        assert!(on && server.starts_with(&format!("http=127.0.0.1:{PROXY_PORT}")), "{server}");
+        assert_eq!(core.settings().proxy_for("http://x.com/a"), if before.0 { core.settings().proxy_for("http://x.com/a") } else { String::new() }, "NDM's own downloads skip its proxy");
+        core.apply_integration(false);
+        assert_eq!(crate::win::system_proxy(), before);
+    }
+
+    #[test]
+    fn integration_proxy() {
+        // a server with a page and a file; the proxy passes the page through and takes the file
+        let srv = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = srv.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for s in srv.incoming().flatten() {
+                let mut r = BufReader::new(&s);
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                loop {
+                    let mut l = String::new();
+                    if r.read_line(&mut l).unwrap() <= 2 {
+                        break;
+                    }
+                }
+                let (ty, body) = if line.contains("/a.zip") { ("application/zip", "zipdata") } else { ("text/html", "<html>hi</html>") };
+                let _ = (&s).write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {ty}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+            }
+        });
+        let core = Core::load();
+        let px = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = px.local_addr().unwrap();
+        let ask = |path: &str| {
+            let c = std::net::TcpStream::connect(addr).unwrap();
+            (&c).write_all(format!("GET http://127.0.0.1:{port}{path} HTTP/1.1\r\nHost: x\r\nUser-Agent: curl/8\r\nProxy-Connection: keep-alive\r\n\r\n").as_bytes()).unwrap();
+            let inc = proxy_conn(&core, px.accept().unwrap().0);
+            let mut got = String::new();
+            BufReader::new(&c).read_to_string(&mut got).unwrap();
+            (inc, got)
+        };
+        let (inc, got) = ask("/page.html");
+        assert!(inc.is_none() && got.starts_with("HTTP/1.1 200") && got.ends_with("<html>hi</html>"), "{got}");
+        let (inc, got) = ask("/a.zip");
+        assert!(got.starts_with("HTTP/1.0 204"), "{got}");
+        assert_eq!(inc.unwrap().url, format!("http://127.0.0.1:{port}/a.zip"));
+    }
 
     #[test]
     fn site_logins() {

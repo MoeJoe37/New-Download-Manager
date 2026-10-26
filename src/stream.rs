@@ -545,12 +545,15 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     };
     let get = |u: &str| text(agent, u, &referrer, &cookies);
     let mut tracks = plan(&get, &url)?;
-    for t in tracks.iter_mut().filter(|t| t.whole && t.parts.len() == 1) {
-        // a single file: 4 MiB byte ranges, so it downloads over several connections and resumes
-        if let Ok(engine::Probe { size: Some(len), ranges: true, .. }) = engine::probe(agent, &t.parts[0].url, &referrer, &cookies) {
-            let p = t.parts.remove(0);
-            t.parts = (0..len).step_by(PIECE as usize).map(|a| Part { range: Some((a, (a + PIECE).min(len) - 1)), ..p.clone() }).collect();
-        }
+    for t in tracks.iter_mut().filter(|t| t.whole) {
+        // each period's single file: 4 MiB byte ranges, so it downloads over several connections and resumes
+        t.parts = std::mem::take(&mut t.parts)
+            .into_iter()
+            .flat_map(|p| match (p.range, engine::probe(agent, &p.url, &referrer, &cookies)) {
+                (None, Ok(engine::Probe { size: Some(len), ranges: true, .. })) => (0..len).step_by(PIECE as usize).map(|a| Part { range: Some((a, (a + PIECE).min(len) - 1)), ..p.clone() }).collect(),
+                _ => vec![p],
+            })
+            .collect();
     }
     if job.stopping() {
         return Ok(false);
@@ -775,8 +778,15 @@ fn timed<'a>(whole: bool, parts: &'a [Part], file: &'a dyn Fn(usize) -> PathBuf)
     let on_disk = (0..parts.len()).filter(move |k| file(*k).exists());
     let read = move |k: usize| fs::read(file(k)).map_err(|e| e.to_string());
     if whole {
-        let shift = parts.first().map_or(0.0, |p| p.shift);
-        Box::new(remux::Regroup::new(on_disk.map(read), remux::Kind::Mp4).map(move |u| (u, shift)))
+        // one file per period: each is re-cut on its own and moved by its own period's shift
+        let mut runs: Vec<(&str, f64, Vec<usize>)> = vec![];
+        for k in on_disk {
+            match runs.last_mut() {
+                Some(r) if r.0 == parts[k].url => r.2.push(k),
+                _ => runs.push((&parts[k].url, parts[k].shift, vec![k])),
+            }
+        }
+        Box::new(runs.into_iter().flat_map(move |(_, shift, ks)| remux::Regroup::new(ks.into_iter().map(read), remux::Kind::Mp4).map(move |u| (u, shift))))
     } else {
         Box::new(on_disk.map(move |k| (read(k), parts[k].shift)))
     }
@@ -885,6 +895,60 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
         let _ = fs::remove_file(from);
     }
     Ok(())
+}
+
+/// mms / rtmp / rtsp links (NDM's MMS and RTSP support, clipboard monitor 0x5b6d70 takes mms too).
+pub fn is_media_url(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    ["mms://", "mmsh://", "mmst://", "rtmp://", "rtmps://", "rtmpe://", "rtmpt://", "rtsp://"].iter().any(|p| u.starts_with(p))
+}
+
+/// Records an mms / rtmp / rtsp stream with ffmpeg (on PATH), copying the streams as they come; the
+/// file grows as `<file>` and Stop ends the recording (kept, like a stopped live stream).
+// ponytail: ffmpeg speaks these protocols; a native MMS/RTMP client if ffmpeg can't be assumed
+pub fn run_media(job: &Job) -> Result<bool, String> {
+    use std::io::BufRead;
+    use std::os::windows::process::CommandExt;
+    let (url, dest) = {
+        let mut i = job.info();
+        if Path::new(&i.name).extension().is_none() {
+            let e = if i.url.to_ascii_lowercase().starts_with("rtmp") { "flv" } else if i.url.to_ascii_lowercase().starts_with("mms") { "wmv" } else { "mp4" };
+            i.name = format!("{}.{e}", if i.name.is_empty() { "stream" } else { &i.name });
+        }
+        fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
+        (i.url.clone(), i.path())
+    };
+    let mut child = std::process::Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-nostdin", "-progress", "pipe:1", "-i"])
+        .arg(&url)
+        .args(["-c", "copy"])
+        .arg(&dest)
+        .stdout(std::process::Stdio::piped())
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn()
+        // without ffmpeg NDM can't speak the protocol: NDM's own message for that (string 20516)
+        .map_err(|_| crate::i18n::trf("\"%s\" data transmission protocol is not supported by NDM at this time. Or it might be a spelling error, therefore please check the spelling, and try again.", &[&url.split("://").next().unwrap_or("")]))?;
+    let out = child.stdout.take().unwrap();
+    let mut stopped = false;
+    for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+        if let Some(n) = line.strip_prefix("total_size=").and_then(|n| n.parse::<u64>().ok()) {
+            job.info().segs = vec![Seg { start: 0, next: n, stop: None, info: crate::i18n::tr("Receiving data..."), owned: false }];
+        }
+        if job.stopping() {
+            let _ = child.kill();
+            stopped = true;
+            break;
+        }
+    }
+    let ok = child.wait().is_ok_and(|s| s.success()) || stopped;
+    let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    if !ok || size == 0 {
+        return Err(crate::i18n::tr("Cannot download this file."));
+    }
+    let mut i = job.info();
+    i.size = Some(size);
+    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false }];
+    Ok(true)
 }
 
 /// Mix video and audio with ffmpeg if it is installed (on PATH).
@@ -1153,6 +1217,25 @@ mod tests {
         let t = dash("http://h/x.mpd", &same, 0.0).unwrap();
         let urls: Vec<&str> = t[0].parts.iter().map(|p| p.url.as_str()).collect();
         assert_eq!(urls, ["http://h/a/1.m4s", "http://h/a/2.m4s", "http://h/a/3.m4s"]);
+    }
+
+    #[test]
+    fn segmentbase_periods_keep_their_shift() {
+        // two periods, one whole file each, fetched in two byte ranges: each file's fragments get its own shift
+        let dir = std::env::temp_dir().join(format!("ndm_sb_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = |m: &[u8]| [mkbox(b"ftyp", b"iso6"), mkbox(b"moov", b""), mkbox(b"moof", b""), mkbox(b"mdat", m)].concat();
+        let (a, b) = (file(b"A"), file(b"B"));
+        let pieces = [(&a[..10], "a", 1.0), (&a[10..], "a", 1.0), (&b[..10], "b", 9.0), (&b[10..], "b", 9.0)];
+        let parts: Vec<Part> = pieces.iter().map(|(_, u, s)| Part { url: u.to_string(), range: None, key: None, seq: 0, shift: *s }).collect();
+        for (k, (bytes, ..)) in pieces.iter().enumerate() {
+            fs::write(dir.join(k.to_string()), bytes).unwrap();
+        }
+        let f = |k: usize| dir.join(k.to_string());
+        let out: Vec<(Vec<u8>, f64)> = timed(true, &parts, &f).map(|(u, s)| (u.unwrap(), s)).collect();
+        let _ = fs::remove_dir_all(&dir);
+        let shift_of = |m: &[u8]| out.iter().find(|(u, _)| u.windows(5).any(|w| w == [b"mdat", m].concat())).map(|x| x.1);
+        assert_eq!((shift_of(b"A"), shift_of(b"B")), (Some(1.0), Some(9.0)));
     }
 
     #[test]
