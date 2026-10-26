@@ -756,7 +756,10 @@ enum Dialog {
     /// processing", "Don't ask me again"; `batch` says which Options tick the last one clears.
     QueuePick { ids: Vec<u64>, q: String, start: bool, never: bool, batch: bool },
     /// "Saving the project of NDM Grabber" (template 269); `orig` = renaming that project (no `proj`).
-    GrabSave { name: String, orig: Option<String>, quiet: bool, proj: Option<Box<core::GrabProject>> },
+    GrabSave { name: String, orig: Option<String>, quiet: bool, proj: Option<Box<core::GrabProject>>, sched: bool },
+    /// "To use project scheduler you should save the project at first. Save the project now?" NDM
+    /// 0x4e8c80, Yes / No) for Schedule the project on an unsaved project.
+    GrabSchedAsk { proj: Box<core::GrabProject> },
     /// "Schedule the grabber project" (template 284), edited copy.
     GrabSched { p: Box<core::GrabProject> },
     /// "Connecting to the site" (template 279): the start page wants a login.
@@ -831,6 +834,8 @@ struct App {
     grab_cookies: Option<String>,
     /// Project -> Load... (template 270): the project the grabber window opens next.
     grab_load: Option<String>,
+    /// The name the open grabber project was just saved under (Save / save before scheduling).
+    grab_saved_as: Option<String>,
     /// Grabber Thumbnails View: decoded pictures (None = not a picture).
     thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
     /// The grabber's "Add Filter" popup text.
@@ -1117,6 +1122,7 @@ impl App {
             grab_auth: None,
             grab_cookies: None,
             grab_load: None,
+            grab_saved_as: None,
             thumbs: HashMap::new(),
             grab_filter_buf: String::new(),
             type_names: HashMap::new(),
@@ -1279,13 +1285,37 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 self.open(Dialog::Grabber { step: 0, adv: false, node: 1, opts: p.opts, save_mode: p.save_mode, save_cat: p.save_cat, folder: p.folder, crawl: Some(c) });
             }
             1 => self.open(Dialog::GrabSched { p: Box::new(p) }),
-            2 => self.open(Dialog::GrabSave { name: name.to_string(), orig: Some(name.to_string()), quiet: false, proj: None }),
+            2 => self.open(Dialog::GrabSave { name: name.to_string(), orig: Some(name.to_string()), quiet: false, proj: None, sched: false }),
             _ => {
-                self.core.settings().grab_projects.retain(|p| p.opts.name != name);
+                let mut s = self.core.settings();
+                s.grab_projects.retain(|p| p.opts.name != name);
+                s.grab_recent.retain(|n| n != name);
+                drop(s);
                 self.cat = Cat::Grabber(None);
                 self.core.save();
             }
         }
+        if k == 0 {
+            Self::touch_recent(&mut self.core.settings(), name);
+        }
+    }
+
+    /// Options -> Schedule the project / toolbar: the scheduler (284) for a saved project, else NDM's
+    /// "save it first?" question.
+    fn grab_schedule(&mut self, proj: core::GrabProject, saved: bool) {
+        if saved {
+            let name = proj.opts.name.trim().to_string();
+            self.project_cmd(1, &name);
+        } else {
+            self.open(Dialog::GrabSchedAsk { proj: Box::new(proj) });
+        }
+    }
+
+    /// `name` to the top of Recent Projects (4 kept).
+    fn touch_recent(s: &mut Settings, name: &str) {
+        s.grab_recent.retain(|n| n != name);
+        s.grab_recent.insert(0, name.to_string());
+        s.grab_recent.truncate(4);
     }
 
     /// Store a grabber project under `name` (replacing one of that name, or `orig` when renaming).
@@ -1302,10 +1332,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     None => s.grab_projects.push(p),
                 }
+                Self::touch_recent(&mut s, name);
             }
             None => {
                 if let Some(x) = s.grab_projects.iter_mut().find(|x| Some(x.opts.name.as_str()) == orig) {
                     x.opts.name = name.to_string();
+                }
+                for n in s.grab_recent.iter_mut().filter(|n| Some(n.as_str()) == orig) {
+                    *n = name.to_string();
                 }
                 if matches!(&self.cat, Cat::Grabber(Some(c)) if Some(c.as_str()) == orig) {
                     self.cat = Cat::Grabber(Some(name.to_string()));
@@ -2824,6 +2858,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Batch { .. } => ("Batch download".into(), tpl(316.0, 238.0)),
             Dialog::QueuePick { .. } => (TITLE.into(), tpl(161.0, 89.0)),
             Dialog::GrabSave { .. } => ("Saving the project of NDM Grabber".into(), tpl(218.0, 75.0)),
+            Dialog::GrabSchedAsk { .. } => ("Schedule the grabber project".into(), tpl(260.0, 60.0)),
             Dialog::GrabSched { .. } => ("Schedule the grabber project".into(), tpl(440.0, 219.0)),
             Dialog::GrabLogin { .. } => ("Connecting to the site".into(), tpl(273.0, 138.0)),
             Dialog::Export { .. } => ("Export download list".into(), tpl(214.0, 47.0)),
@@ -4621,7 +4656,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 !(ok || d.button(98.0, 53.0, 50.0, 14.0, "Cancel", true))
             }
-            Dialog::GrabSave { name, orig, quiet, proj } => {
+            Dialog::GrabSave { name, orig, quiet, proj, sched } => {
                 let mut d = dlu::D::new(ui);
                 d.label(7.0, 6.0, 204.0, 9.0, "Save this project with the following name");
                 d.edit(7.0, 19.0, 204.0, 14.0, name, true);
@@ -4634,9 +4669,35 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         self.core.settings().grab_quiet = *quiet;
                     }
                     let p = proj.take().map(|p| *p);
-                    self.save_project(name.trim(), orig.as_deref(), p);
+                    let n = name.trim().to_string();
+                    let taken = orig.is_none() && p.as_ref().is_some_and(|p| p.opts.name.trim() != n) && self.core.settings().grab_projects.iter().any(|x| x.opts.name == n);
+                    if taken {
+                        // 20615: another project already has this name
+                        *proj = p.map(Box::new);
+                        self.open(Dialog::Info { title: "Saving the project of NDM Grabber".into(), text: i18n::trf("The project with \"%s\" name already exists. Please select another name.", &[&n]) });
+                        return true;
+                    }
+                    if p.is_some() {
+                        self.grab_saved_as = Some(n.clone());
+                    }
+                    self.save_project(&n, orig.as_deref(), p);
+                    if *sched {
+                        self.project_cmd(1, &n);
+                    }
                 }
                 !(ok || d.button(113.0, 54.0, 50.0, 14.0, "Cancel", true))
+            }
+            Dialog::GrabSchedAsk { proj } => {
+                let mut d = dlu::D::new(ui);
+                d.text(7.0, 7.0, 246.0, 20.0, "To use project scheduler you should save the project at first. Save the project now?");
+                let yes = d.button(140.0, 40.0, 50.0, 14.0, "Yes", true);
+                if yes {
+                    let p = (**proj).clone();
+                    let name = p.opts.name.trim().to_string();
+                    let quiet = self.core.settings().grab_quiet;
+                    self.open(Dialog::GrabSave { name, orig: None, quiet, proj: Some(Box::new(p)), sched: true });
+                }
+                !(yes || d.button(203.0, 40.0, 50.0, 14.0, "No", true))
             }
             Dialog::GrabSched { p } => {
                 let mut d = dlu::D::new(ui);
@@ -4833,6 +4894,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.project_cmd(0, &n);
                     return false;
                 }
+                if let Some(n) = self.grab_saved_as.take() {
+                    opts.name = n;
+                }
                 if let Some(ck) = self.grab_cookies.take() {
                     opts.cookies = ck;
                     *crawl = Some(self.crawl(ctx, opts));
@@ -4875,7 +4939,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         if quiet && !taken {
                             self.save_project(&name, None, Some(proj));
                         } else {
-                            self.open(Dialog::GrabSave { name, orig: None, quiet, proj: Some(Box::new(proj)) });
+                            self.open(Dialog::GrabSave { name, orig: None, quiet, proj: Some(Box::new(proj)), sched: false });
                         }
                     }
                     return keep;
@@ -4885,7 +4949,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let full = ui.max_rect();
                 let cmd = {
                     let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), GRAB_MENU))));
-                    self.grab_menu(&mut bar, saved)
+                    self.grab_menu(&mut bar)
                 };
                 match cmd {
                     Some(GrabCmd::New) => {
@@ -4894,7 +4958,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     Some(GrabCmd::Save) => {
                         let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
-                        self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)) });
+                        self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)), sched: false });
                     }
                     Some(GrabCmd::SaveTpl) => {
                         let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
@@ -4904,7 +4968,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         self.project_cmd(0, &n);
                         return false;
                     }
-                    Some(GrabCmd::Schedule) => self.project_cmd(1, opts.name.trim()),
+                    Some(GrabCmd::Schedule) => {
+                        let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
+                        self.grab_schedule(proj, saved);
+                    }
                     Some(GrabCmd::Close) => return false,
                     None => {}
                 }
@@ -4929,7 +4996,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 d.ui.painter().rect_stroke(pic, 0.0, egui::Stroke::new(1.0_f32, Color32::BLACK), egui::StrokeKind::Inside);
                 let adv_label = if *adv { format!("<< {}", tr("Advanced")) } else { format!("{} >>", tr("Advanced")) };
-                let on = |d: &mut dlu::D, x: f32, y: f32, w: f32, t: &str| drop(d.at(x, y, w, 10.0, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut true, tr(t)))));
                 // NDM's own English where its language files still carry older words
                 let en = |new: &str, old: &str| if i18n::current().is_empty() { new.to_string() } else { tr(old) };
                 match *step {
@@ -5016,7 +5082,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         if link(&mut d, 77.0, 261.0, "What is the number of link levels?", Color32::from_rgb(0, 0, 255)) {
                             help("grabber.chm", "", true);
                         }
-                        on(&mut d, 109.0, 91.0, 240.0, "Ignore popup windows"); // NDM never opens popups
+                        let mut ignore = !opts.popups;
+                        if d.check(109.0, 91.0, 240.0, 10.0, &mut ignore, "Ignore popup windows").changed() {
+                            opts.popups = !ignore;
+                        }
                         d.at(109.0, 104.0, 240.0, 10.0, |ui| ui.add_enabled(ws, egui::Checkbox::new(&mut opts.no_parent, tr("Don't explore parent directories"))));
                         d.check(109.0, 117.0, 240.0, 10.0, &mut opts.main_domain, "Explore all sites within the main domain");
                         d.check(109.0, 130.0, 240.0, 10.0, &mut opts.js, "Process JavaScript");
@@ -5448,9 +5517,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     }
 
     /// The grabber's menu bar NDMmenu 256: Project / Options / Help).
-    fn grab_menu(&mut self, ui: &mut egui::Ui, saved: bool) -> Option<GrabCmd> {
+    fn grab_menu(&mut self, ui: &mut egui::Ui) -> Option<GrabCmd> {
         let (mut cmd, mut load, mut settings) = (None, false, false);
-        let recent: Vec<String> = self.core.settings().grab_projects.iter().rev().take(4).map(|p| p.opts.name.clone()).collect();
+        let recent: Vec<String> = {
+            let s = self.core.settings();
+            s.grab_recent.iter().filter(|n| s.grab_projects.iter().any(|p| p.opts.name == **n)).cloned().collect()
+        };
         egui::menu::bar(ui, |ui| {
             ui.menu_button(tr("Project"), |ui| {
                 if ui.button(tr("New")).clicked() {
@@ -5470,15 +5542,17 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.close_menu();
                 }
                 ui.separator();
-                ui.add_enabled_ui(!recent.is_empty(), |ui| {
-                    ui.menu_button(tr("Recent Projects"), |ui| {
-                        for n in &recent {
-                            if ui.button(n.as_str()).clicked() {
-                                cmd = Some(GrabCmd::Recent(n.clone()));
-                                ui.close_menu();
-                            }
+                // NDM: "1 name" ... "4 name", or a greyed "Recent..." when there are none
+                ui.menu_button(tr("Recent Projects"), |ui| {
+                    if recent.is_empty() {
+                        ui.add_enabled(false, egui::Button::new(tr("Recent...")));
+                    }
+                    for (k, n) in recent.iter().enumerate() {
+                        if ui.button(format!("{} {n}", k + 1)).clicked() {
+                            cmd = Some(GrabCmd::Recent(n.clone()));
+                            ui.close_menu();
                         }
-                    })
+                    }
                 });
                 ui.separator();
                 if ui.button(tr("Close")).clicked() {
@@ -5491,7 +5565,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     settings = true;
                     ui.close_menu();
                 }
-                if ui.add_enabled(saved, egui::Button::new(tr("Schedule the project"))).clicked() {
+                if ui.button(tr("Schedule the project")).clicked() {
                     cmd = Some(GrabCmd::Schedule);
                     ui.close_menu();
                 }
@@ -5642,16 +5716,17 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let full = ui.max_rect();
         let cmd = {
             let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), GRAB_MENU))));
-            self.grab_menu(&mut bar, saved)
+            self.grab_menu(&mut bar)
         };
         let (mut keep, mut back, mut again) = (true, false, false);
+        let mut action = None;
         match cmd {
             Some(GrabCmd::New) => back = true,
             Some(GrabCmd::Save) => {
                 let st = c.state.lock().unwrap();
                 let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
                 drop(st);
-                self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)) });
+                self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)), sched: false });
             }
             Some(GrabCmd::SaveTpl) => {
                 let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), ..Default::default() };
@@ -5661,7 +5736,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 self.project_cmd(0, &n);
                 keep = false;
             }
-            Some(GrabCmd::Schedule) => self.project_cmd(1, opts.name.trim()),
+            Some(GrabCmd::Schedule) => action = Some(8),
             Some(GrabCmd::Close) => keep = false,
             None => {}
         }
@@ -5679,12 +5754,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             (5, "Stop download checked files", running),
             (6, "Add checked files to the main NDM list and to the download queue", checked > 0),
             (7, "Update all", done),
-            (8, "Schedule the project", saved),
+            (8, "Schedule the project", true),
             (9, "Show grabber statistics", true),
         ];
         let size = Vec2::splat(24.0 / ppp);
         let mut x = tb.left() + 4.0;
-        let mut action = None;
         for (k, (img, tip, enabled)) in buttons.into_iter().enumerate() {
             if k == 2 {
                 ui.painter().vline(x + 3.0, tb.y_range().shrink(5.0), egui::Stroke::new(1.0_f32, Color32::from_gray(170)));
@@ -5841,7 +5915,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 jobs.values().filter(|j| j.running()).for_each(|j| j.stop());
             }
             Some(6) => self.grab(c, opts, save_mode, save_cat, folder, false),
-            Some(8) => self.project_cmd(1, opts.name.trim()),
+            Some(8) => {
+                let st = c.state.lock().unwrap();
+                let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
+                drop(st);
+                self.grab_schedule(proj, saved);
+            }
             Some(9) => self.open(Dialog::GrabStats { crawl: c.clone() }),
             _ => {}
         }

@@ -292,6 +292,8 @@ pub struct Settings {
     /// name is unique" of "Saving the project of NDM Grabber" (template 269).
     pub grab_projects: Vec<GrabProject>,
     pub grab_quiet: bool,
+    /// Project -> Recent Projects: the last 4 projects opened or saved, newest first NDM.
+    pub grab_recent: Vec<String>,
     /// "Save current settings as a template" (34020, name box 268): `opts.name` is the template's name.
     pub grab_templates: Vec<GrabProject>,
     /// Grabber Settings (template 262, saved by NDM as GrabberSts nATSTFiles 1-20,
@@ -518,6 +520,7 @@ impl Default for Settings {
             grab_projects: Vec::new(),
             grab_quiet: false,
             grab_templates: Vec::new(),
+            grab_recent: Vec::new(),
             // NDM: +0xb0 = 4, +0x11c = 4, +0x112 / +0x113 / +0x114 = 1
             grab_explore: 4,
             grab_dl: 4,
@@ -759,6 +762,10 @@ impl Core {
         }
         if let Some(old) = s.old_sched.take() {
             s.queues[0].sched = old;
+        }
+        if s.grab_recent.is_empty() {
+            // lists saved before Recent Projects was kept: the newest saved projects
+            s.grab_recent = s.grab_projects.iter().rev().take(4).map(|p| p.opts.name.clone()).collect();
         }
         if let Some(old) = s.old_max_active.take() {
             s.queues[0].max_active = old;

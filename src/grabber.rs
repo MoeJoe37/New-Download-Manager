@@ -62,6 +62,8 @@ pub struct Opts {
     pub cookies: String,
     /// The project template picked on step 1 (`TEMPLATES` or a saved one); "" = Custom settings.
     pub template: String,
+    /// Step 3 "Ignore popup windows" unticked: also explore the pages scripts open with window.open(...).
+    pub popups: bool,
 }
 
 /// Grabber Settings (template 262) a crawl runs with: pages explored at the same time, "Use Advanced web
@@ -430,6 +432,17 @@ pub fn links(base: &Url, html: &str, js: bool, adv: bool) -> Vec<(Url, String)> 
     out
 }
 
+/// Addresses opened in popup windows: the first string argument of each `window.open(` / `open(` call.
+pub fn popup_links(base: &Url, html: &str) -> Vec<Url> {
+    let lower = html.to_ascii_lowercase();
+    lower.match_indices("open(").filter(|(i, _)| !lower[..*i].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')).filter_map(|(i, _)| {
+        let rest = html[i + 5..].trim_start();
+        let q = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        let end = rest[1..].find(q)?;
+        resolve(base, &rest[1..end + 1])
+    }).collect()
+}
+
 fn main_domain(host: &str) -> String {
     let parts: Vec<&str> = host.rsplitn(3, '.').collect();
     if parts.len() >= 2 { format!("{}.{}", parts[1], parts[0]) } else { host.into() }
@@ -547,7 +560,10 @@ pub fn run(opts: Opts, agent: ureq::Agent, c: Arc<Crawl>, t: Tuning) {
                         if mask_match(&opts.masks, &pn) {
                             found.extend(take(&base, pn, String::new(), base.as_str(), len));
                         }
-                        let all = links(&base, &html, opts.js, t.adv);
+                        let mut all = links(&base, &html, opts.js, t.adv);
+                        if opts.popups {
+                            all.extend(popup_links(&base, &html).into_iter().map(|u| (u, String::new())));
+                        }
                         c.state.lock().unwrap().explored += all.len();
                         for (l, text) in all {
                             let name = crate::engine::url_name(l.as_str());
@@ -633,6 +649,8 @@ mod tests {
         assert_eq!(urls(adv, false, false), Vec::<String>::new());
         assert_eq!(urls(adv, false, true), ["http://h.com/d/lazy.jpg", "http://h.com/d/s.jpg", "http://h.com/l.jpg", "http://h.com/d/bg.png", "http://h.com/d/next.html"]);
         assert_eq!(page_name(&Url::parse("http://h.com/a/").unwrap()), "index.html");
+        let pop: Vec<String> = popup_links(&base, r#"<a onclick="window.open('win.html','w')">x</a><script>reopen("no.html"); open("/top.php")</script>"#).iter().map(Url::to_string).collect();
+        assert_eq!(pop, ["http://h.com/d/win.html", "http://h.com/top.php"]);
         assert_eq!(page_name(&Url::parse("http://h.com/a/view.php?id=1").unwrap()), "view.php.html");
     }
 
