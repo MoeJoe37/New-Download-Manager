@@ -3,6 +3,9 @@
 use std::path::PathBuf;
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return; // the icon resource is a Windows thing
+    }
     println!("cargo:rerun-if-changed=assets/ndm.ico");    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let kits = PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin");
     let mut sdks: Vec<PathBuf> = std::fs::read_dir(&kits).into_iter().flatten().flatten().map(|e| e.path().join(r"x64\rc.exe")).filter(|p| p.exists()).collect();

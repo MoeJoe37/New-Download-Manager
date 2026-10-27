@@ -1,6 +1,6 @@
 //! Remuxing downloaded stream pieces into one file, without ffmpeg:
 //! - MPEG-TS (H.264 / H.265 / MPEG-2 video with AAC, MP3, AC-3, E-AC-3 or Opus, what HLS sends) and packed
-//!   audio -> one MP4, as NDM saves HLS videos;
+//! audio -> one MP4, as NDM saves HLS videos;
 //! - DASH WebM video + WebM audio -> one WebM.
 //! Anything else (VC-1, DTS...) answers Ok(false) and the caller keeps the pieces as they are.
 use std::collections::{HashMap, VecDeque};

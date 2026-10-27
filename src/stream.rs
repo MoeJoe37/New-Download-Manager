@@ -444,7 +444,7 @@ fn with_ext(name: &str, ext: &str) -> String {
     format!("{stem}.{ext}")
 }
 
-/// The saved file's extension: MPEG-TS becomes MP4 (as NDM saves it), others keep the first track's.
+/// The saved file's extension: MPEG-TS becomes MP4, others keep the first track's.
 fn out_ext(tracks: &[Track]) -> &str {
     if tracks[0].ext == "ts" { "mp4" } else { &tracks[0].ext }
 }
@@ -454,11 +454,33 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
     Ok(Probe { name: engine::sanitize(&with_ext(&engine::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), stream: true })
 }
 
-fn aes_cbc(key: &[u8], mut iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
-    use windows_sys::Win32::Security::Cryptography::*;
+fn aes_cbc(key: &[u8], iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
     if key.len() != 16 || data.len() % 16 != 0 {
         return Err("bad AES-128 key or segment".into());
     }
+    let mut out = aes_cbc_raw(key, iv, data)?;
+    // PKCS#7 padding
+    if let Some(&p) = out.last() {
+        if (1..=16).contains(&p) && out.ends_with(&vec![p; p as usize]) {
+            out.truncate(out.len() - p as usize);
+        }
+    }
+    Ok(out)
+}
+
+/// AES-128-CBC, padding left in place: RustCrypto off Windows.
+#[cfg(not(windows))]
+fn aes_cbc_raw(key: &[u8], iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
+    use cbc::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
+    let mut out = data.to_vec();
+    cbc::Decryptor::<aes::Aes128>::new_from_slices(key, &iv).map_err(|e| e.to_string())?.decrypt_padded_mut::<NoPadding>(&mut out).map_err(|_| "AES decryption failed")?;
+    Ok(out)
+}
+
+/// AES-128-CBC, padding left in place: Windows' CNG.
+#[cfg(windows)]
+fn aes_cbc_raw(key: &[u8], mut iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Security::Cryptography::*;
     let mut out = vec![0u8; data.len()];
     unsafe {
         let mut h = std::ptr::null_mut();
@@ -470,12 +492,6 @@ fn aes_cbc(key: &[u8], mut iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String>
         BCryptDestroyKey(h);
         if st != 0 {
             return Err("AES decryption failed".into());
-        }
-    }
-    // PKCS#7 padding
-    if let Some(&p) = out.last() {
-        if (1..=16).contains(&p) && out.ends_with(&vec![p; p as usize]) {
-            out.truncate(out.len() - p as usize);
         }
     }
     Ok(out)
@@ -897,7 +913,7 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// mms / rtmp / rtsp links (NDM's MMS and RTSP support, clipboard monitor 0x5b6d70 takes mms too).
+/// mms / rtmp / rtsp links.
 pub fn is_media_url(url: &str) -> bool {
     let u = url.to_ascii_lowercase();
     ["mms://", "mmsh://", "mmst://", "rtmp://", "rtmps://", "rtmpe://", "rtmpt://", "rtsp://"].iter().any(|p| u.starts_with(p))
@@ -908,6 +924,7 @@ pub fn is_media_url(url: &str) -> bool {
 // ponytail: ffmpeg speaks these protocols; a native MMS/RTMP client if ffmpeg can't be assumed
 pub fn run_media(job: &Job) -> Result<bool, String> {
     use std::io::BufRead;
+    #[cfg(windows)]
     use std::os::windows::process::CommandExt;
     let (url, dest) = {
         let mut i = job.info();
@@ -953,6 +970,7 @@ pub fn run_media(job: &Job) -> Result<bool, String> {
 
 /// Mix video and audio with ffmpeg if it is installed (on PATH).
 fn ffmpeg(v: &Path, a: &Path, out: &Path) -> bool {
+    #[cfg(windows)]
     use std::os::windows::process::CommandExt;
     std::process::Command::new("ffmpeg")
         .args(["-y", "-v", "error", "-i"])
@@ -1508,5 +1526,14 @@ mod tests {
     }
 }
 
-
-
+/// Windows' process creation flags (CREATE_NO_WINDOW) mean nothing elsewhere.
+#[cfg(not(windows))]
+trait CommandExt {
+    fn creation_flags(&mut self, _flags: u32) -> &mut Self;
+}
+#[cfg(not(windows))]
+impl CommandExt for std::process::Command {
+    fn creation_flags(&mut self, _flags: u32) -> &mut Self {
+        self
+    }
+}

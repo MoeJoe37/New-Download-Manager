@@ -214,7 +214,7 @@ impl<'a> D<'a> {
         self.at(x, y, w, h, |ui| ui.checkbox(v, tr(t)))
     }
 
-    /// A checkbox for an NDM option this app doesn't implement: drawn like NDM's, disabled.
+    /// A checkbox for an option this app doesn't implement: drawn, disabled.
     pub fn check_off(&mut self, x: f32, y: f32, w: f32, h: f32, t: &str) {
         self.at(x, y, w, h, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut false, tr(t))));
     }
@@ -280,7 +280,7 @@ impl<'a> D<'a> {
     }
 
     /// Win32 tab control. Tabs wrap into rows like a multiline tab control, with the selected
-    /// row moved next to the page; an empty name forces a row break (NDM's own split). Returns the page
+    /// row moved next to the page; an empty name forces a row break. Returns the page
     /// rect in DLU.
     pub fn tabs(&mut self, x: f32, y: f32, w: f32, h: f32, tab: &mut u8, names: &[&str]) -> (f32, f32, f32, f32) {
         let mut brk = vec![false; names.iter().filter(|n| !n.is_empty()).count()];

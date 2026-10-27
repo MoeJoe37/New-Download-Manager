@@ -1,6 +1,6 @@
 """NDM's own language file: every UI string in NDM's source (src/*.rs) -> Languages/ndm_en.lng.
 
-Reads only NDM's own code, never NDM's files, so the result is NDM's to publish. A translation is a
+Reads only NDM's own code, so the result is NDM's to publish. A translation is a
 copy of ndm_en.lng named ndm_xx.lng with its `lang=` line changed and the right side of each line
 translated; NDM lists it under View -> Language (src/i18n.rs, `own`).
 
@@ -17,7 +17,7 @@ LIT = r'"((?:[^"\\]|\\.)+)"'
 CALLS = re.compile(r'(?:trf\(|tr_os\(|tr\(&?|d2?\.(?:label|label_r|text|button|check|check_off|radio|radio_off|group|page_header|readonly)\([^"\n]*?|listview\([^"\n]*?|tabs\([^"\n]*?|\(\s*)' + LIT)
 # literals that pass the pattern but are not UI text (headers, file names, formats, examples)
 NOT_UI = re.compile(
-    r"bmp$|png$|^User-Agent$|^Accept$|^Content-Length$|^X-NDM$|\[File\]|Hot$|CARGO|ndman|bundled|me:p|not a url|rundll|shell32|=$"
+    r"bmp$|png$|^User-Agent$|^Accept$|^Content-Length$|^X-NDM$|\[File\]|Hot$|CARGO|bundled|me:p|not a url|rundll|shell32|=$"
     r"|^<local>$|h:p;|^about:|^\*\.zip;|^HTTP/|^chrome-extension|^moz-extension|\.chm$|\.exe$|\.lng$|\.json$|^https?://|^%[A-Z]+%"
     # protocol and file-format tokens, HTTP headers and methods, all-caps names, formats, examples
     r"|^#EXT|^[A-Z][a-z]+(-[A-Z][a-z]+)+:?$|^[A-Z0-9_-]+:?$|^\d{3} [A-Z]|%[aHMSbY]|&amp;|^0x|^/n /d|^\d|^key\(s\) key$"
@@ -54,9 +54,7 @@ def render(items):
         "// To translate: copy to ndm_xx.lng, change the lang= line (language ID and name),",
         "// translate the text after each '=', keep %s / %d / %ld and \\n. Lines starting // are comments.",
     ]
-    # the right side is what NDM shows: NDM's wording carries NDM's name, as `i18n::brand` does at run time
-    shown = lambda s: s.replace("New Download Manager", "New Download Manager").replace("NDM", "NDM")
-    return "\n".join(head + [f"{s}={shown(s)}" for s in items]) + "\n"
+    return "\n".join(head + [f"{s}={s}" for s in items]) + "\n"
 
 
 if __name__ == "__main__":

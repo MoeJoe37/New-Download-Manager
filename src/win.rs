@@ -13,8 +13,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain([0]).collect()
 }
 
-/// The WinINet ("IE") cache's copy of `url`: (local file, its Last-Modified as an HTTP date), like NDM
-/// 0x5bcaf0 + 0x5ca0f0: a normal cache entry whose file still exists and has a modification time.
+/// The WinINet ("IE") cache's copy of `url`: (local file, its Last-Modified as an HTTP date): a normal cache entry whose file still exists and has a modification time.
 pub fn url_cache(url: &str) -> Option<(std::path::PathBuf, String)> {
     use windows_sys::Win32::Networking::WinInet::{GetUrlCacheEntryInfoW, INTERNET_CACHE_ENTRY_INFOW, NORMAL_CACHE_ENTRY};
     let u = wide(url);
@@ -187,19 +186,19 @@ pub fn own_dialogs(main: isize, dark: bool, retitle: bool, light: &[String]) {
     }
 }
 
-/// Dark or light title bar (NDM sets DWMWA_USE_IMMERSIVE_DARK_MODE the same way).
+/// Dark or light title bar.
 pub fn dark_title(hwnd: isize, dark: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
     let v: i32 = dark as i32;
     unsafe { DwmSetWindowAttribute(hwnd as HWND, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&v as *const i32).cast(), 4) };
 }
 
-/// Changes whenever anything is copied (NDM watches with SetClipboardViewer, 0x45e1b0).
+/// Changes whenever anything is copied.
 pub fn clip_seq() -> u32 {
     unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() }
 }
 
-/// Play a .wav without waiting, if the file exists NDM: PlaySoundW(path, 0, SND_ASYNC | SND_FILENAME)).
+/// Play a.wav without waiting, if the file exists.
 pub fn play_sound(path: &str) {
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME};
     if Path::new(path).is_file() {
@@ -228,7 +227,7 @@ pub fn system_dark() -> bool {
     r == 0 && data == 0
 }
 
-/// Start with Windows (HKCU Run key), like NDM's "Launch ... on startup".
+/// Start with Windows (HKCU Run key), like NDM's "Launch... on startup".
 /// Windows' (Internet Options) proxy: (ProxyEnable, ProxyServer, ProxyOverride).
 pub fn system_proxy() -> (bool, String, String) {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
@@ -243,7 +242,7 @@ pub fn system_proxy() -> (bool, String, String) {
     (r == 0 && on != 0, text("ProxyServer"), text("ProxyOverride"))
 }
 
-// ---------- Windows Dial Up / VPN (RAS), as NDMuses rasapi32 (0x4396b0, 0x43acc0, 0x4390a0) ----------
+// ---------- Windows Dial Up / VPN (RAS, rasapi32) ----------
 
 fn from_wide(s: &[u16]) -> String {
     String::from_utf16_lossy(&s[..s.iter().position(|c| *c == 0).unwrap_or(s.len())])
@@ -336,7 +335,7 @@ pub fn ras_dial(entry: &str) -> Result<(), String> {
     }
 }
 
-/// "Hang up modem when done": every dial-up / VPN connection NDM.
+/// "Hang up modem when done": every dial-up / VPN connection.
 pub fn ras_hangup_all() {
     use windows_sys::Win32::NetworkManagement::Rras::RasHangUpW;
     for c in ras_conns() {
@@ -504,7 +503,7 @@ pub fn native_host(title: &str) {
     let _ = out.write_all(&(reply.len() as u32).to_le_bytes()).and_then(|_| out.write_all(reply)).and_then(|_| out.flush());
 }
 
-/// Is a copy of this exe running (with its window `title`)? `activate` brings that window up: like NDM,
+/// Is a copy of this exe running (with its window `title`)? `activate` brings that window up:
 /// starting it again shows the running window (the only way back with "Don't show" tray icon). Only a
 /// copy of this same exe counts, so a build elsewhere still runs side by side.
 pub fn running(title: &str, activate: bool) -> bool {
@@ -554,7 +553,7 @@ pub fn exit_splash(title: &str, text: &str) {
     }
 }
 
-/// Windows' "Font" dialog (View -> Font -> Choose Font..., NDM uses ChooseFont for its list): TrueType
+/// Windows' "Font" dialog: TrueType
 /// faces only, so the face's file can be loaded. Returns (face, size in logical px).
 pub fn choose_font(owner: isize, face: &str, px: f32) -> Option<(String, f32)> {
     use windows_sys::Win32::UI::Controls::Dialogs::*;
@@ -611,7 +610,7 @@ pub fn font_file(face: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-// ---------- drop target (File -> Show drop target, NDM's CDropTargetWnd) ----------
+// ---------- drop target ----------
 
 /// Links dropped on the drop target or the main window, for the UI to take (`take_drops`).
 static DROPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -713,7 +712,7 @@ unsafe fn dropped_links(data: Ptr) -> Vec<String> {
     vec![]
 }
 
-/// Accept dropped links on `hwnd` (the main window too: "You can also drop links to NDM main window").
+/// Accept dropped links on `hwnd`.
 /// winit's own target (files only, unused here) is replaced.
 pub fn accept_drops(hwnd: isize, wake: impl Fn() + Send + Sync + 'static) {
     let _ = WAKE.set(Box::new(wake));
@@ -730,7 +729,7 @@ unsafe extern "system" fn drop_wnd_proc(h: HWND, msg: u32, w: usize, l: isize) -
         WM_NCHITTEST => HTCAPTION as isize, // drag it anywhere
         WM_NCRBUTTONUP | WM_NCLBUTTONDBLCLK => {
             if msg == WM_NCRBUTTONUP {
-                ShowWindow(h, SW_HIDE); // NDM: close it; "Show drop target" brings it back
+                ShowWindow(h, SW_HIDE); // close it; "Show drop target" brings it back
             } else {
                 show(MAIN_HWND.load(std::sync::atomic::Ordering::Relaxed));
             }
@@ -794,4 +793,30 @@ pub fn drop_target(show: bool, (iw, ih, px): &Rgba) {
 
 pub fn drop_target_visible() -> bool {
     visible(DROP_HWND.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// "Turn off computer when done": shut down with a 60 s grace period (`shutdown /a` cancels it), sleep or
+/// hibernate; `force` closes programs that would block it.
+pub fn power_off(kind: u8, force: bool) {
+    let mut c = match kind {
+        1 => {
+            let mut c = std::process::Command::new("rundll32.exe");
+            c.args(["powrprof.dll,SetSuspendState", "0,1,0"]);
+            c
+        }
+        2 => {
+            let mut c = std::process::Command::new("shutdown");
+            c.arg("/h");
+            c
+        }
+        _ => {
+            let mut c = std::process::Command::new("shutdown");
+            c.args(["/s", "/t", "60", "/c", "Download queue finished. The computer will shut down in 60 seconds."]);
+            c
+        }
+    };
+    if force && kind != 1 {
+        c.arg("/f");
+    }
+    let _ = c.spawn();
 }

@@ -51,7 +51,7 @@ pub struct Sched {
     pub start_on: bool,
     pub start_at: String,
     pub daily: bool,
-    /// Days the daily schedule runs, Sunday first (NDM's order).
+    /// Days the daily schedule runs, Sunday first.
     pub days: [bool; 7],
     pub stop_on: bool,
     pub stop_at: String,
@@ -102,7 +102,7 @@ impl Default for Sched {
     }
 }
 
-/// A download queue (NDM: Scheduler -> Queues). Each has its own schedule and "files at the same time".
+/// A download queue. Each has its own schedule and "files at the same time".
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Queue {
@@ -110,7 +110,7 @@ pub struct Queue {
     pub name: String,
     pub sched: Sched,
     pub max_active: usize,
-    /// "Periodic synchronization" (NDM's "Synchronization queue"): finished files stay in the queue and
+    /// "Periodic synchronization": finished files stay in the queue and
     /// each pass downloads again those that changed on the server.
     pub sync: bool,
     /// NDM's built-in Synchronization queue: can't be deleted.
@@ -180,9 +180,9 @@ pub struct Settings {
     pub cat_dirs: std::collections::BTreeMap<String, String>,
     pub confirm_delete: bool,
     pub autostart: bool,
-    /// Options -> General -> "Use advanced browser integration" (NDM: its network driver; NDM: `proxy_conn`).
+    /// Options -> General -> "Use advanced browser integration".
     pub adv_integration: bool,
-    /// Dial Up / VPN page (185; NDM's isUseWinDialUp, DialUpEntry, mRedialTime): the connection to dial,
+    /// Dial Up / VPN page: the connection to dial,
     /// redial attempts (0 = endlessly) and seconds between them. User name and password live in Windows.
     pub dial_on: bool,
     pub dial_entry: String,
@@ -194,12 +194,12 @@ pub struct Settings {
     pub user_agent: String,
     /// Don't take over browser downloads from these sites (space separated).
     pub skip_sites: String,
-    pub proxy_mode: u8, // 0 none, 1 system, 2 script, 3 manual (NDM's radio order)
+    pub proxy_mode: u8, // 0 none, 1 system, 2 script, 3 manual
     /// "Use automatic configuration script" address (a PAC file).
     pub pac_url: String,
     /// "Use FTP in PASV mode".
     pub ftp_pasv: bool,
-    /// "Use this proxy for protocols: http https" (NDM template 140).
+    /// "Use this proxy for protocols: http https".
     pub proxy_http: bool,
     pub proxy_https: bool,
     /// Proxy / Socks page: "Use proxy/socks from a browser's request if there are download errors for the
@@ -221,18 +221,18 @@ pub struct Settings {
     pub logins: Vec<Login>,
     /// "Always turn on Speed Limiter on startup".
     pub limit_startup: bool,
-    /// Main list columns as (NDM column index, width px), in display order (View -> Customize URL List).
+    /// Main list columns as, in display order (View -> Customize URL List).
     pub columns: Vec<(u8, u16)>,
-    /// List context menu "On Double click": open the file instead of showing properties (NDM `nDblClick` = 2).
+    /// List context menu "On Double click": open the file instead of showing properties.
     pub dbl_open: bool,
     /// Duplicate download link: NDM's DuplLinksA (0 resume / show complete, 1 numbered name, 2 overwrite)
-    /// and !RememberDuplLinksA (ask with dialog 298). NDM.
+    /// and !RememberDuplLinksA (ask with dialog 298)..
     pub dupl_action: u8,
     pub dupl_ask: bool,
     /// View -> Toolbar -> Small Buttons.
     pub small_buttons: bool,
     /// Options -> Connection "Download limits": no more than `quota_mb` every `quota_hours` (1-23).
-    /// NDM: Scheduler\isLimitEnabled, m_MBytes, m_hours, showLimitExceededWarning NDM.
+    /// Scheduler\isLimitEnabled, m_MBytes, m_hours, showLimitExceededWarning.
     pub quota_on: bool,
     pub quota_mb: u64,
     pub quota_hours: u64,
@@ -246,13 +246,12 @@ pub struct Settings {
     pub ignore_date: bool,
     /// Downloads page: "Start downloading immediately while displaying \"Download File Info\" dialog".
     pub start_at_once: bool,
-    /// Options -> Sounds: (on, .wav path) per `SOUND_EVENTS`, all off by default
-    /// (CSoundsSettings, NDM: evDownloadComplete, evDownloadFailed, evQueueStarted, evQueueFinished).
+    /// Options -> Sounds: (on, .wav path) per `SOUND_EVENTS`, all off by default.
     pub sounds: [(bool, String); 4],
     /// Options -> General "Automatically start downloading of URLs placed to clipboard" (MonitorUrlClipboard).
     pub clip_watch: bool,
     /// Options -> File types "Edit list..." (template 303): addresses never taken over automatically,
-    /// `*` wildcards (ExceptionServers, NDM.
+    /// `*` wildcards.
     pub skip_urls: Vec<String>,
     /// Template 303 "Show the dialog to add an address to the list of exceptions for a twice-cancelled download" (302).
     pub ask_exception: bool,
@@ -278,13 +277,13 @@ pub struct Settings {
     pub sel_mode: u8,
     pub sel_sites: Vec<String>,
     pub sel_mini: bool,
-    /// Tip of the Day (template 105): "Show Tips on StartUp" (NDM: TipStartUp == 0) and the next tip's index.
+    /// Tip of the Day (template 105): "Show Tips on StartUp" and the next tip's index.
     /// ponytail: index, not NDM's byte offset TipFilePos + TipTimeStamp reset; a changed file only shifts the tip.
     pub tips_startup: bool,
     pub tip_next: usize,
-    /// View -> "Classic style" (3D toolbar, +/- tree boxes) instead of "Modern style" (NDM's look).
+    /// View -> "Classic style" (3D toolbar, +/- tree boxes) instead of "Modern style".
     pub classic: bool,
-    /// View -> "NDM tray icon": 1 3D style (app icon), 2 Classic style (2D icon), 3 Don't show (NDM: TrayIcon, 0x45ada0).
+    /// View -> "NDM tray icon": 1 3D style (app icon), 2 Classic style (2D icon), 3 Don't show.
     pub tray_icon: u8,
     /// "Customize download progress dialog" (template 367, 0x435a00): Start view 0 normal / 1 minimized /
     /// 2 don't show (PrgrDlgVisiblity), Speed Limiter tab, Options on completion tab, "Hide tab" buttons.
@@ -293,7 +292,7 @@ pub struct Settings {
     /// downloads" (template 345 pops up).
     pub ask_queue_later: bool,
     pub ask_queue_batch: bool,
-    /// The "NDM Queues" note about keeping the app in the tray was shown (NDM: bShTtRIT, once ever).
+    /// The "NDM Queues" note about keeping the app in the tray was shown.
     pub tray_note_shown: bool,
     /// "Change folder for General category on last selected" (the other categories keep it in `remember`).
     pub remember_general: bool,
@@ -310,31 +309,31 @@ pub struct Settings {
     /// name is unique" of "Saving the project of NDM Grabber" (template 269).
     pub grab_projects: Vec<GrabProject>,
     pub grab_quiet: bool,
-    /// Project -> Recent Projects: the last 4 projects opened or saved, newest first NDM.
+    /// Project -> Recent Projects: the last 4 projects opened or saved, newest first.
     pub grab_recent: Vec<String>,
     /// "Save current settings as a template" (34020, name box 268): `opts.name` is the template's name.
     pub grab_templates: Vec<GrabProject>,
-    /// Grabber Settings (template 262, saved by NDM as GrabberSts nATSTFiles 1-20,
+    /// Grabber Settings (template 262, saved as GrabberSts nATSTFiles 1-20,
     /// nDwnlATSTFiles 1-10, bUseTL, bUseIEC, bUseAdvWPP). Defaults from CSpiderSettings' constructor 0x53c050.
     pub grab_explore: usize,
     pub grab_dl: usize,
     pub grab_link_text: bool,
     pub grab_ie_cache: bool,
     pub grab_adv: bool,
-    /// File -> Show drop target (NDM: ShowDropTarget).
+    /// File -> Show drop target.
     pub drop_target: bool,
-    /// When updates were last checked (NDM checks every 2 weeks).
+    /// When updates were last checked.
     pub update_checked: i64,
     pub prog_sl_tab: bool,
     pub prog_c_tab: bool,
     pub prog_tab_btns: bool,
-    /// Download progress dialog shows the connections (NDM: dPrDtVis, shown when unset).
+    /// Download progress dialog shows the connections.
     pub prog_details: bool,
-    /// Toolbar skin: "Neon" (NDM's built-in) or a `<NDM>\Toolbar\*.tbi` name (NDM: ToolbarStyle).
+    /// Toolbar skin: "Neon" or a `<NDM>\Toolbar\*.tbi` name.
     pub tb_skin: String,
-    /// Toolbar buttons in order, -1 = separator (Customize...; NDM: ToolbarState_v5.11).
+    /// Toolbar buttons in order, -1 = separator.
     pub tb_layout: Vec<i8>,
-    /// Find file (template 506; NDM: szSearchString, dwSearchFlags 0x4555c0): 1 match case, 2 whole
+    /// Find file: 1 match case, 2 whole
     /// string, 4 file name, 8 description, 0x10 site/link/page/referer.
     pub search: String,
     pub search_flags: u32,
@@ -361,8 +360,8 @@ pub fn browser_kind(text: &str) -> &'static str {
         .map_or("", |(_, v)| v)
 }
 
-/// Special keys (template 229; NDM: SpecialKeys\UseKeyToPrevent, AltP... InsF, CheckMouse, SkipHtml,
-/// defaults from NDM. The browser extension applies them.
+/// Special keys (template 229; SpecialKeys\UseKeyToPrevent, AltP... InsF, CheckMouse, SkipHtml,
+/// The browser extension applies them.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Keys {
@@ -456,7 +455,7 @@ pub struct Login {
 
 impl Default for Settings {
     fn default() -> Self {
-        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
         let mut types: Vec<&str> = CATEGORIES.iter().flat_map(|c| c.1.split(' ')).filter(|e| *e != "txt").collect();
         types.extend(["bin", "img", "torrent"]);
         Settings {
@@ -550,7 +549,7 @@ impl Default for Settings {
             grab_quiet: false,
             grab_templates: Vec::new(),
             grab_recent: Vec::new(),
-            // NDM: +0xb0 = 4, +0x11c = 4, +0x112 / +0x113 / +0x114 = 1
+            // +0xb0 = 4, +0x11c = 4, +0x112 / +0x113 / +0x114 = 1
             grab_explore: 4,
             grab_dl: 4,
             grab_link_text: true,
@@ -571,10 +570,10 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Proxy URL for the engine from classic-style manual proxy fields; empty = direct.
+    /// Proxy URL for the engine from NDM-style manual proxy fields; empty = direct.
     /// The proxy to use for `url` ("" = direct), following NDM's Proxy / Socks page: manual
     /// HTTP proxy for the ticked protocols, the advanced HTTPS proxy for https, SOCKS for the rest
-    /// ("NDM will use socks only for protocols that NOT checked above"), or Windows' settings.
+    ///, or Windows' settings.
     pub fn proxy_for(&self, url: &str) -> String {
         let u = url::Url::parse(url).ok();
         let (scheme, host) = (u.as_ref().map_or("", |u| u.scheme()), u.as_ref().and_then(|u| u.host_str()).unwrap_or(""));
@@ -681,7 +680,7 @@ pub struct Incoming {
     pub proxy: String,
     /// "Download all links": the page's links; `url` is the page.
     pub links: Vec<Link>,
-    /// From the command line (NDM's `/d URL /p /f /n /a /q /s`, ndman.chm "Command Line"):
+    /// From the command line:
     /// folder (/p), silent (/n), add to queue only (/a), exit when done (/q), start the main queue (/s).
     pub cli: bool,
     pub folder: String,
@@ -770,7 +769,8 @@ pub struct Core {
 }
 
 pub fn store_path() -> PathBuf {
-    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+    // %APPDATA% on Windows, ~/.config elsewhere
+    let base = std::env::var("APPDATA").or_else(|_| std::env::var("XDG_CONFIG_HOME")).or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config"))).unwrap_or_else(|_| ".".into());
     Path::new(&base).join("NewDownloadManager").join("state.json")
 }
 
@@ -938,8 +938,8 @@ impl Core {
         self.jobs.lock().unwrap().retain(|x| !Arc::ptr_eq(x, &j));
     }
 
-    /// "Use Windows Dial Up / VPN Networking" (Options page 185, NDM / CDialUpProgress
-    /// 0x43acc0): before a download connects, the chosen connection is dialled unless one is up, with the
+    /// "Use Windows Dial Up / VPN Networking" (Options page 185):
+    /// before a download connects, the chosen connection is dialled unless one is up, with the
     /// user name and password Windows keeps for it. A failed dial is redialled after "Time between redial
     /// attempts" (attempts 0 = endlessly), shown in NDM's "Dial up" box (184, `dial_text`). Downloads
     /// starting meanwhile wait for the same dial.
@@ -1058,7 +1058,7 @@ impl Core {
         self.jobs().iter().for_each(|j| j.stop());
     }
 
-    /// Scheduler "New queue": NDM names it "Queue # <id>" NDM before the user renames it.
+    /// Scheduler "New queue": NDM names it "Queue # <id>" before the user renames it.
     pub fn add_queue(&self, name: &str) -> u32 {
         let mut s = self.settings();
         let id = s.queues.iter().map(|q| q.id).max().unwrap_or(0) + 1;
@@ -1094,7 +1094,7 @@ impl Core {
 
     /// Options -> Connection "Download limits". The window starts with the first counted byte and lasts
     /// `quota_hours`; reaching 98% of the quota stops every download until the window ends, then the
-    /// stopped downloads resume (NDM's "will be resumed automatically at ..." message).
+    /// stopped downloads resume.
     fn tick_quota(self: &Arc<Self>) {
         let (on, mb, hours, warn) = {
             let s = self.settings();
@@ -1104,7 +1104,7 @@ impl Core {
         let got = self.limiter.received.load(Relaxed);
         let mut q = self.quota.lock().unwrap();
         if !on {
-            // turning the limit off lifts a stop in force, like NDM's "change settings ... and press Resume"
+            // turning the limit off lifts a stop in force, like NDM's "change settings... and press Resume"
             q.start = None;
             q.stopped = None;
             return;
@@ -1601,8 +1601,7 @@ impl Core {
 
 /// One program's connection to NDM's http proxy ("Use advanced browser integration"): the request goes
 /// to the server; a download the browser-capture rules want (`captures`, `wants`) is returned for the app
-/// and the program gets NDM's 204 (its driver's "HTTP/1.0 204 Intercepted by the NDM Advanced
-/// Integration", ndmwfp64.sys); anything else is passed through unchanged.
+/// and the program gets "HTTP/1.0 204 Intercepted by NDM"; anything else is passed through unchanged.
 fn proxy_conn(core: &Core, client: std::net::TcpStream) -> Option<Incoming> {
     let head = |r: &mut dyn BufRead| -> Option<(String, Vec<(String, String)>)> {
         let mut first = String::new();
@@ -1840,6 +1839,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // PAC scripts go through WinHTTP
     fn proxies() {
         let mut s = Settings { proxy_mode: 3, proxy_host: "px".into(), proxy_port: "3128".into(), proxy_user: "u@x".into(), proxy_pass: "p".into(), ..Default::default() };
         assert_eq!(s.proxy_for("http://a.com/f"), "http://u%40x:p@px:3128");

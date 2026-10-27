@@ -1,4 +1,4 @@
-// Special keys (NDM template 229): report Alt/Shift/Ctrl/Ins/Del to the background, and with
+// Special keys: report Alt/Shift/Ctrl/Ins/Del to the background, and with
 // "check for left mouse button" take a link clicked with the force keys held straight to the app.
 (() => {
   const KEY = { Alt: 'alt', Shift: 'shift', Control: 'ctrl', Insert: 'ins', Delete: 'del' };
@@ -58,7 +58,7 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     <div class="bar"><span class="arrow">&#8595;</span><span class="label">Download this video</span><span class="x" title="Hide">&#10005;</span></div>
     <div class="menu"></div>`;
   const bar = root.querySelector('.bar'), menu = root.querySelector('.menu'), label = root.querySelector('.label');
-  if (panel_mini) label.style.display = 'none'; // Panel view: Mini mode (NDM template 340)
+  if (panel_mini) label.style.display = 'none'; // Panel view: Mini mode
   let target = null, hideTimer = 0;
   const dismissed = new WeakSet();
 
@@ -145,7 +145,7 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
   });
 })();
 
-// Download panel for selected links (NDM template 348): selecting text that holds links shows a button
+// Download panel for selected links: selecting text that holds links shows a button
 // that hands those links to the app's link list.
 (async () => {
   if (window !== window.top || window.__ndmSel) return;

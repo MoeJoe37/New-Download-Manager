@@ -1,6 +1,6 @@
 //! Multi-connection download engine: segmented HTTP Range downloads, dynamic
 //! segmentation (idle connections split the biggest remaining segment), resume, speed limits.
-//! Connections ramp up like NDM's HTTPSession::TryStartNewOptionalConnections NDM:
+//! Connections ramp up like NDM's HTTPSession::TryStartNewOptionalConnections:
 //! start with one, then at most once a second, while every open connection is receiving data,
 //! double the count up to the maximum; not while a speed limit is >= 85% used.
 //! Resuming re-fetches the 64 bytes before the resume point and checks them against the file.
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 pub const CHUNK: usize = 64 * 1024;
 pub const MIN_SEG: u64 = 256 * 1024; // a segment is only split if at least 2x this is left
 pub(crate) const RETRIES: u32 = 5;
-/// Bytes before a resume point that are fetched again and compared with the file NDM.
+/// Bytes before a resume point that are fetched again and compared with the file.
 const VERIFY: u64 = 64;
 pub const CHANGED: &str = "the file on the server has changed";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -80,14 +80,14 @@ pub struct Info {
     pub limit_kb: u64,
     /// "Parent web page": the page the link was on.
     pub parent: String,
-    /// Server's Last-Modified; a different one on resume means the file changed (NDM option
+    /// Server's Last-Modified; a different one on resume means the file changed (option
     /// "Ignore file modification time changes when resuming a download").
     pub modified: String,
     /// Temporary directory for the .part file (Options -> Save to); "" = next to the file.
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
     pub stream: bool,
-    /// A Site Grabber download with "Look up files in IE cache before downloading" (NDM: +0xafb).
+    /// A Site Grabber download with "Look up files in IE cache before downloading".
     pub ie_cache: bool,
     /// The browser's own proxy when the extension handed the download over ("http://h:p", "socks5://h:p"
     /// or "pac:URL"), used after a failure with "Use proxy/socks from a browser's request".
@@ -357,6 +357,12 @@ pub(crate) fn call(r: ureq::Request) -> Result<ureq::Response, String> {
 /// NTLM / Negotiate: Windows builds the tokens (SSPI), with the URL's login ("DOMAIN\user" allowed) or,
 /// without one, the signed-in Windows user. NTLM's legs must share the TCP connection: ureq's pool hands
 /// the same keep-alive connection back as long as each response is read to the end.
+#[cfg(not(windows))]
+fn sspi(_r: &ureq::Request, _u: &url::Url, pkg: &str) -> Result<ureq::Response, String> {
+    Err(format!("{pkg} sign-in needs Windows"))
+}
+
+#[cfg(windows)]
 fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, String> {
     use windows_sys::Win32::Security::Authentication::Identity::*;
     use windows_sys::Win32::Security::Credentials::SecHandle;
@@ -411,8 +417,10 @@ fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, St
     }
 }
 
+#[cfg(windows)]
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+#[cfg(windows)]
 fn b64(data: &[u8]) -> String {
     let mut s = String::new();
     for c in data.chunks(3) {
@@ -424,6 +432,7 @@ fn b64(data: &[u8]) -> String {
     s
 }
 
+#[cfg(windows)]
 fn unb64(s: &str) -> Vec<u8> {
     let bits: Vec<u32> = s.bytes().filter_map(|b| B64.iter().position(|x| *x == b).map(|v| v as u32)).collect();
     let mut out = Vec::new();
@@ -467,11 +476,18 @@ fn digest(params: &str, user: &str, pass: &str, method: &str, uri: &str) -> Stri
 }
 
 /// MD5 from Windows' CNG (BCryptHash with the built-in MD5 provider handle).
+#[cfg(windows)]
 fn md5_hex(s: &str) -> String {
     use windows_sys::Win32::Security::Cryptography::{BCryptHash, BCRYPT_MD5_ALG_HANDLE};
     let mut out = [0u8; 16];
     unsafe { BCryptHash(BCRYPT_MD5_ALG_HANDLE, std::ptr::null(), 0, s.as_ptr(), s.len() as u32, out.as_mut_ptr(), 16) };
     out.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(not(windows))]
+fn md5_hex(s: &str) -> String {
+    use md5::Digest;
+    md5::Md5::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn err(e: ureq::Error) -> String {
@@ -665,7 +681,7 @@ impl Job {
             return crate::stream::run(self, agent, global);
         }
         let mut first = None;
-        // "Look up files in IE cache before downloading" NDM: a cached copy is offered to the
+        // "Look up files in IE cache before downloading": a cached copy is offered to the
         // server as If-Modified-Since; on 304 Not Modified (0x7573) the cached file is copied into place.
         let cached = if self.info().ie_cache && !probed && !is_ftp(&url) { crate::win::url_cache(&url) } else { None };
         if !probed {
@@ -696,7 +712,7 @@ impl Job {
                     self.info().stream = true;
                     return crate::stream::run(self, agent, global);
                 }
-                // the server's cookies go along on the other connections (NDM's header parser 0x58ad70)
+                // the server's cookies go along on the other connections
                 let set: Vec<String> = r.all("Set-Cookie").iter().filter_map(|c| c.split(';').next()).map(|c| c.trim().to_string()).collect();
                 if !set.is_empty() {
                     let mut i = self.info();
@@ -799,9 +815,11 @@ impl Job {
             // "Set file creation date as provided by the server"
             let date = chrono::DateTime::parse_from_rfc2822(&i.modified).ok().filter(|_| self.set_date.load(Relaxed));
             if let (Some(t), Ok(f)) = (date, File::options().write(true).open(i.path())) {
-                use std::os::windows::fs::FileTimesExt;
                 let t = std::time::SystemTime::from(t);
-                let _ = f.set_times(fs::FileTimes::new().set_modified(t).set_created(t));
+                #[cfg(windows)]
+                let _ = { use std::os::windows::fs::FileTimesExt; f.set_times(fs::FileTimes::new().set_modified(t).set_created(t)) };
+                #[cfg(not(windows))]
+                let _ = f.set_times(fs::FileTimes::new().set_modified(t)); // no creation time to set
             }
             Ok(true)
         } else if self.stopping() || errors.is_empty() {
@@ -930,7 +948,7 @@ impl Job {
         self.limiter.take(n, &self.stop);
     }
 
-    /// Every open connection is receiving data and the speed limits leave room (85%, as NDM).
+    /// Every open connection is receiving data and the speed limits leave room.
     fn ramp_ok(&self, global: &Limiter) -> bool {
         let busy = self.info().segs.iter().filter(|s| s.owned).all(|s| s.info.starts_with("Receiving"));
         let speed = self.speed();
@@ -1078,6 +1096,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn ie_cache_not_modified() {
         use std::io::{BufRead, BufReader, Write};
         use windows_sys::Win32::Foundation::FILETIME;
@@ -1247,6 +1266,7 @@ mod tests {
     /// NTLM's first leg on one keep-alive connection: 401 "NTLM" -> the request carries Windows' NTLMSSP
     /// negotiate message (the server here accepts it without the challenge leg).
     #[test]
+    #[cfg(windows)]
     fn ntlm_negotiate_leg() {
         assert_eq!([b64(b"ab"), b64(b"abc"), b64(b"a")], ["YWI=", "YWJj", "YQ=="]);
         assert_eq!(unb64(&b64(b"\x00\x01binary\xff")), b"\x00\x01binary\xff");

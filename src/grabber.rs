@@ -80,7 +80,7 @@ impl Default for Tuning {
     }
 }
 
-/// NDM's built-in project templates (combo 1511 on step 1; applied by NDM.
+/// NDM's built-in project templates.
 pub const TEMPLATES: [&str; 7] = [
     "Custom settings",
     "All Pictures of the web site",
@@ -91,7 +91,7 @@ pub const TEMPLATES: [&str; 7] = [
     "The whole web site",
 ];
 
-/// Built-in template `k` of `TEMPLATES` NDM, `mask` = a named file filter's masks.
+/// Built-in template `k` of `TEMPLATES`, `mask` = a named file filter's masks.
 /// Returns the Save To mode and the category it names (Music / Video), None for Custom settings.
 pub fn builtin_template(k: usize, opts: &mut Opts, mask: &dyn Fn(&str) -> String) -> Option<(u8, Option<&'static str>)> {
     if k == 0 {
@@ -230,7 +230,7 @@ pub struct State {
     pub pages: usize,
     /// The pages explored, in order ("Link View" in the results window).
     pub page_list: Vec<String>,
-    /// Links looked at ("Explored" in NDM Grabber Statistics, template 271).
+    /// Links looked at.
     pub explored: usize,
     pub files: Vec<Found>,
     /// The start page answered 401: its realm, for "Connecting to the site" (template 279).
@@ -670,6 +670,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Windows paths
     fn offline_and_names() {
         use std::path::{Path, PathBuf};
         let base = Url::parse("http://h.com/docs/index.html").unwrap();

@@ -17,11 +17,19 @@ percent-encoding = "2"
 url = "2"
 tray-icon = "0.21"
 raw-window-handle = "0.6"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_Networking_WinSock"] }
 ar-reshaper = "1.5"
 unicode-bidi = "0.3"
 roxmltree = "0.21.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp", "ico"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_Networking_WinSock"] }
+
+# AES-128 (HLS) and MD5 (digest login), which Windows' CNG does on Windows
+[target.'cfg(not(windows))'.dependencies]
+aes = "0.8"
+cbc = "0.1"
+md5 = { package = "md-5", version = "0.10" }
 
 [profile.release]
 opt-level = 3

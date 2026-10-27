@@ -73,7 +73,7 @@ fn lookup(s: &str) -> Option<String> {
 pub fn tr(s: &str) -> String {
     match lookup(s) {
         Some(t) => visual(&punct(s, &t)),
-        None => brand(s),
+        None => s.to_string(),
     }
 }
 
@@ -82,7 +82,7 @@ pub fn tr(s: &str) -> String {
 pub fn tr_os(s: &str) -> String {
     match lookup(s) {
         Some(t) => punct(s, &t),
-        None => brand(s),
+        None => s.to_string(),
     }
 }
 
@@ -134,7 +134,7 @@ pub fn tips() -> Vec<String> {
 /// the template, then fill its %s / %d / %ld / %I64d slots in order.
 pub fn trf(en: &str, args: &[&dyn std::fmt::Display]) -> String {
     // fill the slots in reading order, then lay the whole line out (right-to-left languages)
-    let Some(t) = lookup(en).map(|t| punct(en, &t)) else { return fill(&brand(en), args) };
+    let Some(t) = lookup(en).map(|t| punct(en, &t)) else { return fill(en, args) };
     visual(&fill(&t, args))
 }
 
@@ -166,31 +166,13 @@ fn fill(t: &str, args: &[&dyn std::fmt::Display]) -> String {
 /// Lookup key: no '&' accelerators or "\tCtrl+N" shortcuts, the product name as "ndm", no trailing ':' /
 /// '...', lower case, single spaces.
 fn key(s: &str) -> String {
-    let s = s.split('\t').next().unwrap_or("").replace('&', "").replace("New Download Manager", "NDM").replace("New Download Manager", "NDM").replace("NDM", "NDM");
+    let s = s.split('\t').next().unwrap_or("").replace('&', "").replace("New Download Manager", "NDM");
     s.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches(['.', ':', ' ', '!']).to_lowercase()
 }
 
 /// A key with the product name left out ("customize ndm menu items" = "customize menu items").
 fn unbranded(k: &str) -> String {
     k.replace("with ndm", "").split_whitespace().filter(|w| !matches!(*w, "ndm" | "ndm's")).collect::<Vec<_>>().join(" ")
-}
-
-/// UI texts written as another program words them get NDM's name: "New Download Manager", and "NDM" as
-/// a word (not inside e.g. "ndman").
-fn brand(t: &str) -> String {
-    let t = t.replace("New Download Manager", "New Download Manager");
-    let mut out = String::with_capacity(t.len());
-    let mut rest = t.as_str();
-    while let Some(i) = rest.find("NDM") {
-        let before = rest[..i].chars().next_back();
-        let after = rest[i + 3..].chars().next();
-        let word = !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric);
-        out.push_str(&rest[..i]);
-        out.push_str(if word { "NDM" } else { "NDM" });
-        rest = &rest[i + 3..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// A language file: ("English" -> text, the `lang=` header). UTF-8, with or without a BOM.
@@ -220,7 +202,6 @@ mod tests {
         assert_eq!(tr("Options"), "Options");
         assert_eq!(key("&Options...\tCtrl+O"), "options");
         assert_eq!(key("Download with New Download Manager"), key("Download with NDM"));
-        assert_eq!(brand("Mit NDM laden NDM"), "Mit NDM laden NDM", "only the word is replaced");
         assert_eq!(trf("Queue # %ld", &[&3]), "Queue # 3");
         assert_eq!(trf("Downloaded %s (%I64d Bytes) 100%%", &[&"1 MB", &1048576]), "Downloaded 1 MB (1048576 Bytes) 100%");
     }

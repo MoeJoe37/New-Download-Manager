@@ -1,7 +1,7 @@
 // Downloads go to the app at 127.0.0.1:9614; if it isn't running (or declines), the browser keeps them.
 const API = 'http://127.0.0.1:9614/add';
 const CONFIG = 'http://127.0.0.1:9614/config';
-// The file type of a media response, as named in the app's download panel list (NDM template 340).
+// The file type of a media response, as named in the app's download panel list.
 const MIME_TYPE = { 'audio/mpeg': 'MP3', 'video/mpeg': 'MPG', 'video/x-flv': 'FLV', 'video/quicktime': 'MOV', 'video/x-matroska': 'MKV',
   'video/x-ms-wmv': 'WMV', 'audio/x-ms-wma': 'WMA', 'video/x-ms-asf': 'ASF', 'video/3gpp': '3GP', 'audio/mp4': 'M4A', 'audio/x-m4a': 'M4A',
   'video/x-msvideo': 'AVI', 'audio/wav': 'WAV', 'audio/x-wav': 'WAV', 'audio/vnd.wave': 'WAV' };
@@ -43,7 +43,7 @@ async function post(url, extra) {
 }
 const send = async (url, extra) => !!(await post(url, extra));
 
-// Special keys held in the page (Options -> General -> Keys..., NDM template 229), reported by content.js.
+// Special keys held in the page, reported by content.js.
 let held = [];
 const keysHeld = (k, which) => {
   const on = which === 'prevent'
@@ -54,7 +54,7 @@ const keysHeld = (k, which) => {
 };
 const PAGE_LIKE = /^(text\/|image\/|application\/(x-)?javascript|application\/json)/i;
 
-// Like NDM's extension: the browser's download bubble is off (NDM: downloads.setShelfEnabled(false)),
+// The browser's download bubble is off,
 // a download is paused when created and its file name (Chrome's Save As dialog) held until the app decides.
 chrome.downloads.setUiOptions?.({ enabled: false }).catch(() => {});
 const web = item => /^https?:/i.test(item.finalUrl || item.url);
@@ -86,7 +86,7 @@ async function handle(item, suggest) {
   chrome.downloads.erase({ id: item.id });
 }
 
-// The app's Options decide the context menu items (NDM template 334) and the panel exceptions (370).
+// The app's Options decide the context menu items and the panel exceptions (370).
 let config = { menu_dl: true, menu_all: true, panel_skip: '', keys: null }, configAt = 0, menus = '';
 async function refreshConfig() {
   if (Date.now() - configAt < 10000) return config;

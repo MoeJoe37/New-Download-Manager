@@ -7,14 +7,19 @@ mod i18n;
 mod remux;
 mod stream;
 use i18n::tr;
+#[cfg_attr(not(windows), path = "linux.rs")]
 mod win;
 
 use crate::core::{Core, Incoming, Settings, GENERAL};
 use crate::engine::{Info, Probe, Status};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_extras::{Column, TableBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::menu::{CheckMenuItem, MenuItem};
+use tray_icon::TrayIcon;
+#[cfg(windows)]
+use tray_icon::menu::{Menu, MenuEvent, PredefinedMenuItem};
+#[cfg(windows)]
+use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
@@ -23,21 +28,29 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const TITLE: &str = "New Download Manager 1.0";
-/// Where new versions are published: a GitHub "owner/repo" whose latest release carries the new ndm.exe
-/// (Help -> Check for updates, About -> Check for Update, and NDM's automatic check every 2 weeks).
+/// Where new versions are published: a GitHub "owner/repo" whose latest release carries the new program
+/// (Help -> Check for updates, About -> Check for Update, and the automatic check every 2 weeks).
 /// Empty = no update source; the check says so.
 const UPDATE_REPO: &str = "MoeJoe37/New-Download-Manager";
 /// First argument of the copy started by "Update now".
 const UPDATED: &str = "/updated";
-/// NDM 21120.
+/// The message when the release information can't be read.
 const UPDATE_INVALID: &str = "Check for updates failed, because update information is invalid.\r\nIf you use wi-fi that requires logging in in the browser, please log in before checking for updates";
 
-/// A newer release: its version, notes and the exe to download.
+/// A newer release: its version, notes, this platform's program to download ("" = none attached) and
+/// the release's web page.
 #[derive(Clone, Debug, PartialEq)]
 struct Release {
     version: String,
     notes: String,
     exe: String,
+    page: String,
+}
+
+/// The release file that replaces this program: ndm.exe on Windows, the AppImage on Linux.
+fn update_asset(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    if cfg!(windows) { n == "ndm.exe" } else { n.ends_with(".appimage") && n.contains("x86_64") }
 }
 
 /// The latest release on GitHub, if newer than this build (None = this is the latest).
@@ -48,11 +61,12 @@ fn check_update(agent: &ureq::Agent) -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
     let v: serde_json::Value = agent.get(&url).set("Accept", "application/vnd.github+json").call().map_err(|e| e.to_string())?.into_string().map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
     let tag = v["tag_name"].as_str().unwrap_or("").trim_start_matches(['v', 'V']).to_string();
-    let exe = v["assets"].as_array().into_iter().flatten().find_map(|a| a["browser_download_url"].as_str().filter(|u| u.to_ascii_lowercase().ends_with(".exe"))).unwrap_or("").to_string();
-    if tag.is_empty() || exe.is_empty() {
+    let exe = v["assets"].as_array().into_iter().flatten().filter(|a| a["name"].as_str().is_some_and(update_asset)).find_map(|a| a["browser_download_url"].as_str()).unwrap_or("").to_string();
+    if tag.is_empty() {
         return Err(i18n::tr(UPDATE_INVALID));
     }
-    Ok(newer(&tag, env!("CARGO_PKG_VERSION")).then(|| Release { version: tag, notes: v["body"].as_str().unwrap_or("").to_string(), exe }))
+    let page = v["html_url"].as_str().map_or_else(|| format!("https://github.com/{UPDATE_REPO}/releases/latest"), str::to_string);
+    Ok(newer(&tag, env!("CARGO_PKG_VERSION")).then(|| Release { version: tag, notes: v["body"].as_str().unwrap_or("").to_string(), exe, page }))
 }
 
 /// "1.10.0" > "1.9.2": dotted numbers compared field by field.
@@ -66,11 +80,12 @@ fn versions() {
     assert!(newer("1.10.0", "1.9.2") && newer("2", "1.9") && !newer("1.0.0", "1.0.0") && !newer("0.9", "1.0.0"));
 }
 
-/// Update now: download the release's exe, swap it for the running one (Windows lets a running exe be
-/// renamed) and start it. `got` = (bytes, total) for the progress bar.
+/// Update now: download the release's program, swap it for the running one (Windows lets a running exe be
+/// renamed, Linux replaces the AppImage's file) and start it. `got` = (bytes, total) for the progress bar.
 fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::AtomicU64, total: &std::sync::atomic::AtomicU64) -> Result<(), String> {
     use std::io::Read;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // an AppImage runs from a temporary mount: replace the AppImage file itself
+    let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok).map_err(|e| e.to_string())?;
     let resp = agent.get(url).call().map_err(|e| e.to_string())?;
     total.store(resp.header("Content-Length").and_then(|l| l.parse().ok()).unwrap_or(0), Relaxed);
     let (mut r, mut data, mut buf) = (resp.into_reader(), Vec::new(), [0u8; 65536]);
@@ -82,11 +97,17 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
         data.extend_from_slice(&buf[..n]);
         got.store(data.len() as u64, Relaxed);
     }
-    if data.len() < 1024 || &data[..2] != b"MZ" {
-        return Err(String::new()); // not an exe: just "cannot download the update file"
+    let magic: &[u8] = if cfg!(windows) { b"MZ" } else { b"\x7fELF" };
+    if data.len() < 1024 || !data.starts_with(magic) {
+        return Err(String::new()); // not a program: just "cannot download the update file"
     }
     let new = exe.with_extension("new.exe");
     std::fs::write(&new, &data).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
     let old = exe.with_extension("old.exe");
     let _ = std::fs::remove_file(&old);
     std::fs::rename(&exe, &old).map_err(|e| e.to_string())?;
@@ -102,7 +123,7 @@ const DARK_TREE: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 const BAR: Color32 = Color32::from_rgb(38, 120, 220);
 
-/// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon, like NDM.
+/// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon.
 fn tray_start() -> bool {
     std::env::args().any(|a| a.eq_ignore_ascii_case("/tray"))
 }
@@ -380,39 +401,19 @@ fn sched_time(s: &str) -> Option<chrono::NaiveTime> {
 /// "Download limits" node in the Scheduler's queue tree.
 const LIMITS: u32 = u32::MAX;
 
-/// "Turn off computer when done": shut down with a 60 s grace period (`shutdown /a` cancels it), sleep or
-/// hibernate; `force` closes programs that would block it.
-fn power_off(kind: u8, force: bool) {
-    let mut c = match kind {
-        1 => {
-            let mut c = std::process::Command::new("rundll32.exe");
-            c.args(["powrprof.dll,SetSuspendState", "0,1,0"]);
-            c
-        }
-        2 => {
-            let mut c = std::process::Command::new("shutdown");
-            c.arg("/h");
-            c
-        }
-        _ => {
-            let mut c = std::process::Command::new("shutdown");
-            c.args(["/s", "/t", "60", "/c", "Download queue finished. The computer will shut down in 60 seconds."]);
-            c
-        }
-    };
-    if force && kind != 1 {
-        c.arg("/f");
-    }
-    let _ = c.spawn();
-}
-
 fn explore(arg: impl AsRef<std::ffi::OsStr>) {
+    #[cfg(windows)]
     let _ = std::process::Command::new("explorer").arg(arg).spawn();
+    #[cfg(not(windows))]
+    win::open(arg);
 }
 
 fn open_folder_of(path: &Path) {
     if path.exists() {
+        #[cfg(windows)]
         explore(format!("/select,{}", path.display()));
+        #[cfg(not(windows))]
+        explore(path.parent().unwrap_or(path));
     } else if let Some(p) = path.parent() {
         explore(p);
     }
@@ -746,12 +747,23 @@ const TB_ICONS: usize = 12;
 /// The grabber's menu bar and toolbar heights (points).
 const GRAB_MENU: f32 = 20.0;
 const GRAB_TB: f32 = 30.0;
-/// Wizard step captions ("NDM Site Grabber. Step %d --- %s"), in NDM's order.
+/// Wizard step captions, in NDM's order.
 const GRAB_STEPS: [&str; 4] = ["Set start page", "Save files to", "Set explorer filters", "Set file filters"];
 /// File-type filters offered by the wizard's drop-down lists.
 /// Open a web address in the default browser.
 fn open_url(u: &str) {
+    #[cfg(windows)]
     let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", u]).spawn();
+    #[cfg(not(windows))]
+    win::open(u);
+}
+
+/// "Open with...": Windows' program chooser; elsewhere the default program.
+fn open_with(p: impl AsRef<std::ffi::OsStr>) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("rundll32").arg("shell32.dll,OpenAs_RunDLL").arg(p).spawn();
+    #[cfg(not(windows))]
+    win::open(p);
 }
 
 const GRAB_FILTERS: [(&str, &str); 7] = [
@@ -797,11 +809,66 @@ const TB_BUTTONS: [(&str, &str, &str); TB_ICONS] = [
 /// drawn in colour into textures when NDM starts. Nothing is bundled and nothing comes from another program.
 fn icon_font() -> Option<&'static ab_glyph::FontVec> {
     static FONT: std::sync::OnceLock<Option<ab_glyph::FontVec>> = std::sync::OnceLock::new();
+    #[cfg(not(windows))]
+    return FONT.get_or_init(|| ab_glyph::FontVec::try_from_vec(include_bytes!("../assets/linux/MaterialIcons-Regular.ttf").to_vec()).ok()).as_ref();
+    #[cfg(windows)]
     FONT.get_or_init(|| {
         let dir = Path::new(&std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into())).join("Fonts");
         ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()).and_then(|b| ab_glyph::FontVec::try_from_vec(b).ok())
     })
     .as_ref()
+}
+
+/// The icon font's code point for a Segoe icon: the same on Windows; Google's Material Icons (Apache 2.0,
+/// assets/linux) elsewhere, where Segoe's icon fonts don't exist.
+fn icon_cp(cp: u32) -> u32 {
+    if cfg!(windows) {
+        return cp;
+    }
+    match cp {
+        0xE710 => 0xE145, // Add -> add
+        0xE713 => 0xE8B8, // Setting -> settings
+        0xE714 => 0xE04B, // Video -> videocam
+        0xE715 => 0xE158, // Mail -> mail
+        0xE71A => 0xE047, // Stop -> stop
+        0xE721 => 0xE8B6, // Search -> search
+        0xE72A => 0xE5C8, // Forward -> arrow_forward
+        0xE72B => 0xE5C4, // Back -> arrow_back
+        0xE72C => 0xE5D5, // Refresh -> refresh
+        0xE739 => 0xE835, // Checkbox -> check_box_outline_blank
+        0xE73A => 0xE834, // CheckboxComposite -> check_box
+        0xE74D => 0xE872, // Delete -> delete
+        0xE756 => 0xE5C3, // CommandPrompt -> apps
+        0xE768 => 0xE037, // Play -> play_arrow
+        0xE769 => 0xE034, // Pause -> pause
+        0xE774 => 0xE80B, // Globe -> public
+        0xE787 => 0xE935, // Calendar -> calendar_today
+        0xE790 => 0xE40A, // Color -> palette
+        0xE7B8 => 0xE149, // Package -> archive
+        0xE7C4 => 0xE871, // TaskView -> dashboard
+        0xE7EF => 0xE7FD, // Admin -> person
+        0xE80F => 0xE88A, // Home -> home
+        0xE81D => 0xEF71, // -> stop_circle
+        0xE823 => 0xE8B5, // Recent -> schedule
+        0xE838 => 0xE2C8, // FolderOpen -> folder_open
+        0xE895 => 0xE627, // Sync -> sync
+        0xE896 => 0xF090, // Download -> download
+        0xE8A5 => 0xE873, // Document -> description
+        0xE8AF => 0xEB2F, // -> lan
+        0xE8B7 => 0xE2C7, // Folder -> folder
+        0xE8D6 => 0xE405, // Audio -> music_note
+        0xE8D7 => 0xE897, // Permissions -> lock
+        0xE8F4 => 0xE2CC, // NewFolder -> create_new_folder
+        0xE8FD => 0xE896, // BulletedList -> list
+        0xE930 => 0xE86C, // Completed -> check_circle
+        0xE945 => 0xEA0B, // LightningBolt -> bolt
+        0xE946 => 0xE88E, // Info -> info
+        0xE9D9 => 0xE429, // Diagnostic -> tune
+        0xEA80 => 0xE0F0, // Lightbulb -> lightbulb
+        0xEC4A => 0xE9E4, // Speed -> speed
+        0xF5B0 => 0xE1C4, // PlaySolid -> play_circle
+        _ => cp,
+    }
 }
 
 /// A strip of `cells` (glyph code point, colour) side by side, each cell `cw` x `ch` px with the glyph `px` high.
@@ -810,7 +877,7 @@ fn glyph_strip(cells: &[(u32, [u8; 3])], cw: usize, ch: usize, px: f32) -> Optio
     let font = icon_font()?;
     let (w, mut out) = (cw * cells.len(), vec![0u8; cw * cells.len() * ch * 4]);
     for (k, (cp, rgb)) in cells.iter().enumerate() {
-        let id = font.glyph_id(char::from_u32(*cp)?);
+        let id = font.glyph_id(char::from_u32(icon_cp(*cp))?);
         let Some(g) = font.outline_glyph(id.with_scale(font.pt_to_px_scale(px * 0.75).unwrap_or(ab_glyph::PxScale::from(px)))) else { continue };
         let b = g.px_bounds();
         let (ox, oy) = ((k * cw) as f32 + (cw as f32 - b.width()) / 2.0, (ch as f32 - b.height()) / 2.0);
@@ -913,7 +980,7 @@ const DUPL: [&str; 4] = [
     "If existing file is complete, show download complete dialog; otherwise resume it.",
 ];
 
-/// List columns in NDM's own index order NDM maps index -> header text).
+/// List columns in NDM's own index order.
 #[derive(Clone, Copy, PartialEq)]
 enum Col {
     Name,
@@ -930,7 +997,7 @@ enum Col {
     Parent,
 }
 
-/// (column, header, NDM's default width in px from 0x4aa010).
+/// (column, header, default width in px).
 const COLS: [(Col, &str, u16); 12] = [
     (Col::Name, "File Name", 150),
     (Col::Added, "Date Added", 65),
@@ -1007,12 +1074,12 @@ impl Row {
 type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 
 enum Dialog {
-    /// `clip`: opened by the clipboard monitor (NDM retitles template 148, 0x407c90).
+    /// `clip`: opened by the clipboard monitor.
     AddUrl { url: String, auth: bool, login: String, pass: String, clip: bool },
     /// `replace`: "overwrite" duplicate: save over this download's file and drop it from the list.
     /// `auto`: taken over from the browser without being asked (counts toward "cancelled twice").
     /// `early`: Options -> Downloads "Start downloading immediately while displaying" - the download already
-    /// running while the dialog is open (NDM's first request is the download itself).
+    /// running while the dialog is open.
     /// `dir`: folder given on the command line (/p), used instead of the category's.
     FileInfo { info: Info, path: String, probe: ProbeSlot, applied: bool, error: String, hint: String, remember: bool, replace: Option<u64>, auto: bool, early: Option<Arc<engine::Job>>, dir: String },
     /// "Cancelling an automatically started download" (template 302, 0x5037a0).
@@ -1072,7 +1139,7 @@ enum Dialog {
     QueuePick { ids: Vec<u64>, q: String, start: bool, never: bool, batch: bool },
     /// "Saving the project of NDM Grabber" (template 269); `orig` = renaming that project (no `proj`).
     GrabSave { name: String, orig: Option<String>, quiet: bool, proj: Option<Box<core::GrabProject>>, sched: bool },
-    /// "To use project scheduler you should save the project at first. Save the project now?" NDM
+    /// "To use project scheduler you should save the project at first. Save the project now?"
     /// 0x4e8c80, Yes / No) for Schedule the project on an unsaved project.
     GrabSchedAsk { proj: Box<core::GrabProject> },
     /// "Schedule the grabber project" (template 284), edited copy.
@@ -1108,14 +1175,13 @@ enum Dialog {
     /// "Manual login page": the page is open in the browser; OK explores with the browser's cookies.
     GrabManual { url: String },
     About,
-    /// "Customize Toolbar" (comctl32 template 200, CToolBarCtrl::Customize from NDM's toolbar menu): the
-    /// edited button order (-1 = separator) and the selected rows of both lists.
+    /// "Customize Toolbar": the edited button order (-1 = separator) and the selected rows of both lists.
     TbCustomize { layout: Vec<i8>, avail: Option<usize>, cur: Option<usize> },
     /// Tip of the Day (template 105, CTipDlg): the tip shown.
     Tip { text: String },
     /// Speed Limiter settings (template 337).
     Limiter { kb: String, startup: bool },
-    /// Columns (template 209): (NDM column index, visible, width px) in display order.
+    /// Columns (template 209): in display order.
     Columns { list: Vec<(u8, bool, u16)>, sel: usize, width: String },
     /// "Max. connections number for a server" (template 226); `orig` = edited row of the exceptions.
     ServerConn { orig: Option<usize>, server: String, n: String },
@@ -1137,12 +1203,12 @@ struct App {
     sort: (Col, bool),
     /// Titles of this frame's dialogs that NDM keeps light in dark mode (their title bars).
     light_titles: Vec<String>,
-    /// Find Next starts at this row of the list (NDM: +0x1810), and the row to scroll to.
+    /// Find Next starts at this row of the list, and the row to scroll to.
     find_pos: usize,
     scroll_to: Option<usize>,
     show_cats: bool,
     dialogs: Vec<(u64, Dialog)>,
-    /// Where each open dialog first appeared: centred on the main window (NDM's dialogs open over it).
+    /// Where each open dialog first appeared: centred on the main window.
     dlg_pos: HashMap<u64, egui::Pos2>,
     serial: u64,
     quitting: bool,
@@ -1201,9 +1267,9 @@ struct App {
 
 /// Classic Windows look: Tahoma, square corners. Light = NDM's default system colours.
 /// Dark = NDM's "Dark Mode support" (Windows dark app mode, DarkMode_Explorer / ItemsView themes).
-/// Colours from NDMdark palette object (ctor 0x437aa0): dialogs and lists 0x393939,
+/// Colours from dark palette object (ctor 0x437aa0): dialogs and lists 0x393939,
 /// text white, disabled 0x808080; tree 0x202020 (0x437df0); menu 0x202020, hot item 0x505050 (0x4ff150).
-/// Edit fields are drawn by Windows' DarkMode_CFD theme, not NDM: 25,25,25 is an estimate.
+/// Edit fields are drawn by Windows' DarkMode_CFD theme, not 25,25,25 is an estimate.
 /// Set when the Language menu was first opened: `style` then loads the CJK fonts the language names need.
 static ALL_CJK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The list font's face (View -> Font), read by `style`.
@@ -1221,10 +1287,10 @@ fn style(ctx: &egui::Context, dark: bool) {
     // Fallbacks for scripts Tahoma lacks: Segoe UI (Georgian...), Nirmala (Hindi), and the CJK font of the
     // chosen language (loaded only then; the files are large).
     let cjk = match i18n::current().as_str() {
-        "ndm_chn2" => r"C:\Windows\Fonts\msyh.ttc",
-        "ndm_cht" => r"C:\Windows\Fonts\msjh.ttc",
-        "ndm_jp" => r"C:\Windows\Fonts\YuGothM.ttc",
-        "ndm_kr" => r"C:\Windows\Fonts\malgun.ttf",
+        "ndm_zh" => r"C:\Windows\Fonts\msyh.ttc",
+        "ndm_zh_tw" => r"C:\Windows\Fonts\msjh.ttc",
+        "ndm_ja" => r"C:\Windows\Fonts\YuGothM.ttc",
+        "ndm_ko" => r"C:\Windows\Fonts\malgun.ttf",
         _ => "",
     };
     // once the Language menu was opened: Chinese (both scripts) and Korean for the language names
@@ -1308,7 +1374,7 @@ fn style(ctx: &egui::Context, dark: bool) {
 
 /// "Start positions and download progress by connections" bar: one filled span per segment.
 /// "Start positions and download progress by connections" (static 1179). With NDM's bar bitmaps (358 ends,
-/// 359 background, 361 downloaded, 362 start marker: 15 px columns stretched across) it is drawn as NDM
+/// 359 background, 361 downloaded, 362 start marker: 15 px columns stretched across) it is drawn
 /// draws it: the background, each connection's downloaded run in blue and a red mark where it started.
 fn segment_bar(ui: &mut egui::Ui, info: &Info, h: f32, bars: Option<[egui::TextureId; 4]>) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
@@ -1355,7 +1421,7 @@ struct Res {
     icons: HashMap<u16, egui::TextureHandle>,
     /// Download progress connection bar: ends, background, downloaded, start marker (358, 359, 361, 362).
     bars: Option<[egui::TextureHandle; 4]>,
-    /// Grabber: the wizard's picture (NDM's own, assets/grabber.jpg, in the place of NDM's) and toolbar
+    /// Grabber: the wizard's picture and toolbar
     /// 260's 24 px strips (bitmaps 265 normal, 266 hot, and a greyed copy).
     grab_pic: Option<egui::TextureHandle>,
     grab_tb: Option<[egui::TextureHandle; 3]>,
@@ -1498,8 +1564,15 @@ impl App {
         app
     }
 
+    /// No notification-area icon off Windows yet (tray-icon needs its own GTK loop there): closing quits.
+    #[cfg(not(windows))]
+    fn tray(_: &egui::Context, _: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
+        None
+    }
+
     /// Notification-area icon. Its handlers run on the UI thread's message loop even while
     /// the window is hidden, so they act on Core and the HWND directly.
+    #[cfg(windows)]
     fn tray(ctx: &egui::Context, core: &Arc<Core>, hwnd: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
         let open = MenuItem::new(&i18n::tr_os("Open"), true, None);
         let startq = MenuItem::new(&i18n::tr_os("Start queue"), true, None);
@@ -1572,7 +1645,7 @@ impl App {
         let enc = |t: &str| percent_encoding::utf8_percent_encode(t, percent_encoding::NON_ALPHANUMERIC).to_string();
         let body = "Hi,\r\n\r\nI use New Download Manager to speed up my downloads. It splits files into several connections, \
 resumes broken downloads, has a scheduler, a site grabber and a browser button for videos.\r\n\r\nGive it a try!";
-        let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", &format!("mailto:?subject={}&body={}", enc("A download manager you should try"), enc(body))]).spawn();
+        open_url(&format!("mailto:?subject={}&body={}", enc("A download manager you should try"), enc(body)));
     }
 
     fn grabber(&mut self) {
@@ -1700,7 +1773,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         self.open(Dialog::Find { text, flags });
     }
 
-    /// Find Next NDM: select the next matching download from `find_pos` on, wrapping
+    /// Find Next: select the next matching download from `find_pos` on, wrapping
     /// to the top; "No such files found" when nothing in the list matches.
     fn find_next(&mut self) {
         let (needle, flags) = {
@@ -1757,7 +1830,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if inc.quit {
                     self.on_done.insert(id, (true, false));
                 }
-                // NDM still shows the progress window for /n downloads (seen with ndman /d url /n)
+                // NDM still shows the progress window for /n downloads
                 if self.core.settings().show_progress {
                     self.auto_progress(id);
                 }
@@ -2286,7 +2359,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 });
                 ui.separator();
                 ui.menu_button(tr("Language"), |ui| {
-                    // NDM's Language menu: English plus every Languages\ndm_*.lng NDM
+                    // NDM's Language menu: English plus every Languages\ndm_*.lng
                     if !ALL_CJK.swap(true, Relaxed) {
                         style(ui.ctx(), self.dark); // the Chinese and Korean names need their fonts
                     }
@@ -2478,7 +2551,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Some(5) => self.remove_completed(),
             Some(6) => self.options(0),
             Some(7) => self.open_scheduler(0),
-            // the button itself acts on the main queue, like NDM
+            // the button itself acts on the main queue
             Some(8) => self.core.start_queue(core::MAIN_QUEUE),
             Some(9) => self.core.stop_queue(core::MAIN_QUEUE),
             Some(10) => self.grabber(),
@@ -2491,7 +2564,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     fn tool_buttons(&mut self, ui: &mut egui::Ui, buttons: &[TbButton], queues: &[(u32, String, bool)], small: bool) -> Option<usize> {
         let font = segoe(11.6);
         // NDM draws the strip 1:1 in screen pixels at any DPI, every button image width + 19 px wide with the
-        // label cut to "..." (measured on NDM at 125%)
+        // label cut to "..."
         let ppp = ui.ctx().pixels_per_point();
         let (iw, ih) = if small { (32.0 / ppp, 32.0 / ppp) } else { (56.0 / ppp, 42.0 / ppp) };
         let bw = iw + 19.0 / ppp;
@@ -2766,7 +2839,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     if resp.double_clicked() && *kids {
                         toggle = Some(key.to_string());
                     }
-                    // NDM's tree menus NDM: category popup +0x220, grabber +0x224, queue +0x228.
+                    // NDM's tree menus: category popup +0x220, grabber +0x224, queue +0x228.
                     resp.context_menu(|ui| match value {
                         Cat::Queue(q) => {
                             let id = q.unwrap_or(core::MAIN_QUEUE);
@@ -2938,7 +3011,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 } else if resp.clicked() || (resp.secondary_clicked() && !self.sel.contains(&r.id)) {
                     action = Some((k, false));
                 }
-                // NDM's list context menu, items and order from NDM.
+                // the list's context menu
                 resp.context_menu(|ui| {
                     let done = r.status == Status::Complete;
                     let mut item = |ui: &mut egui::Ui, cmd: &'static str, enabled: bool| {
@@ -3053,12 +3126,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             match cmd {
                 "Open" => explore(&row.path),
                 "Open with..." => {
-                    let _ = std::process::Command::new("rundll32").arg("shell32.dll,OpenAs_RunDLL").arg(&row.path).spawn();
+                    open_with(&row.path);
                 }
                 "Open folder" => open_folder_of(&row.path),
                 "Move/Rename (Ctrl-M)" => self.move_rename(id),
                 "Refresh download address" => {
-                    // NDM: "Downloading owner web page to refresh link address": open the page the link
+                    // "Downloading owner web page to refresh link address": open the page the link
                     // came from; the user clicks the link again and the browser hands it to us
                     let page = if row.parent.is_empty() { row.referrer.clone() } else { row.parent.clone() };
                     self.refreshing = Some(id);
@@ -3232,7 +3305,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             vb = vb.with_position(*p);
         }
         if matches!(d, Dialog::FileInfo { .. } | Dialog::Complete { .. }) {
-            vb = vb.with_window_level(egui::WindowLevel::AlwaysOnTop); // pop over the browser, like NDM
+            vb = vb.with_window_level(egui::WindowLevel::AlwaysOnTop); // pop over the browser
         }
         // NDM darkens only these (and message boxes); Options, Scheduler... stay light (0x407c90,
         // 0x4409e0, 0x4a528e, 0x444cf0, 0x5569c0, 0x4c3170 use the dark palette)
@@ -3471,7 +3544,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             Status::Stopped => tr("Stopped"),
                         };
                         let left = i.size.filter(|_| speed > 0.0).map(|s| time_left((s.saturating_sub(done) as f64 / speed) as u64));
-                        // NDM's formats: "%s  ( %d%s%02d %% )" until 100 %, "%s/%s" and " (Limited)" for the rate
+                        // NDM's formats: "%s ( %d%s%02d %% )" until 100 %, "%s/%s" and " (Limited)" for the rate
                         let downloaded = match frac {
                             Some(f) if f < 1.0 => format!("{}  ( {} % )", size3(done), pct2(f * 100.0)),
                             _ => size3(done),
@@ -3539,7 +3612,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let bars = self.res.bars.as_ref().map(|b| b.each_ref().map(|t| t.id()));
                     d.ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| segment_bar(ui, &i, r.height(), bars));
                     // NDM's connections list (id 1177): N. / Downloaded / Info and an empty fourth column, a row
-                    // for every connection the download may open (column widths measured on NDM at 125%)
+                    // for every connection the download may open
                     let cols = [("N.", 18.5), ("Downloaded", 62.5), ("Info", 197.0), ("", 58.0)];
                     let rows = d.listview(7.0, 168.0, 338.0, 79.0, &cols);
                     let dx = d.dx();
@@ -3611,7 +3684,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     close = true;
                 }
                 if d.button(76.0, 96.0, 61.0, 14.0, "Open with...", true) {
-                    let _ = std::process::Command::new("rundll32").arg("shell32.dll,OpenAs_RunDLL").arg(&path).spawn();
+                    open_with(&path);
                     close = true;
                 }
                 if d.button(145.0, 96.0, 61.0, 14.0, "Open folder", true) {
@@ -3986,7 +4059,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     8 => {
                         // Sounds (template 195, CSoundsSettings 0x5120c0): a tick and a .wav per event; Browse and
-                        // Play stay disabled until a row is picked. Like NDM (0x513000, <NDM>\Sounds\) the picked file is
+                        // Play stay disabled until a row is picked. Like NDM the picked file is
                         // copied next to our state, so moving or deleting the original doesn't silence the event.
                         let (x, y) = e(0.0, 0.0);
                         let icon = self.res.icon(274);
@@ -4183,7 +4256,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.tabs(142.0, 15.5, 327.0, 246.0, tab, &["Schedule", "Files in the queue"]);
                 let mut d2 = dlu::D::new_offset(d.ui, 145.6, 27.0).with_dx(PAGE_DX);
                 if *tab == 0 {
-                    // template 306; the built-in queues keep their type (NDM greys the other radio)
+                    // template 306; the built-in queues keep their type
                     let periodic = *sync;
                     for (x, w, v, t) in [(7.0, 126.0, false, "One-time downloading"), (141.0, 132.0, true, "Periodic synchronization")] {
                         if builtin && periodic != v {
@@ -4929,10 +5002,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::NewVersion { rel } => {
                 let mut d = dlu::D::new(ui);
-                let mut text = format!("{} {}\n\n{}", TITLE.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.').trim(), rel.version, rel.notes);
+                let have = env!("CARGO_PKG_VERSION");
+                let mut text = format!("{}\n\n{}", i18n::trf("A new version of New Download Manager is available: %s (you have %s).", &[&rel.version, &have]), rel.notes);
                 let r = d.rect(7.0, 7.0, 272.0, 103.0);
                 d.ui.put(r, |ui: &mut egui::Ui| ui.add_sized(r.size(), egui::TextEdit::multiline(&mut text).interactive(false)));
-                let now = d.button(52.0, 116.0, 69.0, 14.0, "Update now", true);
+                // the release's page, to download by hand (the only way when no program for this system is attached)
+                let page = d.button(7.0, 116.0, 76.0, 14.0, "Download page", true);
+                if page {
+                    open_url(&rel.page);
+                }
+                let now = d.button(105.0, 116.0, 76.0, 14.0, "Update now", !rel.exe.is_empty());
                 if now {
                     let (got, total, done) = (Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(Mutex::new(None)));
                     let (agent, url, g, t, dn, c) = (self.core.agent(&rel.exe), rel.exe.clone(), got.clone(), total.clone(), done.clone(), ctx.clone());
@@ -4942,7 +5021,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     });
                     self.open(Dialog::Update { slot: Arc::default(), quiet: true, get: Some((got, total, done)) });
                 }
-                !(now || d.button(164.0, 116.0, 69.0, 14.0, "Cancel", true))
+                !(now || page || d.button(203.0, 116.0, 76.0, 14.0, "Cancel", true))
             }
             Dialog::Virus { exe, args } => {
                 let mut d = dlu::D::new(ui);
@@ -5292,7 +5371,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let Some(text) = self.core.dial_text.lock().unwrap().clone() else { return false };
                 let mut d = dlu::D::new(ui);
                 d.text(7.0, 7.0, 172.0, 22.0, text.as_str());
-                // Redial shows while waiting between attempts (NDM moves the buttons over, 0x43a1f0)
+                // Redial shows while waiting between attempts
                 if text.contains('\n') && d.button(6.0, 34.0, 50.0, 14.0, "Redial", true) {
                     self.core.dial_now.store(true, Relaxed);
                 }
@@ -5825,7 +5904,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     if *step < 3 {
                         (*step, *adv) = (*step + 1, false);
                     } else if opts.manual_on {
-                        // NDM opens a browser window here; NDM opens the page in the user's browser and the
+                        // NDM opens the page in the user's browser and the
                         // extension hands back the site's cookies once the user has logged in
                         match url::Url::parse(opts.manual.trim()).ok().filter(|u| u.scheme().starts_with("http")) {
                             Some(u) => {
@@ -5843,7 +5922,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 !d.button(324.0, 190.0 + o, 60.0, 14.0, "Close", true)
             }
             Dialog::GrabTpl { name, proj, replace } => {
-                // template 268; NDM: built-in names are reserved, an existing one is replaced on Yes
+                // template 268; built-in names are reserved, an existing one is replaced on Yes
                 let mut d = dlu::D::new(ui);
                 if *replace {
                     d.text(7.0, 7.0, 172.0, 18.0, "The template with such name already exists. Do you want to replace the template?");
@@ -5911,7 +5990,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 !(open || cancel)
             }
             Dialog::GrabSettings { explore, dl, link, iec, adv } => {
-                // template 262, checked like NDM (explore 1-20, download 1-10)
+                // template 262, checked (explore 1-20, download 1-10)
                 let mut d = dlu::D::new(ui);
                 d.edit(7.0, 6.0, 21.0, 14.0, explore, true);
                 d.label(33.0, 10.0, 239.0, 10.0, "files to explore at the same time (1 to 10)");
@@ -6187,7 +6266,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         grabber::Opts { name: format!("project_{n}"), start, levels: 2, no_parent: true, masks, main_domain: true, hide_dups: true, size: [1, 10], units: [0, 1], ..Default::default() }
     }
 
-    /// The grabber's menu bar NDMmenu 256: Project / Options / Help).
+    /// The grabber's menu bar.
     fn grab_menu(&mut self, ui: &mut egui::Ui) -> Option<GrabCmd> {
         let (mut cmd, mut load, mut settings) = (None, false, false);
         let recent: Vec<String> = {
@@ -6213,7 +6292,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.close_menu();
                 }
                 ui.separator();
-                // NDM: "1 name" ... "4 name", or a greyed "Recent..." when there are none
+                // "1 name"... "4 name", or a greyed "Recent..." when there are none
                 ui.menu_button(tr("Recent Projects"), |ui| {
                     if recent.is_empty() {
                         ui.add_enabled(false, egui::Button::new(tr("Recent...")));
@@ -6261,7 +6340,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         cmd
     }
 
-    /// Project template `name` (combo 1511): NDM's built-ins as NDM sets them, or one the
+    /// Project template `name` (combo 1511): one of NDM's built-ins, or one the
     /// user saved. The project's name, start page and login stay.
     fn apply_template(&self, name: &str, opts: &mut grabber::Opts, save_mode: &mut u8, save_cat: &mut String) {
         let mask = |f: &str| GRAB_FILTERS.iter().find(|x| x.0 == f).map_or("*.*", |x| x.1).to_string();
@@ -6282,7 +6361,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         }
     }
 
-    /// A file-type filter: NDM's drop-down list ("All Files  ( *.* )", ...) and its "Add Filter" button,
+    /// A file-type filter: NDM's drop-down list ("All Files ( *.* )",...) and its "Add Filter" button,
     /// which here takes masks typed into a small popup. `exclude`: the first entry is "Don't use exclude filter".
     fn grab_filter(&mut self, d: &mut dlu::D, y: f32, masks: &mut String, exclude: bool) {
         let label = |m: &str| match GRAB_FILTERS.iter().find(|f| f.1 == m) {
@@ -6490,7 +6569,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
         });
 
-        // list (1023): NDM's seven columns (widths measured on NDM at 125%), horizontally scrolled
+        // list (1023): NDM's seven columns, horizontally scrolled
         const COLS: [(&str, f32); 7] = [("File Name", 111.0), ("File Type", 154.0), ("Size", 57.0), ("Status", 57.0), ("Link Text", 57.0), ("Download from", 86.0), ("Save to", 86.0)];
         let dx = d.dx();
         let lr = d.listview(115.0, 7.0, 386.0, 244.0, &[]);
@@ -6625,7 +6704,7 @@ impl eframe::App for App {
                 win::accept_drops(h.hwnd.get(), move || c.request_repaint());
             }
         }
-        // Like NDM: closing the window keeps it running in the notification area.
+        // Closing the window keeps it running in the notification area.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray.is_some() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             win::hide(self.hwnd.load(Relaxed));
@@ -6664,7 +6743,7 @@ impl eframe::App for App {
         win::PUMP.store(!self.dialogs.is_empty(), Relaxed);
         let want = self.core.settings().drop_target;
         if want != self.drop_shown {
-            // NDM's drop-target picture (icon group 346, 48 px) from the installed NDM, else NDM's icon
+            // the drop target shows NDM's icon
             let px = app_icon();
             win::drop_target(want, &px);
             self.drop_shown = want;
@@ -6689,7 +6768,10 @@ impl eframe::App for App {
                 if let Some((exit, off)) = self.on_done.remove(&id) {
                     if off {
                         // 60 s grace period; `shutdown /a` cancels it
+                        #[cfg(windows)]
                         let _ = std::process::Command::new("shutdown").args(["/s", "/t", "60", "/c", "Downloads complete. The computer will shut down in 60 seconds."]).spawn();
+                        #[cfg(not(windows))]
+                        win::power_off(0, false);
                     }
                     if exit || off {
                         self.quitting = true;
@@ -6730,7 +6812,7 @@ impl eframe::App for App {
                 ui.visuals_mut().widgets.hovered.weak_bg_fill = DARK_MENU_HOT;
                 ui.visuals_mut().widgets.open.weak_bg_fill = DARK_MENU_HOT;
             }
-            // right-to-left languages: menu bar, toolbar, panes and columns run from the right like NDM's
+            // right-to-left languages: menu bar, toolbar, panes and columns run from the right
             // mirrored window (egui's horizontal layouts follow the parent's direction)
             if i18n::is_rtl() {
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| self.menu(ctx, ui, &sel));
@@ -6806,7 +6888,7 @@ impl eframe::App for App {
                 win::ras_hangup_all();
             }
             if s.off_done {
-                power_off(s.off_kind, s.off_force);
+                win::power_off(s.off_kind, s.off_force);
             }
             // sleep and hibernate come back to a running app
             if s.exit_done || (s.off_done && s.off_kind == 0) {
@@ -6839,7 +6921,7 @@ fn batch_range(letters: bool, from: u32, to: u32, width: u32, lf: &str, lt: &str
     }
 }
 
-/// Does download `r` match the search NDM: each ticked target is compared as a
+/// Does download `r` match the search: each ticked target is compared as a
 /// substring, or whole with flag 2; case-insensitive unless flag 1.
 fn find_hit(flags: u32, needle: &str, r: &Row) -> bool {
     let up = |t: &str| if flags & 1 != 0 { t.to_string() } else { t.to_uppercase() };

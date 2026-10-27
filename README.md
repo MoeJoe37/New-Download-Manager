@@ -5,7 +5,7 @@
 <h1 align="center">New Download Manager</h1>
 
 <p align="center">
-  A fast, free and open source download manager for Windows, written in Rust.<br>
+  A fast, free and open source download manager for Windows and Linux, written in Rust.<br>
   Split downloads, browser integration, video streams, a site grabber and a scheduler, in one small native app.
 </p>
 
@@ -78,6 +78,11 @@
    (Start menu → New Download Manager → *Browser extension folder*).
 3. Start NDM once, so the browser can reach it.
 
+**Linux:** download `NDM-x86_64.AppImage` from Releases, make it executable (`chmod +x NDM-x86_64.AppImage`)
+and run it. On Linux NDM has no tray icon yet (closing the window quits) and no dial-up support.
+
+NDM checks the Releases page for new versions (Help → Check for updates, and by itself every two weeks).
+
 ## Building from source
 
 Requirements: Windows 10/11 x64, [Rust](https://rustup.rs) (stable, MSVC toolchain), the Windows SDK
@@ -101,7 +106,14 @@ Installer ([Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 | `help/` | Help pages, shown inside the app |
 | `Languages/` | Language files |
 | `installer/` | Inno Setup script |
-| `tools/` | `ndm_lng.py` (language file generator), `icon.py` (app icon) |
+| `tools/` | `ndm_lng.py` (language file generator), `icon.py` (app icon), `appimage.sh` (Linux AppImage) |
+
+Linux AppImage (on Linux, or in WSL on Windows; needs `build-essential pkg-config libgtk-3-dev libxdo-dev
+libayatana-appindicator3-dev` and Rust):
+
+```sh
+bash tools/appimage.sh         # installer/out/NDM-x86_64.AppImage
+```
 
 ## Translating
 
@@ -115,4 +127,5 @@ Pull requests welcome.
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE). The toolbar and tree icons are drawn at run time from
-Windows' own icon font (Segoe Fluent Icons).
+Windows' own icon font (Segoe Fluent Icons); on Linux from Google's Material Icons
+(`assets/linux`, Apache License 2.0).
