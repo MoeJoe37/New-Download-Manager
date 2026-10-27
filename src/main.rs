@@ -117,7 +117,8 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
         // the setup waits for this copy to exit, installs over it and starts the new version
         let setup = std::env::temp_dir().join("NDM-Setup.exe");
         std::fs::write(&setup, &data).map_err(|e| e.to_string())?;
-        std::process::Command::new(&setup).args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]).spawn().map_err(|e| e.to_string())?;
+        let log = format!("/LOG={}", setup.with_extension("log").display());
+        std::process::Command::new(&setup).args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", &log, &format!("/NDMPID={}", std::process::id())]).spawn().map_err(|e| e.to_string())?;
         return Ok(());
     }
     let new = exe.with_extension("new.exe");

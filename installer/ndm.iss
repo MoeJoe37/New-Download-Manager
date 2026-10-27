@@ -4,7 +4,7 @@
 ; Output: installer\out\NDM-Setup-<version>.exe
 
 #define AppName "New Download Manager"
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 #define AppUrl "https://github.com/MoeJoe37/New-Download-Manager"
 
 [Setup]
@@ -72,26 +72,53 @@ Type: files; Name: "{app}\ndm.*.old"
 [Code]
 const
   NdmWindow = 'New Download Manager 1.0';
+  SYNCHRONIZE = $00100000;
+
+function OpenProcess(Access: DWORD; Inherit: BOOL; Pid: DWORD): THandle; external 'OpenProcess@kernel32.dll stdcall';
+function WaitForSingleObject(H: THandle; Ms: DWORD): DWORD; external 'WaitForSingleObject@kernel32.dll stdcall';
+function CloseHandle(H: THandle): BOOL; external 'CloseHandle@kernel32.dll stdcall';
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   I: Integer;
   Exe, Old: String;
+  Pid: Integer;
+  H: THandle;
 begin
   Result := '';
-  { started by NDM's "Update now": NDM is closing, give it time to save and exit }
-  for I := 1 to 100 do
+  if WizardSilent() then
   begin
-    if FindWindowByWindowName(NdmWindow) = 0 then Break;
-    Sleep(200);
-  end;
-  while FindWindowByWindowName(NdmWindow) <> 0 do
-    if SuppressibleMsgBox('New Download Manager is running. Exit it (right-click its tray icon, Exit), then click Retry.',
-         mbError, MB_RETRYCANCEL, IDCANCEL) = IDCANCEL then
+    { started by NDM's "Update now": NDM is closing, give it time to save and exit. /NDMPID= is the copy
+      that started it (older copies don't pass it: then any NDM window). Never give up here: a silent
+      update that cancels itself looks like nothing happened, and a running ndm.exe is moved aside below }
+    Pid := StrToIntDef(ExpandConstant('{param:NDMPID|0}'), 0);
+    if Pid <> 0 then
     begin
-      Result := 'New Download Manager is still running.';
-      Exit;
-    end;
+      H := OpenProcess(SYNCHRONIZE, False, Pid);
+      if H <> 0 then
+      begin
+        WaitForSingleObject(H, 30000);
+        CloseHandle(H);
+      end;
+    end
+    else
+      for I := 1 to 100 do
+      begin
+        if FindWindowByWindowName(NdmWindow) = 0 then Break;
+        Sleep(200);
+      end;
+  end
+  else
+    while FindWindowByWindowName(NdmWindow) <> 0 do
+      case MsgBox('New Download Manager is running. Exit it (right-click its tray icon, Exit), then click Retry.',
+           mbError, MB_ABORTRETRYIGNORE) of
+        IDABORT:
+          begin
+            Result := 'New Download Manager is still running.';
+            Exit;
+          end;
+        IDIGNORE: Break;
+      end;
   { a browser can still hold ndm.exe open as its native messaging host: a running exe can be renamed but
     not replaced, so move it aside (NDM deletes ndm.old.exe at its next start) }
   Exe := ExpandConstant('{app}\ndm.exe');
