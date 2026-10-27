@@ -1,0 +1,76 @@
+# Push a tag vX.Y.Z (matching Cargo.toml's version) and this builds ndm.exe, the Windows installer and the
+# Linux AppImage and attaches them to that tag's GitHub release (created if missing). NDM's "Check for
+# updates" picks ndm.exe / the AppImage from the latest release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build, e.g. v1.0.1
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Tag matches Cargo.toml
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "v$v" = "$TAG" ] || { echo "Cargo.toml says $v, tag is $TAG"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Installer
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss
+          Copy-Item target\release\ndm.exe installer\out\ndm.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: installer/out/*
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev file rsync
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bash tools/appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: installer/out/NDM-x86_64.AppImage
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l out
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "New Download Manager ${TAG#v}" --generate-notes
+          gh release upload "$TAG" out/* --clobber
