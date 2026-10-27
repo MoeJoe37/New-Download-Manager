@@ -1,22 +1,10 @@
 # build output
 /target/
+/installer/out/
 *.old.exe
 *.part
 
-# NDM's own material stays local: its language files and tips (the app reads them from Languages\),
-# the Ghidra project and decompiled dumps of NDM, captures and extracted resources.
-/Languages/*
-!/Languages/ndm.lng
-/research/ghidra/*
-!/research/ghidra/Dump.java
-!/research/ghidra/DumpDark.java
-!/research/ghidra/README.md
-!/research/ghidra/run.sh
-/research/data/
-/research/ref/
-/research/rea/
-
-# the user's original pictures (assets/ has icon-source.png, icon2d-source.png and grabber.jpg from them)
+# the original pictures (assets/ has icon-source.png, icon2d-source.png and grabber.jpg made from them)
 /NDM 2D icon.png
 /NDM 3D icon.png
 /grabber picture.png

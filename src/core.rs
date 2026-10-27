@@ -1010,7 +1010,8 @@ impl Core {
             }
         }
         // a download from the browser that failed before goes through the browser's own proxy
-        let (bp, ua, on) = (job.info().browser_proxy.clone(), self.settings().user_agent.clone(), self.settings().proxy_browser);
+        let bp = job.info().browser_proxy.clone();
+        let (ua, on) = { let s = self.settings(); (s.user_agent.clone(), s.proxy_browser) }; // one lock: a second one in the same statement deadlocks
         let bp = match bp.strip_prefix("pac:") {
             Some(pac) => crate::win::pac_proxy(pac, &url).map_or(String::new(), |hp| proxy_url("http", &hp, "", "", "")),
             None => bp,
@@ -1349,7 +1350,7 @@ impl Core {
         let mut active = 0;
         dl.retain(|id| {
             let Some(j) = self.find(*id) else { return false };
-            let (st, started) = (j.info().status.clone(), j.info().done() > 0 || j.running());
+            let (st, started) = { let i = j.info(); (i.status.clone(), i.done() > 0 || j.running()) };
             if j.running() {
                 active += 1;
                 return true;
@@ -1700,7 +1701,8 @@ mod tests {
         core.apply_integration(true);
         let (on, server, _) = crate::win::system_proxy();
         assert!(on && server.starts_with(&format!("http=127.0.0.1:{PROXY_PORT}")), "{server}");
-        assert_eq!(core.settings().proxy_for("http://x.com/a"), if before.0 { core.settings().proxy_for("http://x.com/a") } else { String::new() }, "NDM's own downloads skip its proxy");
+        let p = core.settings().proxy_for("http://x.com/a");
+        assert_eq!(p, if before.0 { core.settings().proxy_for("http://x.com/a") } else { String::new() }, "NDM's own downloads skip its proxy");
         core.apply_integration(false);
         assert_eq!(crate::win::system_proxy(), before);
     }

@@ -108,6 +108,11 @@ fn tray_start() -> bool {
 }
 
 fn main() -> eframe::Result {
+    // no console: a panic would vanish without a trace, so it goes to crash.log next to state.json
+    std::panic::set_hook(Box::new(|p| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("{p}\n{bt}"));
+    }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     if win::is_host_launch(&args) {
         win::native_host(TITLE);
@@ -126,7 +131,8 @@ fn main() -> eframe::Result {
         let _ = std::fs::remove_file(exe.with_extension("old.exe")); // left behind by an update
     }
     let cli = core::cli_args(&args);
-    if win::show_running(TITLE) {
+    // a second start for the browser (/tray) mustn't bring the window out of the tray
+    if win::running(TITLE, !tray_start()) {
         // hand the command line to the running copy through its local endpoint
         if let Some(i) = cli {
             let body = serde_json::json!({ "url": i.url, "filename": i.filename, "force": true, "cli": true, "folder": i.folder,
@@ -418,23 +424,293 @@ fn extension_dir() -> Option<PathBuf> {
     exe.ancestors().map(|a| a.join("extension")).find(|p| p.join("manifest.json").exists())
 }
 
-/// The installed NDM folder (this app lives inside it, or NDM is in Program Files).
-/// Its toolbar bitmaps and icon are read from there at runtime; nothing of NDM's is copied into this app.
-/// NDM's help file (`ndman.chm` / `grabber.chm` next to NDM, 0x4c9b20), at `topic` if given.
-/// Returns whether it exists, so Help buttons can grey out without NDM.
-fn help(file: &str, topic: &str, open: bool) -> bool {
-    let Some(chm) = ndm_dir().map(|d| d.join(file)).filter(|p| p.exists()) else { return false };
-    if open {
-        let target = if topic.is_empty() { chm.display().to_string() } else { format!("{}::/{topic}", chm.display()) };
-        let _ = std::process::Command::new("hh.exe").arg(target).spawn();
-    }
-    true
+/// NDM's own help: `help\*.htm` next to the exe or in a parent folder.
+fn help_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors().map(|a| a.join("help")).find(|d| d.join("index.htm").exists())
 }
 
-fn ndm_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let pf = [r"C:\Program Files (x86)\New Download Manager", r"C:\Program Files\New Download Manager"];
-    exe.ancestors().map(Path::to_path_buf).chain(pf.map(PathBuf::from)).find(|d| d.join("NDM").exists())
+/// The help page the UI should show next ("page.htm" or "page.htm#anchor"), set by `help`.
+static HELP_REQ: Mutex<Option<String>> = Mutex::new(None);
+
+/// Opens NDM's help at `page` in its own window (`Dialog::Help`). Returns whether the help exists, so Help
+/// buttons grey out without it.
+fn help(page: &str, open: bool) -> bool {
+    let ok = help_dir().is_some();
+    if ok && open {
+        *HELP_REQ.lock().unwrap() = Some(page.to_string());
+    }
+    ok
+}
+
+/// What a help block is: the page heading (h1), its lead-in (p class="lead"), a section heading (h2),
+/// body text, a list item, a code line (pre) or a tip / note callout (p class="tip" / "note").
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+enum HelpKind {
+    #[default]
+    Text,
+    Title,
+    Lead,
+    Heading,
+    Item,
+    Code,
+    Tip,
+    Note,
+}
+
+/// A run of help text: bold, italic, key / code, link target.
+#[derive(Clone, Default, PartialEq, Debug)]
+struct HelpRun {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
+    link: Option<String>,
+}
+
+/// A help block: its kind, its id (the anchor links point at) and its runs.
+#[derive(Default)]
+struct HelpPara {
+    kind: HelpKind,
+    id: Option<String>,
+    runs: Vec<HelpRun>,
+}
+
+impl HelpPara {
+    fn text(&self) -> String {
+        self.runs.iter().map(|r| r.text.as_str()).collect::<String>().trim().to_string()
+    }
+}
+
+/// The small HTML the help pages are written in (h1, h2, p, p class=lead/tip/note, ul/li, pre, b, i,
+/// kbd/code, a href) as blocks; returns the page's <title> too.
+fn help_parse(html: &str) -> (String, Vec<HelpPara>) {
+    let lower = html.to_ascii_lowercase();
+    let title = lower.find("<title>").and_then(|a| lower[a..].find("</title>").map(|b| html[a + 7..a + b].trim().to_string())).unwrap_or_default();
+    let body = lower.find("<body").map_or(html, |i| &html[i..]);
+    let attr = |tag: &str, name: &str| {
+        let l = tag.to_ascii_lowercase();
+        let i = l.find(&format!("{name}="))? + name.len() + 1;
+        let v = tag[i..].trim_start_matches('"');
+        Some(v[..v.find(['"', ' ', '>']).unwrap_or(v.len())].to_string())
+    };
+    let (mut paras, mut cur) = (vec![], HelpPara::default());
+    let (mut bold, mut italic, mut code, mut link) = (0, 0, 0, None::<String>);
+    let flush = |cur: &mut HelpPara, paras: &mut Vec<HelpPara>| {
+        let kind = cur.kind;
+        if !cur.text().is_empty() {
+            paras.push(std::mem::take(cur));
+        }
+        cur.kind = kind;
+    };
+    for chunk in body.split('<').skip(1) {
+        let (tag, text) = chunk.split_once('>').unwrap_or((chunk, ""));
+        let name = tag.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        let block = match name.as_str() {
+            "h1" => Some(HelpKind::Title),
+            "h2" | "h3" => Some(HelpKind::Heading),
+            "li" => Some(HelpKind::Item),
+            "pre" => Some(HelpKind::Code),
+            "p" | "div" => Some(match attr(tag, "class").as_deref() {
+                Some("lead") => HelpKind::Lead,
+                Some("tip") => HelpKind::Tip,
+                Some("note") => HelpKind::Note,
+                _ => HelpKind::Text,
+            }),
+            _ => None,
+        };
+        match name.as_str() {
+            _ if block.is_some() => {
+                flush(&mut cur, &mut paras);
+                (cur.kind, cur.id) = (block.unwrap(), attr(tag, "id"));
+            }
+            "/h1" | "/h2" | "/h3" | "/li" | "/pre" | "/p" | "/div" | "ul" | "/ul" => {
+                flush(&mut cur, &mut paras);
+                cur.kind = HelpKind::Text;
+            }
+            "br" => flush(&mut cur, &mut paras),
+            "b" | "strong" => bold += 1,
+            "/b" | "/strong" => bold -= 1,
+            "i" | "em" => italic += 1,
+            "/i" | "/em" => italic -= 1,
+            "kbd" | "code" => code += 1,
+            "/kbd" | "/code" => code -= 1,
+            "a" => link = attr(tag, "href"),
+            "/a" => link = None,
+            _ => {}
+        }
+        let t = text.replace("&nbsp;", " ").replace("&gt;", ">").replace("&lt;", "<").replace("&quot;", "\"").replace("&amp;", "&");
+        let t = if cur.kind == HelpKind::Code { t.trim().to_string() } else { t.split_whitespace().collect::<Vec<_>>().join(" ") };
+        if t.is_empty() {
+            continue;
+        }
+        // keep the space the source had between runs
+        let space = if text.starts_with(char::is_whitespace) && !cur.runs.is_empty() { " " } else { "" };
+        let end = if text.ends_with(char::is_whitespace) { " " } else { "" };
+        cur.runs.push(HelpRun { text: format!("{space}{t}{end}"), bold: bold > 0, italic: italic > 0, code: code > 0, link: link.clone() });
+    }
+    flush(&mut cur, &mut paras);
+    (title, paras)
+}
+
+#[test]
+fn help_pages() {
+    let (title, p) = help_parse(r#"<html><head><title>T</title></head><body><h1>Head</h1><p class="lead">Lead</p><h2 id="x">Sec</h2><p><b>Bold</b> and <a href="b.htm#y">a link</a> -&gt; <kbd>Del</kbd></p><ul><li>One</li></ul><pre>a  b</pre><p class="tip">Tip</p></body></html>"#);
+    assert_eq!(title, "T");
+    let kinds: Vec<_> = p.iter().map(|p| p.kind).collect();
+    use HelpKind::*;
+    assert_eq!(kinds, [Title, Lead, Heading, Text, Item, Code, Tip]);
+    assert_eq!(p[2].id.as_deref(), Some("x"));
+    let runs: Vec<_> = p[3].runs.iter().map(|r| (r.text.as_str(), r.bold, r.code, r.link.as_deref())).collect();
+    assert_eq!(runs, [("Bold", true, false, None), (" and ", false, false, None), ("a link", false, false, Some("b.htm#y")), (" -> ", false, false, None), ("Del", false, true, None)]);
+    assert_eq!(p[5].text(), "a  b");
+    // every shipped page parses, has a heading, and its links point at pages and sections that exist
+    let dir = help_dir().expect("help folder");
+    for f in std::fs::read_dir(&dir).unwrap().flatten().filter(|f| f.path().extension().is_some_and(|e| e == "htm")) {
+        let (t, paras) = help_parse(&std::fs::read_to_string(f.path()).unwrap());
+        assert!(!t.is_empty() && paras.first().is_some_and(|p| p.kind == Title), "{:?}", f.path());
+        for l in paras.iter().flat_map(|p| &p.runs).filter_map(|r| r.link.as_deref()).filter(|l| !l.contains("://")) {
+            let (file, anchor) = l.split_once('#').map_or((l, None), |(f, a)| (f, Some(a)));
+            let (_, target) = help_parse(&std::fs::read_to_string(dir.join(file)).unwrap_or_else(|_| panic!("{l} in {:?}", f.path())));
+            assert!(anchor.is_none_or(|a| target.iter().any(|p| p.id.as_deref() == Some(a))), "{l} in {:?}", f.path());
+        }
+    }
+}
+
+/// The help window's icons: one glyph each (Segoe Fluent Icons / MDL2), drawn white and tinted when shown.
+/// A topic per page (file, glyph, colour), then the controls.
+const HELP_TOPICS: [(&str, u32, [u8; 3]); 10] = [
+    ("index.htm", 0xE80F, [84, 98, 120]),
+    ("starting.htm", 0xE896, [38, 120, 220]),
+    ("main.htm", 0xE7C4, [0, 150, 136]),
+    ("segmentation.htm", 0xE945, [239, 125, 0]),
+    ("streams.htm", 0xE714, [221, 55, 70]),
+    ("scheduler.htm", 0xE787, [118, 80, 230]),
+    ("grabber.htm", 0xE774, [22, 150, 90]),
+    ("options.htm", 0xE713, [96, 110, 130]),
+    ("customization.htm", 0xE790, [212, 40, 120]),
+    ("update.htm", 0xE895, [0, 125, 195]),
+];
+const HELP_SEARCH: usize = HELP_TOPICS.len();
+const HELP_BACK: usize = HELP_SEARCH + 1;
+const HELP_FWD: usize = HELP_SEARCH + 2;
+const HELP_TIP: usize = HELP_SEARCH + 3;
+const HELP_NOTE: usize = HELP_SEARCH + 4;
+const HELP_CONTROLS: [u32; 5] = [0xE721, 0xE72B, 0xE72A, 0xEA80, 0xE946];
+
+/// A help page's icon (index into the strip) and colour.
+fn help_topic_icon(file: &str) -> (usize, Color32) {
+    let i = HELP_TOPICS.iter().position(|t| t.0 == file).unwrap_or(0);
+    let [r, g, b] = HELP_TOPICS[i].2;
+    (i, Color32::from_rgb(r, g, b))
+}
+
+/// A texture made once and kept in egui's memory.
+fn cached_texture(ctx: &egui::Context, name: &str, make: impl FnOnce() -> Option<win::Rgba>) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new(("tex", name));
+    if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)) {
+        return t;
+    }
+    let t = make().map(|px| texture(ctx, name, &px));
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
+}
+
+fn help_icons(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    cached_texture(ctx, "help_icons", || {
+        let cells: Vec<(u32, [u8; 3])> = HELP_TOPICS.iter().map(|t| t.1).chain(HELP_CONTROLS).map(|g| (g, [255; 3])).collect();
+        glyph_strip(&cells, 64, 64, 46.0)
+    })
+}
+
+fn help_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    cached_texture(ctx, "help_logo", || Some(app_icon()))
+}
+
+/// Paints icon `i` of the help strip in `rect`, tinted `tint`.
+fn help_icon(ui: &egui::Ui, tex: &egui::TextureHandle, i: usize, rect: Rect, tint: Color32) {
+    let n = (HELP_TOPICS.len() + HELP_CONTROLS.len()) as f32;
+    let uv = Rect::from_min_max(egui::pos2(i as f32 / n, 0.0), egui::pos2((i + 1) as f32 / n, 1.0));
+    egui::Image::new((tex.id(), rect.size())).uv(uv).tint(tint).paint_at(ui, rect);
+}
+
+/// A help paragraph's runs, wrapped: links in `accent` (a click sets `go`), keys as small chips.
+fn help_runs(ui: &mut egui::Ui, runs: &[HelpRun], size: f32, color: Color32, strong: Color32, accent: Color32, go: &mut Option<String>) -> egui::Response {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(0.0, 5.0);
+        for r in runs {
+            let mut t = if r.code {
+                RichText::new(format!("\u{2009}{}\u{2009}", r.text.trim())).monospace().size(size - 1.5).color(strong).background_color(accent.gamma_multiply(0.1))
+            } else {
+                RichText::new(r.text.as_str()).size(size).color(if r.bold { strong } else { color })
+            };
+            if r.bold {
+                t = t.strong();
+            }
+            if r.italic {
+                t = t.italics();
+            }
+            match &r.link {
+                Some(l) => {
+                    if ui.add(egui::Link::new(t.color(accent))).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        *go = Some(l.clone());
+                    }
+                }
+                None => {
+                    ui.label(t);
+                }
+            }
+        }
+    })
+    .response
+}
+
+/// Help search: every section whose text has all the words, under its page and heading.
+fn help_search(
+    ui: &mut egui::Ui,
+    topics: &[(String, String, String)],
+    read: &dyn Fn(&str) -> (String, Vec<HelpPara>),
+    query: &str,
+    shown: &str,
+    (text, strong, weak, accent): (Color32, Color32, Color32, Color32),
+    go: &mut Option<String>,
+) {
+    ui.label(RichText::new(i18n::trf("Results for \"%s\"", &[&shown])).size(22.0).strong().color(strong));
+    ui.add_space(12.0);
+    let mut found = 0;
+    for (f, name, _) in topics.iter().skip(1) {
+        let (_, paras) = read(f);
+        let mut seen = HashSet::new();
+        let mut head: (Option<String>, String) = (None, String::new());
+        for p in &paras {
+            if p.kind == HelpKind::Heading {
+                head = (p.id.clone(), p.text());
+            }
+            let t = p.text();
+            let low = t.to_lowercase();
+            if !query.split_whitespace().all(|w| low.contains(w)) || !seen.insert(head.0.clone()) {
+                continue;
+            }
+            found += 1;
+            let r = egui::Frame::new().corner_radius(8).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let at = if head.1.is_empty() { tr(name) } else { format!("{}  \u{203A}  {}", tr(name), tr(&head.1)) };
+                ui.label(RichText::new(at).size(14.0).strong().color(accent));
+                let snip = if t.chars().count() > 180 { t.chars().take(180).collect::<String>() + "\u{2026}" } else { t.clone() };
+                ui.label(RichText::new(snip).size(13.0).color(text));
+            });
+            let r = r.response.interact(Sense::click());
+            if r.hovered() {
+                ui.painter().rect_filled(r.rect, 8.0, accent.gamma_multiply(0.07));
+            }
+            if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                *go = Some(head.0.as_ref().map_or(f.clone(), |id| format!("{f}#{id}")));
+            }
+        }
+    }
+    if found == 0 {
+        ui.label(RichText::new(tr("Nothing matches. Try fewer or different words.")).size(14.0).color(weak));
+    }
 }
 
 /// The app's own icon (assets/ndm.png, 256 px with alpha; the .exe gets assets/ndm.ico via build.rs).
@@ -517,41 +793,70 @@ const TB_BUTTONS: [(&str, &str, &str); TB_ICONS] = [
     ("✉", "Tell a Friend", "Write a letter to your friend about New Download Manager"),
 ];
 
-/// NDM's built-in toolbar skin (CCustomToolbars, NDM: the default when ToolbarStyle is unset).
-const NEON: &str = "Neon";
-
-/// Toolbar skins in `<NDM>\Toolbar\*.tbi` (0x4367d0): "v=3" first, then name / large / largeHot / small /
-/// smallHot / hdpi / hdpiHot lines; a skin counts when its name and the four large/small files exist.
-fn skins() -> Vec<(String, HashMap<String, PathBuf>)> {
-    let Some(dir) = ndm_dir().map(|d| d.join("Toolbar")) else { return Vec::new() };
-    let mut v: Vec<_> = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("tbi"))).filter_map(|e| {
-        let text = std::fs::read_to_string(e.path()).ok()?;
-        let mut lines = text.lines();
-        (lines.next()?.trim() == "v=3").then_some(())?;
-        let kv: HashMap<&str, &str> = lines.filter_map(|l| l.split_once('=')).map(|(k, v)| (k.trim(), v.trim())).collect();
-        let files: HashMap<String, PathBuf> = kv.iter().filter(|(k, _)| **k != "name").map(|(k, f)| (k.to_string(), dir.join(f))).filter(|(_, p)| p.exists()).collect();
-        let name = kv.get("name")?.to_string();
-        ["large", "largeHot", "small", "smallHot"].iter().all(|k| files.contains_key(*k)).then_some((name, files))
-    }).collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
-    v
+/// NDM's own icons: glyphs of Windows' icon font (Segoe Fluent Icons; Segoe MDL2 Assets on Windows 10),
+/// drawn in colour into textures when NDM starts. Nothing is bundled and nothing comes from another program.
+fn icon_font() -> Option<&'static ab_glyph::FontVec> {
+    static FONT: std::sync::OnceLock<Option<ab_glyph::FontVec>> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        let dir = Path::new(&std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into())).join("Fonts");
+        ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()).and_then(|b| ab_glyph::FontVec::try_from_vec(b).ok())
+    })
+    .as_ref()
 }
 
+/// A strip of `cells` (glyph code point, colour) side by side, each cell `cw` x `ch` px with the glyph `px` high.
+fn glyph_strip(cells: &[(u32, [u8; 3])], cw: usize, ch: usize, px: f32) -> Option<win::Rgba> {
+    use ab_glyph::Font;
+    let font = icon_font()?;
+    let (w, mut out) = (cw * cells.len(), vec![0u8; cw * cells.len() * ch * 4]);
+    for (k, (cp, rgb)) in cells.iter().enumerate() {
+        let id = font.glyph_id(char::from_u32(*cp)?);
+        let Some(g) = font.outline_glyph(id.with_scale(font.pt_to_px_scale(px * 0.75).unwrap_or(ab_glyph::PxScale::from(px)))) else { continue };
+        let b = g.px_bounds();
+        let (ox, oy) = ((k * cw) as f32 + (cw as f32 - b.width()) / 2.0, (ch as f32 - b.height()) / 2.0);
+        g.draw(|x, y, c| {
+            let (x, y) = ((ox + x as f32) as usize, (oy + y as f32) as usize);
+            if x < w && y < ch {
+                let i = (y * w + x) * 4;
+                out[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], (c.min(1.0) * 255.0) as u8]);
+            }
+        });
+    }
+    Some((w, ch, out))
+}
+
+/// A lighter copy of a strip, for hovered buttons.
+fn lighter((w, h, mut px): win::Rgba) -> win::Rgba {
+    for p in px.chunks_mut(4) {
+        for c in &mut p[..3] {
+            *c = (*c as u16 + (255 - *c as u16) * 2 / 5) as u8;
+        }
+    }
+    (w, h, px)
+}
+
+/// The toolbar's icons, in `TB_BUTTONS` order: (Segoe icon code point, colour).
+const TB_GLYPHS: [(u32, [u8; 3]); TB_ICONS] = [
+    (0xE710, [46, 158, 79]),   // Add URL
+    (0xE768, [30, 136, 229]),  // Resume
+    (0xE71A, [229, 57, 53]),   // Stop
+    (0xE769, [251, 140, 0]),   // Stop All
+    (0xE74D, [211, 47, 47]),   // Delete
+    (0xE930, [0, 137, 123]),   // Delete Completed
+    (0xE713, [126, 87, 194]),  // Options
+    (0xE823, [245, 124, 0]),   // Scheduler
+    (0xF5B0, [67, 160, 71]),   // Start Queue
+    (0xE81D, [198, 40, 40]),   // Stop Queue
+    (0xE774, [3, 155, 229]),   // Grabber
+    (0xE715, [142, 36, 170]),  // Tell a Friend
+];
+
 impl Toolbar {
-    fn load(ctx: &egui::Context, skin: &str, dark: bool) -> Option<Toolbar> {
-        let (normal, hot, small, small_hot) = match skins().into_iter().find(|s| s.0 == skin) {
-            Some((_, f)) => {
-                let bmp = |k: &str| f.get(k).and_then(|p| win::load_bmp(p));
-                (bmp("hdpi").or_else(|| bmp("large"))?, bmp("hdpiHot").or_else(|| bmp("largeHot")), bmp("small"), bmp("smallHot"))
-            }
-            // Neon, from NDM: large 495 (150% 498), hot 496/499, in dark mode the glowing 497/500
-            // (0x472b20); small 501, hot 502, dark 503 (0x472900)
-            None => {
-                let exe = ndm_dir()?.join("NDM");
-                let b = |id: u16| win::pe_bitmap(&exe, id, None);
-                (b(498).or_else(|| b(495))?, b(if dark { 500 } else { 499 }), b(501), b(if dark { 503 } else { 502 }))
-            }
-        };
+    fn load(ctx: &egui::Context, _skin: &str, _dark: bool) -> Option<Toolbar> {
+        // cells as the toolbar draws them: 56 x 42 px large, 32 x 32 px small
+        let normal = glyph_strip(&TB_GLYPHS, 56, 42, 34.0)?;
+        let small = glyph_strip(&TB_GLYPHS, 32, 32, 24.0);
+        let (hot, small_hot) = (Some(lighter(normal.clone())), small.clone().map(lighter));
         let hot = hot.unwrap_or_else(|| normal.clone());
         let small_hot = small_hot.or_else(|| small.clone());
         let gray = |mut g: win::Rgba| {
@@ -781,6 +1086,9 @@ enum Dialog {
     /// "NDM is waiting for the new address to resume the file" + Stop waiting (template 344,
     /// CMsgWaitingNewLinkDlg 0x4fee60) while "Refresh download address" waits for the browser.
     WaitLink { name: String },
+    /// NDM's help (`help\*.htm`): the page shown, an anchor to scroll to once, pages visited (Back / Forward)
+    /// and the search box.
+    Help { page: String, anchor: Option<String>, back: Vec<String>, fwd: Vec<String>, search: String },
     /// "Dial up" (template 184, CDialUpProgress): `Core::ensure_online`'s status, Redial now and Cancel.
     DialUp,
     /// The Site Grabber: wizard `step` (0 start page, 1 save files to, 2 explorer filters, 3 file filters, NDM's
@@ -1040,8 +1348,7 @@ fn segment_bar(ui: &mut egui::Ui, info: &Info, h: f32, bars: Option<[egui::Textu
     }
 }
 
-/// NDM's own bitmaps and icons, read from the installed NDMat runtime (as data).
-/// Resource IDs come from the PE resource tree (REA inspect_pe_resources).
+/// NDM's icons (see `icon_font`), keyed by the slot numbers the UI asks for.
 #[derive(Default)]
 struct Res {
     tree: HashMap<u16, egui::TextureHandle>,
@@ -1061,33 +1368,43 @@ impl Res {
             let px = img.to_rgba8();
             r.grab_pic = Some(ctx.load_texture("grabpic", egui::ColorImage::from_rgba_unmultiplied([px.width() as usize, px.height() as usize], px.as_raw()), egui::TextureOptions::LINEAR));
         }
-        let Some(exe) = ndm_dir().map(|d| d.join("NDM")) else { return r };
-        // 16x13 tree images keyed on (192,192,192): folders, categories, unfinished/finished, queues
-        for id in [214u16, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 282, 311, 312, 313, 315, 316, 329] {
-            if let Some(b) = win::pe_bitmap(&exe, id, Some([192, 192, 192])) {
-                r.tree.insert(id, texture(ctx, &format!("ndmb{id}"), &b));
+        let tex = |name: &str, i: Option<win::Rgba>| i.map(|i| texture(ctx, name, &i));
+        // tree images (drawn 16 x 13 pt): folders, statuses, categories, grabber projects, queues, limits
+        const FOLDER: [u8; 3] = [240, 170, 30];
+        let tree: [(u16, u32, [u8; 3]); 20] = [
+            (214, 0xE838, FOLDER), (215, 0xE8B7, FOLDER), (216, 0xE930, [46, 158, 79]), (217, 0xE930, [46, 158, 79]),
+            (218, 0xE896, [30, 136, 229]), (219, 0xE896, [30, 136, 229]), (220, 0xE8D6, [216, 27, 96]), (221, 0xE714, [229, 57, 53]),
+            (222, 0xE756, [84, 110, 122]), (223, 0xE8A5, [30, 136, 229]), (224, 0xE8B7, FOLDER), (225, 0xE7B8, [141, 110, 99]),
+            (282, 0xE774, [3, 155, 229]), (311, 0xE8FD, [94, 53, 177]), (312, 0xE8FD, [67, 160, 71]), (313, 0xE8FD, [94, 53, 177]),
+            (315, 0xE895, [0, 137, 123]), (316, 0xE895, [67, 160, 71]), (329, 0xEC4A, [251, 140, 0]), (104, 0xEA80, [251, 192, 45]),
+        ];
+        for (id, cp, rgb) in tree {
+            let (w, h, px) = if id == 104 { (48, 48, 40.0) } else { (32, 26, 24.0) };
+            if let Some(t) = tex(&format!("ndmt{id}"), glyph_strip(&[(cp, rgb)], w, h, px)) {
+                r.tree.insert(id, t);
             }
         }
-        // Tip of the Day light bulb (template 105, SS_BITMAP 104)
-        if let Some(b) = win::pe_bitmap(&exe, 104, None) {
-            r.tree.insert(104, texture(ctx, "ndmb104", &b));
-        }
-        let bar = |id: u16| win::pe_bitmap(&exe, id, None).map(|(w, h, px)| ctx.load_texture(format!("ndmbar{id}"), egui::ColorImage::from_rgba_unmultiplied([w, h], &px), egui::TextureOptions::NEAREST));
-        if let (Some(a), Some(b), Some(c), Some(d)) = (bar(358), bar(359), bar(361), bar(362)) {
-            r.bars = Some([a, b, c, d]);
-        }
-        if let (Some(n), Some(h)) = (win::pe_bitmap(&exe, 265, Some([192, 192, 192])), win::pe_bitmap(&exe, 266, Some([192, 192, 192]))) {
+        // grabber toolbar (10 icons, drawn 24 pt): explore, stop, check all, uncheck, download, stop download,
+        // add to the main list, refresh, schedule, statistics
+        let gtb = [(0xE721, [30, 136, 229]), (0xE71A, [229, 57, 53]), (0xE73A, [46, 158, 79]), (0xE739, [117, 117, 117]), (0xE896, [30, 136, 229]),
+            (0xE81D, [198, 40, 40]), (0xE8F4, [245, 124, 0]), (0xE72C, [0, 137, 123]), (0xE823, [245, 124, 0]), (0xE946, [94, 53, 177])];
+        if let Some(n) = glyph_strip(&gtb, 48, 48, 34.0) {
             let mut g = n.clone();
             for p in g.2.chunks_mut(4) {
                 let l = ((p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10) as u8;
                 p.copy_from_slice(&[l, l, l, p[3] / 2]);
             }
-            r.grab_tb = Some([texture(ctx, "gtbn", &n), texture(ctx, "gtbh", &h), texture(ctx, "gtbg", &g)]);
+            r.grab_tb = Some([texture(ctx, "gtbn", &n), texture(ctx, "gtbh", &lighter(n.clone())), texture(ctx, "gtbg", &g)]);
         }
-        // 32px page / dialog icons
-        for id in [128u16, 272, 273, 274, 275, 276, 277, 278, 293, 295, 331] {
-            if let Some(i) = win::pe_icon(&exe, id, 32) {
-                r.icons.insert(id, texture(ctx, &format!("ndmi{id}"), &i));
+        // 32 pt page and dialog icons: Options pages, site logins, dial up, sounds, queues, grabber schedule
+        let pages: [(u16, u32, [u8; 3]); 11] = [
+            (277, 0xE774, [3, 155, 229]), (295, 0xE8A5, [30, 136, 229]), (276, 0xE8B7, FOLDER), (293, 0xE896, [46, 158, 79]),
+            (273, 0xE9D9, [94, 53, 177]), (278, 0xE8AF, [0, 137, 123]), (272, 0xE8D7, [251, 140, 0]), (275, 0xE7EF, [84, 110, 122]),
+            (274, 0xE8D6, [216, 27, 96]), (331, 0xE8FD, [94, 53, 177]), (285, 0xE823, [245, 124, 0]),
+        ];
+        for (id, cp, rgb) in pages {
+            if let Some(t) = tex(&format!("ndmi{id}"), glyph_strip(&[(cp, rgb)], 64, 64, 52.0)) {
+                r.icons.insert(id, t);
             }
         }
         r
@@ -2002,10 +2319,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
             pad(ui, 29.0);
             ui.menu_button(mn("Help"), |ui| {
-                // NDM's tutorials are its installed tutor.chm / scheduler.chm (CDownloaderDlg::OnTutorials)
-                for (t, file) in [("Help contents", "ndman.chm"), ("Grabber Help", "grabber.chm"), ("Tutorials", "tutor.chm"), ("Scheduler and queues", "scheduler.chm")] {
-                    if ui.add_enabled(help(file, "", false), egui::Button::new(tr(t))).clicked() {
-                        help(file, "", true);
+                // NDM's four help entries, each opening a page of NDM's own help
+                for (t, page) in [("Help contents", "index.htm"), ("Grabber Help", "grabber.htm"), ("Tutorials", "starting.htm"), ("Scheduler and queues", "scheduler.htm")] {
+                    if ui.add_enabled(help(page, false), egui::Button::new(tr(t))).clicked() {
+                        help(page, true);
                         ui.close_menu();
                     }
                 }
@@ -2271,7 +2588,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     }
 
     /// NDM's toolbar menu (0x4613c0, also View -> Toolbar): Customize..., Large/Small Buttons, Look for new
-    /// toolbars, then Neon and every skin in `<NDM>\Toolbar`.
+    /// toolbars, then Modern / Classic style.
     fn toolbar_menu(&mut self, ui: &mut egui::Ui) {
         if ui.button(tr("Customize...")).clicked() {
             let layout = self.core.settings().tb_layout.clone();
@@ -2289,20 +2606,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         }
         ui.separator();
         if ui.button(tr("Look for new toolbars")).clicked() {
-            // the only toolbar page NDMlinks to; skins found there go into <NDM>\Toolbar
-            let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", "https://github.com/MoeJoe37/New-Download-Manager/releases"]).spawn();
+            // new toolbar styles come with new NDM releases
+            open_url(&format!("https://github.com/{UPDATE_REPO}/releases"));
             ui.close_menu();
         }
         ui.separator();
-        let cur = self.core.settings().tb_skin.clone();
-        for name in std::iter::once(NEON.to_string()).chain(skins().into_iter().map(|s| s.0)) {
-            if ui.radio(cur == name, tr(&name)).clicked() {
-                // the rest of the window follows the skin: Neon = NDM's look (tree chevrons, list grid),
-                // any other = the older 3D look (+/- tree boxes)
-                let mut s = self.core.settings();
-                s.classic = name != NEON;
-                s.tb_skin = name;
-                drop(s);
+        // Modern (tree chevrons, list grid lines) or Classic (+/- tree boxes, 3D look)
+        let classic = self.core.settings().classic;
+        for (name, c) in [("Modern style", false), ("Classic style", true)] {
+            if ui.radio(classic == c, tr(name)).clicked() {
+                self.core.settings().classic = c;
                 self.core.save();
                 ui.close_menu();
             }
@@ -2868,6 +3181,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Export { .. } => ("Export download list".into(), tpl(214.0, 47.0)),
             Dialog::WaitLink { .. } => (TITLE.into(), tpl(240.0, 46.0)),
             Dialog::DialUp => ("Dial up".into(), tpl(186.0, 55.0)),
+            Dialog::Help { .. } => ("New Download Manager Help".into(), None),
             Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 89.0)),
             Dialog::Update { .. } => ("Quick Update".into(), tpl(186.0, 34.0)),
             Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), tpl(286.0, 137.0)),
@@ -2898,7 +3212,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::GrabSettings { .. } => ("Settings of NDM Grabber".into(), tpl(292.0, 139.0)),
             Dialog::GrabManual { .. } => ("Manual login page".into(), tpl(260.0, 70.0)),
         };
-        let size = fixed.unwrap_or(Vec2::new(380.0, 170.0));
+        let size = fixed.unwrap_or(if matches!(d, Dialog::Help { .. }) { Vec2::new(980.0, 660.0) } else { Vec2::new(380.0, 170.0) });
         let id = ViewportId::from_hash_of(("dlg", key));
         // centred on the main window when it is first shown; kept there so the user can move it
         if !self.dlg_pos.contains_key(&key) {
@@ -2939,7 +3253,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ctx.send_viewport_cmd(ViewportCommand::InnerSize(sz));
                 }
             }
-            let frame = if fixed.is_some() { egui::Frame::new().fill(ctx.style().visuals.panel_fill) } else { egui::Frame::central_panel(&ctx.style()) };
+            let frame = if fixed.is_some() { egui::Frame::new().fill(ctx.style().visuals.panel_fill) } else if matches!(d, Dialog::Help { .. }) { egui::Frame::new() } else { egui::Frame::central_panel(&ctx.style()) };
             egui::CentralPanel::default().frame(frame).show(ctx, |ui| keep = self.dialog_body(ctx, ui, d));
             let closed = ctx.input(|i| i.viewport().close_requested());
             if let (true, Dialog::FileInfo { early: Some(j), .. }) = (closed, &*d) {
@@ -3782,8 +4096,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 // Sheet buttons
                 // NDM's sheet has OK and Help only; closing it (x) cancels
                 let ok = d.button(203.0, 291.5, 56.0, 13.0, "OK", true);
-                if d.button(265.0, 291.5, 56.0, 13.0, "Help", help("ndman.chm", "", false)) {
-                    help("ndman.chm", "Options.htm", true);
+                if d.button(265.0, 291.5, 56.0, 13.0, "Help", help("index.htm", false)) {
+                    help("options.htm", true);
                 }
                 let cancel = false;
                 if ok {
@@ -3983,8 +4297,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if d.button(199.0, 266.5, 48.0, 12.5, "Stop", running) {
                     self.core.stop_queue(queue.id);
                 }
-                if d.button(261.0, 266.5, 48.0, 12.5, "Help", help("ndman.chm", "", false)) {
-                    help("ndman.chm", "", true);
+                if d.button(261.0, 266.5, 48.0, 12.5, "Help", help("index.htm", false)) {
+                    help("scheduler.htm", true);
                 }
                 if is_limits {
                     d.button(324.5, 266.5, 48.0, 12.5, "Apply", false);
@@ -4641,7 +4955,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 d.label(7.0, 38.0, 248.0, 10.0, "Command line parameters");
                 d.edit(7.0, 48.0, 299.0, 14.0, args, true);
-                d.text(7.0, 68.0, 365.0, 142.0, format!("{}\n\n{}", tr("If you would like to run antiviral software on download completion, you should type or browse the complete path to its executable file. If NDM knows about necessary parameters for a given executable file name, it will set them automatically. Otherwise, you will have to set them manually in \"Command line parameters\" according to antiviral software documentation. The scanned file among different parameters should be written as\r\n[File]\r\n(you should type square brackets as well). If no parameters are set, NDM will execute antiviral software appending the complete path of a downloaded file."), tr("Note that all modern antiviral software have \"real-time protection\" feature that checks all operations with files on your computer, and it includes all files downloaded in NDM. Thus, you need to add antiviral software scanner to NDM settings only when real-time protection is turned off in antiviral software settings.\r\nAlso, in some cases, real time protection may significantly slow down the assembly of files made by NDM. Then you need to add NDMprocess to exceptions according to antiviral software documentation, and set up antiviral checking on this dialog.")));
+                d.text(7.0, 68.0, 365.0, 142.0, format!("{}\n\n{}", tr("If you would like to run antiviral software on download completion, you should type or browse the complete path to its executable file. If NDM knows about necessary parameters for a given executable file name, it will set them automatically. Otherwise, you will have to set them manually in \"Command line parameters\" according to antiviral software documentation. The scanned file among different parameters should be written as\r\n[File]\r\n(you should type square brackets as well). If no parameters are set, NDM will execute antiviral software appending the complete path of a downloaded file."), tr("Note that all modern antiviral software have \"real-time protection\" feature that checks all operations with files on your computer, and it includes all files downloaded in NDM. Thus, you need to add antiviral software scanner to NDM settings only when real-time protection is turned off in antiviral software settings.\r\nAlso, in some cases, real time protection may significantly slow down the assembly of files made by NDM. Then you need to add ndm.exe process to exceptions according to antiviral software documentation, and set up antiviral checking on this dialog.")));
                 let ok = d.button(110.0, 214.0, 50.0, 14.0, "OK", true);
                 if ok {
                     let v = (exe.trim().to_string(), args.trim().to_string());
@@ -4661,6 +4975,318 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.export(*ef2, *mode);
                 }
                 !(ok || d.button(157.0, 24.0, 50.0, 14.0, "Cancel", true))
+            }
+            Dialog::Help { page, anchor, back, fwd, search } => {
+                let Some(dir) = help_dir() else { return false };
+                let read = |f: &str| help_parse(&std::fs::read_to_string(dir.join(f)).unwrap_or_default());
+                let mut go = None::<String>;
+                // the topics: Home, then index.htm's list (link, name, summary)
+                let (_, index) = read("index.htm");
+                let topics: Vec<(String, String, String)> = std::iter::once(("index.htm".to_string(), "Home".to_string(), String::new()))
+                    .chain(index.iter().filter(|p| p.kind == HelpKind::Item).filter_map(|p| {
+                        let first = p.runs.first()?;
+                        let link = first.link.clone().filter(|l| !l.contains("://"))?;
+                        Some((link, first.text.trim().to_string(), p.runs[1..].iter().map(|r| r.text.as_str()).collect::<String>().trim().to_string()))
+                    }))
+                    .collect();
+                let file = page.split('#').next().unwrap_or("index.htm").to_string();
+                let (icons, logo) = (help_icons(ctx), help_logo(ctx));
+                let v = ui.visuals().clone();
+                let accent = if v.dark_mode { Color32::from_rgb(110, 170, 255) } else { BAR };
+                let (text, strong, weak) = (v.text_color(), v.strong_text_color(), v.weak_text_color());
+                let (side, paper, line) = if v.dark_mode {
+                    (Color32::from_gray(30), Color32::from_gray(22), Color32::from_gray(55))
+                } else {
+                    (Color32::from_rgb(244, 246, 249), Color32::WHITE, Color32::from_rgb(226, 230, 236))
+                };
+                let hand = egui::CursorIcon::PointingHand;
+
+                // sidebar: logo, search, contents
+                egui::SidePanel::left("help_nav").resizable(false).exact_width(236.0).show_separator_line(false)
+                    .frame(egui::Frame::new().fill(side).inner_margin(egui::Margin::symmetric(12, 16)))
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(t) = &logo {
+                                ui.add(egui::Image::new((t.id(), Vec2::splat(36.0))));
+                            }
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.label(RichText::new(tr("NDM Help")).size(17.0).strong().color(strong));
+                                ui.label(RichText::new(tr("New Download Manager")).size(11.5).color(weak));
+                            });
+                        });
+                        ui.add_space(14.0);
+                        egui::Frame::new().fill(paper).stroke(egui::Stroke::new(1.0_f32, line)).corner_radius(8).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(t) = &icons {
+                                    let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                                    help_icon(ui, t, HELP_SEARCH, r, weak);
+                                }
+                                ui.add(egui::TextEdit::singleline(search).hint_text(tr("Search help")).frame(false).desired_width(f32::INFINITY));
+                            });
+                        });
+                        ui.add_space(16.0);
+                        ui.label(RichText::new(tr("CONTENTS")).size(10.5).color(weak));
+                        ui.add_space(4.0);
+                        for (f, name, _) in &topics {
+                            let on = search.trim().is_empty() && *f == file;
+                            let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
+                            let p = ui.painter();
+                            if on {
+                                p.rect_filled(rect, 6.0, accent.gamma_multiply(0.13));
+                                p.rect_filled(Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)), 2.0, accent);
+                            } else if r.hovered() {
+                                p.rect_filled(rect, 6.0, if v.dark_mode { Color32::from_white_alpha(12) } else { Color32::from_black_alpha(10) });
+                            }
+                            if let Some(t) = &icons {
+                                let (i, c) = help_topic_icon(f);
+                                help_icon(ui, t, i, Rect::from_center_size(rect.left_center() + Vec2::new(22.0, 0.0), Vec2::splat(18.0)), c);
+                            }
+                            p.text(rect.left_center() + Vec2::new(42.0, 0.0), Align2::LEFT_CENTER, tr(name), FontId::proportional(13.5), if on { strong } else { text });
+                            if r.on_hover_cursor(hand).clicked() {
+                                go = Some(f.clone());
+                            }
+                        }
+                        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                            if ui.link(RichText::new(format!("{} \u{2197}", tr("NDM on GitHub"))).size(12.5).color(accent)).clicked() {
+                                go = Some(format!("https://github.com/{UPDATE_REPO}"));
+                            }
+                        });
+                    });
+
+                // top bar: back, forward, where you are
+                let pos = topics.iter().position(|t| t.0 == file);
+                let searching = !search.trim().is_empty();
+                egui::TopBottomPanel::top("help_bar").show_separator_line(false)
+                    .frame(egui::Frame::new().fill(paper).inner_margin(egui::Margin::symmetric(16, 10)))
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (i, is_back) in [(HELP_BACK, true), (HELP_FWD, false)] {
+                                let on = if is_back { !back.is_empty() } else { !fwd.is_empty() };
+                                let (rect, r) = ui.allocate_exact_size(Vec2::splat(30.0), if on { Sense::click() } else { Sense::hover() });
+                                if on && r.hovered() {
+                                    ui.painter().circle_filled(rect.center(), 15.0, accent.gamma_multiply(0.12));
+                                }
+                                if let Some(t) = &icons {
+                                    help_icon(ui, t, i, Rect::from_center_size(rect.center(), Vec2::splat(15.0)), if on { strong } else { weak.gamma_multiply(0.5) });
+                                }
+                                if on && r.on_hover_text(tr(if is_back { "Back" } else { "Forward" })).clicked() {
+                                    let (from, to) = if is_back { (&mut *back, &mut *fwd) } else { (&mut *fwd, &mut *back) };
+                                    if let Some(p) = from.pop() {
+                                        to.push(page.clone());
+                                        (*page, *anchor) = (p, None);
+                                        search.clear();
+                                    }
+                                }
+                            }
+                            ui.add_space(10.0);
+                            if ui.link(RichText::new(tr("Help")).size(13.0).color(weak)).clicked() {
+                                go = Some("index.htm".into());
+                            }
+                            if file != "index.htm" || searching {
+                                let here = if searching { tr("Search") } else { pos.map_or(String::new(), |i| tr(&topics[i].1)) };
+                                ui.label(RichText::new("\u{203A}").size(14.0).color(weak));
+                                ui.label(RichText::new(here).size(13.0).color(strong));
+                            }
+                        });
+                    });
+
+                // the page, in a centred reading column
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(paper)).show_inside(ui, |ui| {
+                    let query = search.trim().to_lowercase();
+                    egui::ScrollArea::vertical().auto_shrink(false).id_salt(("help", file.clone(), query.is_empty())).show(ui, |ui| {
+                        let width = (ui.available_width() - 64.0).clamp(300.0, 720.0);
+                        let pad = ((ui.available_width() - width) / 2.0).max(24.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(pad);
+                            ui.vertical(|ui| {
+                                ui.set_width(width);
+                                ui.add_space(18.0);
+                                if !query.is_empty() {
+                                    help_search(ui, &topics, &read, &query, search.trim(), (text, strong, weak, accent), &mut go);
+                                    return;
+                                }
+                                let (_, paras) = read(&file);
+                                let home = file == "index.htm";
+                                for (k, p) in paras.iter().enumerate() {
+                                    let resp = match p.kind {
+                                        HelpKind::Title if home => {
+                                            // the welcome banner, then a card per topic, two to a row
+                                            let lead = paras.get(k + 1).filter(|p| p.kind == HelpKind::Lead).map(HelpPara::text).unwrap_or_default();
+                                            egui::Frame::new().fill(accent.gamma_multiply(0.08)).corner_radius(14).inner_margin(egui::Margin::same(22)).show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    if let Some(t) = &logo {
+                                                        ui.add(egui::Image::new((t.id(), Vec2::splat(64.0))));
+                                                    }
+                                                    ui.add_space(10.0);
+                                                    ui.vertical(|ui| {
+                                                        ui.label(RichText::new(tr(&p.text())).size(25.0).strong().color(strong));
+                                                        ui.add_space(4.0);
+                                                        ui.label(RichText::new(tr(&lead)).size(14.0).color(text));
+                                                    });
+                                                });
+                                            });
+                                            ui.add_space(22.0);
+                                            ui.label(RichText::new(tr("BROWSE TOPICS")).size(10.5).color(weak));
+                                            ui.add_space(6.0);
+                                            let gap = 12.0;
+                                            let cw = (ui.available_width() - gap) / 2.0;
+                                            for pair in topics[1..].chunks(2) {
+                                                ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = gap;
+                                                    for (f, name, about) in pair {
+                                                        let (rect, r) = ui.allocate_exact_size(Vec2::new(cw, 84.0), Sense::click());
+                                                        let hot = r.hovered();
+                                                        let pnt = ui.painter();
+                                                        pnt.rect(rect, 10.0, if hot { accent.gamma_multiply(0.05) } else { paper }, egui::Stroke::new(1.0_f32, if hot { accent.gamma_multiply(0.6) } else { line }), egui::StrokeKind::Inside);
+                                                        let (i, c) = help_topic_icon(f);
+                                                        let ic = Rect::from_min_size(rect.left_top() + Vec2::new(14.0, 14.0), Vec2::splat(38.0));
+                                                        pnt.rect_filled(ic, 9.0, c.gamma_multiply(0.14));
+                                                        if let Some(t) = &icons {
+                                                            help_icon(ui, t, i, ic.shrink(9.0), c);
+                                                        }
+                                                        let x = ic.right() + 12.0;
+                                                        pnt.text(egui::pos2(x, rect.top() + 14.0), Align2::LEFT_TOP, tr(name), FontId::proportional(14.5), strong);
+                                                        let g = pnt.layout(tr(about), FontId::proportional(12.0), weak, rect.right() - x - 12.0);
+                                                        pnt.galley(egui::pos2(x, rect.top() + 36.0), g, weak);
+                                                        if r.on_hover_cursor(hand).clicked() {
+                                                            go = Some(f.clone());
+                                                        }
+                                                    }
+                                                });
+                                                ui.add_space(gap - ui.spacing().item_spacing.y);
+                                            }
+                                            ui.add_space(8.0);
+                                            continue;
+                                        }
+                                        HelpKind::Lead | HelpKind::Item if home => continue,
+                                        HelpKind::Title => ui.label(RichText::new(tr(&p.text())).size(28.0).strong().color(strong)),
+                                        HelpKind::Lead => {
+                                            ui.add_space(2.0);
+                                            let r = help_runs(ui, &p.runs, 15.5, weak, strong, accent, &mut go);
+                                            // "On this page": a chip per section
+                                            let heads: Vec<&HelpPara> = paras.iter().filter(|p| p.kind == HelpKind::Heading && p.id.is_some()).collect();
+                                            if heads.len() > 1 {
+                                                ui.add_space(16.0);
+                                                ui.label(RichText::new(tr("ON THIS PAGE")).size(10.5).color(weak));
+                                                ui.add_space(2.0);
+                                                ui.horizontal_wrapped(|ui| {
+                                                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                                                    for h in heads {
+                                                        let b = egui::Button::new(RichText::new(tr(&h.text())).size(12.5).color(accent)).fill(accent.gamma_multiply(0.09)).stroke(egui::Stroke::NONE).corner_radius(14);
+                                                        if ui.add(b).on_hover_cursor(hand).clicked() {
+                                                            *anchor = h.id.clone();
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                            ui.add_space(16.0);
+                                            ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0_f32, line));
+                                            r
+                                        }
+                                        HelpKind::Heading => {
+                                            ui.add_space(24.0);
+                                            let r = ui.label(RichText::new(tr(&p.text())).size(19.0).strong().color(strong));
+                                            let bar = Rect::from_min_size(egui::pos2(r.rect.left() - 14.0, r.rect.top() + 3.0), Vec2::new(4.0, r.rect.height() - 6.0));
+                                            ui.painter().rect_filled(bar, 2.0, accent);
+                                            ui.add_space(2.0);
+                                            r
+                                        }
+                                        HelpKind::Text => {
+                                            ui.add_space(6.0);
+                                            help_runs(ui, &p.runs, 14.5, text, strong, accent, &mut go)
+                                        }
+                                        HelpKind::Item => {
+                                            ui.add_space(4.0);
+                                            ui.horizontal(|ui| {
+                                                let (dot, _) = ui.allocate_exact_size(Vec2::new(16.0, 20.0), Sense::hover());
+                                                ui.painter().circle_filled(dot.center() - Vec2::new(3.0, 0.0), 3.0, accent);
+                                                ui.vertical(|ui| help_runs(ui, &p.runs, 14.5, text, strong, accent, &mut go)).inner
+                                            })
+                                            .inner
+                                        }
+                                        HelpKind::Code => {
+                                            ui.add_space(8.0);
+                                            let code_bg = if v.dark_mode { Color32::from_gray(38) } else { Color32::from_rgb(245, 247, 250) };
+                                            let r = egui::Frame::new().fill(code_bg).stroke(egui::Stroke::new(1.0_f32, line)).corner_radius(8).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.label(RichText::new(p.text()).monospace().size(13.0).color(strong));
+                                            });
+                                            ui.add_space(2.0);
+                                            r.response
+                                        }
+                                        HelpKind::Tip | HelpKind::Note => {
+                                            ui.add_space(12.0);
+                                            let tip = p.kind == HelpKind::Tip;
+                                            let c = if tip { accent } else { Color32::from_rgb(214, 140, 0) };
+                                            let r = egui::Frame::new().fill(c.gamma_multiply(0.08)).corner_radius(8).inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 10 }).show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    if let Some(t) = &icons {
+                                                        let (ir, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                                                        help_icon(ui, t, if tip { HELP_TIP } else { HELP_NOTE }, ir, c);
+                                                    }
+                                                    ui.vertical(|ui| {
+                                                        ui.label(RichText::new(tr(if tip { "Tip" } else { "Note" })).size(13.0).strong().color(c));
+                                                        help_runs(ui, &p.runs, 14.0, text, strong, accent, &mut go);
+                                                    });
+                                                });
+                                            });
+                                            let rr = r.response.rect;
+                                            ui.painter().rect_filled(Rect::from_min_size(rr.left_top(), Vec2::new(4.0, rr.height())), egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, c);
+                                            ui.add_space(4.0);
+                                            r.response
+                                        }
+                                    };
+                                    if p.id.is_some() && p.id == *anchor {
+                                        resp.scroll_to_me(Some(Align::TOP));
+                                        *anchor = None;
+                                    }
+                                }
+                                // previous / next topic
+                                if let Some(i) = pos.filter(|_| !home) {
+                                    ui.add_space(30.0);
+                                    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0_f32, line));
+                                    ui.add_space(16.0);
+                                    let cw = (ui.available_width() - 12.0) / 2.0;
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 12.0;
+                                        for (j, label, right) in [(i.checked_sub(1), "Previous", false), (Some(i + 1).filter(|j| *j < topics.len()), "Next", true)] {
+                                            let (rect, r) = ui.allocate_exact_size(Vec2::new(cw, 58.0), if j.is_some() { Sense::click() } else { Sense::hover() });
+                                            let Some(j) = j else { continue };
+                                            let hot = r.hovered();
+                                            let pnt = ui.painter();
+                                            pnt.rect(rect, 10.0, if hot { accent.gamma_multiply(0.05) } else { paper }, egui::Stroke::new(1.0_f32, if hot { accent.gamma_multiply(0.6) } else { line }), egui::StrokeKind::Inside);
+                                            let (align, x) = if right { (Align2::RIGHT_TOP, rect.right() - 16.0) } else { (Align2::LEFT_TOP, rect.left() + 16.0) };
+                                            let arrow = if right { format!("{} \u{2192}", tr(label)) } else { format!("\u{2190} {}", tr(label)) };
+                                            pnt.text(egui::pos2(x, rect.top() + 11.0), align, arrow, FontId::proportional(11.5), weak);
+                                            pnt.text(egui::pos2(x, rect.top() + 29.0), align, tr(&topics[j].1), FontId::proportional(14.5), accent);
+                                            if r.on_hover_cursor(hand).clicked() {
+                                                go = Some(topics[j].0.clone());
+                                            }
+                                        }
+                                    });
+                                }
+                                ui.add_space(28.0);
+                            });
+                        });
+                    });
+                });
+                if let Some(l) = go {
+                    if l.contains("://") {
+                        open_url(&l);
+                    } else {
+                        let (f, a) = l.split_once('#').map_or((l.clone(), None), |(f, a)| (f.to_string(), Some(a.to_string())));
+                        if f != file || !search.is_empty() {
+                            back.push(page.clone());
+                            fwd.clear();
+                        }
+                        (*page, *anchor) = (f, a);
+                        search.clear();
+                    }
+                }
+                true
             }
             Dialog::DialUp => {
                 let Some(text) = self.core.dial_text.lock().unwrap().clone() else { return false };
@@ -4886,7 +5512,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::Batch { url, from, to, width, letters, lf, lt, auth, login, pass } => {
                 let mut d = dlu::D::new(ui);
-                d.text(7.0, 4.0, 302.0, 37.0, tr("It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg").replace("www.example.com", "www.example.com"));
+                d.text(7.0, 4.0, 302.0, 37.0, tr("It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg"));
                 d.label(7.0, 47.0, 30.0, 10.0, "Address");
                 d.edit(39.0, 44.0, 270.0, 14.0, url, true);
                 d.group(7.0, 64.0, 302.0, 55.0, "Replace asterisk to");
@@ -5125,7 +5751,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         // SS_NOTIFY statics drawn as links (0x50020100): they open the grabber's help
                         let link = |d: &mut dlu::D, y: f32, w: f32, t: &str, c: Color32| d.at(119.0, y, w, 9.0, |ui| ui.add(egui::Label::new(RichText::new(tr(t)).color(c)).sense(Sense::click()))).clicked();
                         if link(&mut d, 77.0, 261.0, "What is the number of link levels?", Color32::from_rgb(0, 0, 255)) {
-                            help("grabber.chm", "", true);
+                            help("grabber.htm", true);
                         }
                         let mut ignore = !opts.popups;
                         if d.check(109.0, 91.0, 240.0, 10.0, &mut ignore, "Ignore popup windows").changed() {
@@ -5135,7 +5761,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d.check(109.0, 117.0, 240.0, 10.0, &mut opts.main_domain, "Explore all sites within the main domain");
                         d.check(109.0, 130.0, 240.0, 10.0, &mut opts.js, "Process JavaScript");
                         if link(&mut d, 141.0, 274.0, "Use this option carefully. What is the risk?", Color32::GRAY) {
-                            help("grabber.chm", "", true);
+                            help("grabber.htm", true);
                         }
                         if d.button(305.0, 153.0, 73.0, 14.0, &adv_label, true) {
                             *adv = !*adv;
@@ -5488,8 +6114,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     *layout = core::Settings::default().tb_layout;
                     (*avail, *cur) = (None, None);
                 }
-                if d.button(308.0, 40.0, 44.0, 14.0, "Help", help("ndman.chm", "", false)) {
-                    help("ndman.chm", "customization.htm", true);
+                if d.button(308.0, 40.0, 44.0, 14.0, "Help", help("index.htm", false)) {
+                    help("customization.htm", true);
                 }
                 if let Some(c) = cur.filter(|c| *c < layout.len()) {
                     if d.button(308.0, 74.0, 44.0, 14.0, "Move Up", c > 0) {
@@ -5616,7 +6242,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
             });
             if ui.button(tr("Help")).clicked() {
-                help("grabber.chm", "", true);
+                help("grabber.htm", true);
             }
         });
         if load {
@@ -5978,7 +6604,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     fn move_in_queue(&self, id: u64, dir: i32) {
         let mut jobs = self.core.jobs.lock().unwrap();
         let Some(q) = jobs.iter().find(|j| j.info().id == id).map(|j| j.info().queue) else { return };
-        let queued: Vec<usize> = (0..jobs.len()).filter(|k| jobs[*k].info().queued && jobs[*k].info().queue == q).collect();
+        let queued: Vec<usize> = (0..jobs.len()).filter(|k| { let i = jobs[*k].info(); i.queued && i.queue == q }).collect();
         let Some(p) = queued.iter().position(|k| jobs[*k].info().id == id) else { return };
         let q = p as i32 + dir;
         if q >= 0 && (q as usize) < queued.len() {
@@ -6026,12 +6652,20 @@ impl eframe::App for App {
         for url in win::take_drops() {
             self.incoming(ctx, Incoming { url, force: true, ..Default::default() });
         }
+        let want_help = HELP_REQ.lock().unwrap().take();
+        if let Some(p) = want_help {
+            let (f, a) = p.split_once('#').map_or((p.clone(), None), |(f, a)| (f.to_string(), Some(a.to_string())));
+            match self.dialogs.iter_mut().find_map(|(_, d)| if let Dialog::Help { page, anchor, .. } = d { Some((page, anchor)) } else { None }) {
+                Some((page, anchor)) => (*page, *anchor) = (f, a),
+                None => self.open(Dialog::Help { page: f, anchor: a, back: vec![], fwd: vec![], search: String::new() }),
+            }
+        }
         // after the incoming downloads: their dialogs need frames while the main window is in the tray
         win::PUMP.store(!self.dialogs.is_empty(), Relaxed);
         let want = self.core.settings().drop_target;
         if want != self.drop_shown {
             // NDM's drop-target picture (icon group 346, 48 px) from the installed NDM, else NDM's icon
-            let px = ndm_dir().and_then(|d| win::pe_icon(&d.join("NDM"), 346, 48)).unwrap_or_else(app_icon);
+            let px = app_icon();
             win::drop_target(want, &px);
             self.drop_shown = want;
         } else if want && !win::drop_target_visible() {

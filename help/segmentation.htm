@@ -1,0 +1,15 @@
+<html><head><title>How NDM downloads a file</title></head><body>
+<h1>How NDM downloads a file</h1>
+<p class="lead">NDM is fast because it never waits on a single connection. Here is what happens between clicking a link and finding the finished file.</p>
+
+<h2 id="Parts">Parallel parts</h2>
+<p>NDM's first request downloads the file itself. When the server allows fetching parts of a file, NDM opens more connections, one at a time, each fetching a different part. When a connection finishes its part early, it picks up some of the work still left, so every connection stays busy until the very end.</p>
+<p>The progress window shows every connection as a row, and the strip under the progress bar shows which parts have arrived.</p>
+
+<h2 id="Resume">Resuming</h2>
+<p>A stopped or broken download keeps its parts. Before resuming, NDM checks a few of the bytes it already has against the server's copy; if the file on the server has changed, NDM tells you instead of joining two different files.</p>
+<p class="note">Servers that don't allow parts can only start again from the beginning.</p>
+
+<h2 id="Connection">Connections and speed</h2>
+<p>The number of connections per download is set in <a href="options.htm#Connection">Options → Connection</a>, where you can also give single servers a lower limit. The speed limiter (right-click the notification area icon) caps the total speed of all downloads, so the rest of your network stays usable.</p>
+</body></html>

@@ -1,0 +1,14 @@
+<html><head><title>Video and audio streams</title></head><body>
+<h1>Video and audio streams</h1>
+<p class="lead">When a web page plays video or audio, the browser extension shows a small download panel over the player. It lists the files and streams the page loaded; choose one and NDM saves it.</p>
+
+<h2 id="HLS">HLS and DASH</h2>
+<p>Many sites send video as a playlist (.m3u8 or .mpd) of short pieces. NDM picks the best quality, downloads the pieces over several connections, decrypts AES-128 pieces and joins the video and audio into a single MP4 or WebM file, without any extra program.</p>
+<p class="tip">Live streams are recorded until you click Stop, and the recording so far is kept.</p>
+
+<h2 id="Legacy">mms, rtmp and rtsp</h2>
+<p>These older streaming addresses are recorded with ffmpeg. Install ffmpeg and make sure ffmpeg.exe is on your PATH.</p>
+
+<h2 id="Panel">The download panel</h2>
+<p>Streams protected by DRM can't be downloaded. In Options → General → Edit you choose whether the panel appears over them, which file types and minimum sizes it lists, and on which sites it stays hidden.</p>
+</body></html>

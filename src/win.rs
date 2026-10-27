@@ -157,28 +157,6 @@ pub fn visible(hwnd: isize) -> bool {
     unsafe { IsWindowVisible(hwnd as HWND) != 0 }
 }
 
-/// Uncompressed 24/32-bit .bmp -> RGBA (32-bit files keep their alpha).
-pub fn load_bmp(path: &Path) -> Option<Rgba> {
-    let d = std::fs::read(path).ok()?;
-    let u32_at = |o: usize| Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?));
-    let (off, w, h) = (u32_at(10)? as usize, u32_at(18)? as i32, u32_at(22)? as i32);
-    let bpp = u16::from_le_bytes(d.get(28..30)?.try_into().ok()?) as usize / 8;
-    if !(bpp == 3 || bpp == 4) || u32_at(30)? != 0 {
-        return None;
-    }
-    let (w, hh) = (w as usize, h.unsigned_abs() as usize);
-    let stride = (w * bpp).div_ceil(4) * 4;
-    let mut out = Vec::with_capacity(w * hh * 4);
-    for y in 0..hh {
-        let row = if h > 0 { hh - 1 - y } else { y };
-        let line = d.get(off + row * stride..off + row * stride + w * bpp)?;
-        for p in line.chunks(bpp) {
-            out.extend([p[2], p[1], p[0], if bpp == 4 { p[3] } else { 255 }]);
-        }
-    }
-    Some((w, hh, out))
-}
-
 /// Make every other top-level window of this thread (the dialogs) owned by `main`,
 /// so they stay above it like NDM's dialogs do.
 /// `retitle` re-applies the title bar theme to every dialog (after a theme switch);
@@ -214,72 +192,6 @@ pub fn dark_title(hwnd: isize, dark: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
     let v: i32 = dark as i32;
     unsafe { DwmSetWindowAttribute(hwnd as HWND, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&v as *const i32).cast(), 4) };
-}
-
-/// Bitmap resource `id` of a PE file (loaded as data, never executed), with `key` made transparent.
-pub fn pe_bitmap(path: &Path, id: u16, key: Option<[u8; 3]>) -> Option<Rgba> {
-    use windows_sys::Win32::Foundation::FreeLibrary;
-    use windows_sys::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE};
-    let p = wide(&path.display().to_string());
-    unsafe {
-        let m = LoadLibraryExW(p.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-        if m.is_null() {
-            return None;
-        }
-        let h = LoadImageW(m, id as usize as *const u16, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-        let out = if h.is_null() {
-            None
-        } else {
-            let mut bm: BITMAP = zeroed();
-            GetObjectW(h, size_of::<BITMAP>() as i32, (&mut bm as *mut BITMAP).cast());
-            let dc = GetDC(std::ptr::null_mut());
-            let px = dib(dc, h as HBITMAP, bm.bmWidth, bm.bmHeight);
-            ReleaseDC(std::ptr::null_mut(), dc);
-            DeleteObject(h);
-            px.map(|mut px| {
-                // 32-bit bitmaps with an alpha channel (NDM's Neon toolbar) keep it
-                let alpha = bm.bmBitsPixel == 32 && px.chunks(4).any(|p| p[3] != 0);
-                for p in px.chunks_mut(4) {
-                    p.swap(0, 2);
-                    if !alpha {
-                        p[3] = if key == Some([p[0], p[1], p[2]]) { 0 } else { 255 };
-                    }
-                }
-                (bm.bmWidth as usize, bm.bmHeight as usize, px)
-            })
-        };
-        FreeLibrary(m);
-        out
-    }
-}
-
-/// Icon group resource `id` of a PE file at `size` px (loaded as data, never executed).
-pub fn pe_icon(path: &Path, id: u16, size: i32) -> Option<Rgba> {
-    use windows_sys::Win32::Foundation::FreeLibrary;
-    use windows_sys::Win32::System::LibraryLoader::{LoadLibraryExW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE};
-    let p = wide(&path.display().to_string());
-    unsafe {
-        let m = LoadLibraryExW(p.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
-        if m.is_null() {
-            return None;
-        }
-        let h = LoadImageW(m, id as usize as *const u16, IMAGE_ICON, size, size, 0);
-        let out = if h.is_null() { None } else { icon_rgba(h as HICON) };
-        FreeLibrary(m);
-        out
-    }
-}
-
-/// Text in the ANSI code page of language `lcid` (how NDM reads non-UTF-8 language files).
-pub fn decode_ansi(b: &[u8], lcid: u32) -> String {
-    use windows_sys::Win32::Globalization::{GetLocaleInfoW, MultiByteToWideChar, LOCALE_IDEFAULTANSICODEPAGE, LOCALE_RETURN_NUMBER};
-    let mut cp = 0u32;
-    let got = unsafe { GetLocaleInfoW(lcid, LOCALE_IDEFAULTANSICODEPAGE | LOCALE_RETURN_NUMBER, (&mut cp as *mut u32).cast(), 2) };
-    let cp = if got == 0 { 1252 } else { cp };
-    let n = unsafe { MultiByteToWideChar(cp, 0, b.as_ptr(), b.len() as i32, std::ptr::null_mut(), 0) };
-    let mut w = vec![0u16; n.max(0) as usize];
-    unsafe { MultiByteToWideChar(cp, 0, b.as_ptr(), b.len() as i32, w.as_mut_ptr(), n) };
-    String::from_utf16_lossy(&w)
 }
 
 /// Changes whenever anything is copied (NDM watches with SetClipboardViewer, 0x45e1b0).
@@ -592,13 +504,9 @@ pub fn native_host(title: &str) {
     let _ = out.write_all(&(reply.len() as u32).to_le_bytes()).and_then(|_| out.write_all(reply)).and_then(|_| out.flush());
 }
 
-/// NDM runs once: starting it again shows the running window (the only way back with "Don't show"
-/// tray icon). Only a copy of this same exe counts, so a build elsewhere still runs side by side.
-pub fn show_running(title: &str) -> bool {
-    running(title, true)
-}
-
-/// Is a copy of this exe running (with its window `title`)? `activate` brings that window up.
+/// Is a copy of this exe running (with its window `title`)? `activate` brings that window up: like NDM,
+/// starting it again shows the running window (the only way back with "Don't show" tray icon). Only a
+/// copy of this same exe counts, so a build elsewhere still runs side by side.
 pub fn running(title: &str, activate: bool) -> bool {
     use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
     let me = std::env::current_exe().ok();

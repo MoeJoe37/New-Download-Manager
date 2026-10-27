@@ -1,0 +1,26 @@
+<html><head><title>Scheduler and queues</title></head><body>
+<h1>Scheduler and queues</h1>
+<p class="lead">Queues download their files a few at a time, in order, whenever you tell them to: overnight, on certain days, or as soon as NDM starts.</p>
+
+<h2 id="Queues">Queues</h2>
+<p><b>Download Later</b> puts a file in a queue; right-click downloads to move them between queues. The <i>Main Download Queue</i> always exists, and you can create more with <b>New queue</b> in the Scheduler.</p>
+
+<h2 id="Schedule">Schedule</h2>
+<p>For each queue, choose:</p>
+<ul>
+<li>when it starts: once, or every day or on chosen days at a set time;</li>
+<li>when it stops;</li>
+<li>how many files it downloads at once and how often a failed file is retried.</li>
+</ul>
+<p>A queue can also start whenever NDM starts.</p>
+
+<h2 id="Done">When a queue is done</h2>
+<p>Once a queue has finished, NDM can open a file, hang up a dial-up or VPN connection, exit, or shut down, sleep or hibernate the computer.</p>
+
+<h2 id="Sync">Synchronization queue</h2>
+<p>Files in a synchronization queue stay in it after they finish. Each time the queue runs, NDM asks the server whether each file has changed and downloads only the changed ones. Set <i>Start again every</i> to check them regularly.</p>
+
+<h2 id="Limits">Download limits</h2>
+<p>Limit how much NDM may download in a period, for example 200 MB every 5 hours. Downloading pauses when the limit is reached and carries on in the next period.</p>
+<p class="tip">Download limits are handy on metered connections and mobile hotspots.</p>
+</body></html>
