@@ -96,7 +96,7 @@ cargo test --release           # tests
 Installer ([Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 
 ```sh
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss   # installer\out\NDM-Setup-1.0.0.exe
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss   # installer\out\NDM-Setup-1.0.1.exe
 ```
 
 | Folder | What |

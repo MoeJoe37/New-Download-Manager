@@ -4,7 +4,7 @@
 ; Output: installer\out\NDM-Setup-<version>.exe
 
 #define AppName "New Download Manager"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppUrl "https://github.com/MoeJoe37/New-Download-Manager"
 
 [Setup]
