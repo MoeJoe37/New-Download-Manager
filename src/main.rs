@@ -14,12 +14,10 @@ use crate::core::{Core, Incoming, Settings, GENERAL};
 use crate::engine::{Info, Probe, Status};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_extras::{Column, TableBuilder};
-use tray_icon::menu::{CheckMenuItem, MenuItem};
-use tray_icon::TrayIcon;
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{TrayIcon, TrayIconBuilder};
 #[cfg(windows)]
-use tray_icon::menu::{Menu, MenuEvent, PredefinedMenuItem};
-#[cfg(windows)]
-use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
@@ -32,6 +30,8 @@ const TITLE: &str = "New Download Manager 1.0";
 /// (Help -> Check for updates, About -> Check for Update, and the automatic check every 2 weeks).
 /// Empty = no update source; the check says so.
 const UPDATE_REPO: &str = "MoeJoe37/New-Download-Manager";
+/// The Linux tray icon is up (its GTK thread owns it): closing the window hides it instead of quitting.
+static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// First argument of the copy started by "Update now".
 const UPDATED: &str = "/updated";
 /// The message when the release information can't be read.
@@ -47,10 +47,22 @@ struct Release {
     page: String,
 }
 
-/// The release file that replaces this program: ndm.exe on Windows, the AppImage on Linux.
+/// Installed by the setup (its uninstaller sits next to the exe): then an update runs the new setup, which also
+/// brings the new language, help and extension files.
+fn installed() -> bool {
+    cfg!(windows) && std::env::current_exe().is_ok_and(|e| e.with_file_name("unins000.exe").exists())
+}
+
+/// The release file that replaces this program: the setup (or a loose ndm.exe) on Windows, the AppImage on Linux.
 fn update_asset(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    if cfg!(windows) { n == "ndm.exe" } else { n.ends_with(".appimage") && n.contains("x86_64") }
+    if !cfg!(windows) {
+        n.ends_with(".appimage") && n.contains("x86_64")
+    } else if installed() {
+        n.starts_with("ndm-setup") && n.ends_with(".exe")
+    } else {
+        n == "ndm.exe"
+    }
 }
 
 /// The latest release on GitHub, if newer than this build (None = this is the latest).
@@ -100,6 +112,13 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
     let magic: &[u8] = if cfg!(windows) { b"MZ" } else { b"\x7fELF" };
     if data.len() < 1024 || !data.starts_with(magic) {
         return Err(String::new()); // not a program: just "cannot download the update file"
+    }
+    if installed() {
+        // the setup waits for this copy to exit, installs over it and starts the new version
+        let setup = std::env::temp_dir().join("NDM-Setup.exe");
+        std::fs::write(&setup, &data).map_err(|e| e.to_string())?;
+        std::process::Command::new(&setup).args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]).spawn().map_err(|e| e.to_string())?;
+        return Ok(());
     }
     let new = exe.with_extension("new.exe");
     std::fs::write(&new, &data).map_err(|e| e.to_string())?;
@@ -1187,9 +1206,10 @@ enum Dialog {
     ServerConn { orig: Option<usize>, server: String, n: String },
     /// "Quick Update" (template 182): checking for a new version (`quiet`: the automatic check, which
     /// says nothing unless there is one), or `get`ting it after "Update now" (bytes, total, result).
-    Update { slot: Arc<Mutex<Option<Result<Option<Release>, String>>>>, quiet: bool, get: Option<(Arc<std::sync::atomic::AtomicU64>, Arc<std::sync::atomic::AtomicU64>, Arc<Mutex<Option<Result<(), String>>>>)> },
+    Update { slot: Arc<Mutex<Option<Result<Option<Release>, String>>>>, quiet: bool },
     /// "New version of New Download Manager is available" (template 144).
-    NewVersion { rel: Release },
+    /// `get` while "Update now" downloads: (bytes, total, result).
+    NewVersion { rel: Release, get: Option<(Arc<std::sync::atomic::AtomicU64>, Arc<std::sync::atomic::AtomicU64>, Arc<Mutex<Option<Result<(), String>>>>)> },
     /// Find file (template 506, 0x4b0b10): search text and NDM's dwSearchFlags.
     Find { text: String, flags: u32 },
 }
@@ -1564,9 +1584,56 @@ impl App {
         app
     }
 
-    /// No notification-area icon off Windows yet (tray-icon needs its own GTK loop there): closing quits.
+    /// Linux: an AppIndicator on its own GTK thread (tray-icon needs GTK's loop and keeps its items there),
+    /// only where the desktop shows one; else closing quits. Sets LINUX_TRAY; the UI keeps no handles.
+    // ponytail: the Speed Limiter tick isn't updated from the UI side; needs a channel into the GTK thread
     #[cfg(not(windows))]
-    fn tray(_: &egui::Context, _: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
+    fn tray(ctx: &egui::Context, core: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
+        let style = core.settings().tray_icon;
+        if style == 3 || !win::tray_host() {
+            return None;
+        }
+        let (core, ctx) = (core.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            if gtk::init().is_err() {
+                return;
+            }
+            let open = MenuItem::new(i18n::tr("Open"), true, None);
+            let startq = MenuItem::new(i18n::tr("Start queue"), true, None);
+            let stopq = MenuItem::new(i18n::tr("Stop queue"), true, None);
+            let limit = CheckMenuItem::new(i18n::tr("Speed Limiter"), true, core.settings().limit_on, None);
+            let exit = MenuItem::new(i18n::tr("Exit"), true, None);
+            let menu = Menu::new();
+            if menu.append_items(&[&open, &PredefinedMenuItem::separator(), &startq, &stopq, &limit, &PredefinedMenuItem::separator(), &exit]).is_err() {
+                return;
+            }
+            let Some(tray) = tray_picture(style).and_then(|i| TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(TITLE).with_icon(i).build().ok()) else {
+                return;
+            };
+            LINUX_TRAY.store(true, Relaxed);
+            let ids = (open.id().clone(), startq.id().clone(), stopq.id().clone(), limit.id().clone(), exit.id().clone());
+            MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+                let (open, startq, stopq, limit, exit) = &ids;
+                if e.id == *open {
+                    ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                } else if e.id == *startq {
+                    core.start_queue(core::MAIN_QUEUE);
+                } else if e.id == *stopq {
+                    core.stop_queue(core::MAIN_QUEUE);
+                } else if e.id == *limit {
+                    let on = !core.settings().limit_on;
+                    core.settings().limit_on = on;
+                    core.apply_settings();
+                } else if e.id == *exit {
+                    core.shutdown();
+                    std::process::exit(0);
+                }
+                ctx.request_repaint();
+            }));
+            gtk::main();
+            drop(tray);
+        });
         None
     }
 
@@ -1762,7 +1829,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             *s.lock().unwrap() = Some(check_update(&agent));
             c.request_repaint();
         });
-        self.open(Dialog::Update { slot, quiet, get: None });
+        self.open(Dialog::Update { slot, quiet });
     }
 
     fn open_find(&mut self) {
@@ -3257,7 +3324,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Help { .. } => ("New Download Manager Help".into(), None),
             Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 89.0)),
             Dialog::Update { .. } => ("Quick Update".into(), tpl(186.0, 34.0)),
-            Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), tpl(286.0, 137.0)),
+            Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), Some(Vec2::new(520.0, 420.0))),
             Dialog::Virus { .. } => ("Virus checking".into(), tpl(379.0, 235.0)),
             Dialog::Columns { .. } => ("Columns".into(), tpl(236.0, 177.0)),
             Dialog::Find { .. } => ("Find file".into(), tpl(230.0, 148.0)),
@@ -4964,26 +5031,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.text(7.0, 7.0, 246.0, 38.0, text.as_str());
                 !d.button(105.0, 50.0, 50.0, 14.0, "OK", true)
             }
-            Dialog::Update { slot, quiet, get } => {
+            Dialog::Update { slot, quiet } => {
                 let mut d = dlu::D::new(ui);
-                if let Some((got, total, done)) = get {
-                    let (g, t) = (got.load(Relaxed), total.load(Relaxed));
-                    d.label(7.0, 4.0, 172.0, 9.0, format!("{} {}", tr("Update now"), human(g)));
-                    d.progress(7.0, 16.0, 172.0, 11.0, if t > 0 { g as f32 / t as f32 } else { 0.0 });
-                    let res = done.lock().unwrap().take();
-                    match res {
-                        Some(Ok(())) => {
-                            self.quitting = true;
-                            ctx.send_viewport_cmd(ViewportCommand::Close);
-                            return false;
-                        }
-                        Some(Err(e)) => {
-                            self.open(Dialog::Info { title: "Quick Update".into(), text: format!("{1}{0}{e}", if e.is_empty() { "" } else { "\r\n\r\n" }, tr("NDM cannot download the update file.\r\nYou can download a new version of NDM from NDM home site and install it over your current version manually")) });
-                            return false;
-                        }
-                        None => return true,
-                    }
-                }
                 d.label(7.0, 4.0, 172.0, 9.0, "Checking for new version");
                 let t = d.ui.input(|i| i.time) as f32;
                 d.progress(7.0, 16.0, 172.0, 11.0, (t * 0.5).fract()); // marquee-like while waiting
@@ -4992,7 +5041,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.core.settings().update_checked = chrono::Local::now().timestamp();
                 }
                 match res {
-                    Some(Ok(Some(rel))) => self.open(Dialog::NewVersion { rel }),
+                    Some(Ok(Some(rel))) => self.open(Dialog::NewVersion { rel, get: None }),
                     Some(Ok(None)) if !*quiet => self.open(Dialog::Info { title: "Quick Update".into(), text: "You are using the latest version of New Download Manager. Please check back again for updates at a later time.".into() }),
                     Some(Err(e)) if !*quiet => self.open(Dialog::Info { title: "Quick Update".into(), text: e }),
                     Some(_) => {}
@@ -5000,28 +5049,99 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 false
             }
-            Dialog::NewVersion { rel } => {
-                let mut d = dlu::D::new(ui);
-                let have = env!("CARGO_PKG_VERSION");
-                let mut text = format!("{}\n\n{}", i18n::trf("A new version of New Download Manager is available: %s (you have %s).", &[&rel.version, &have]), rel.notes);
-                let r = d.rect(7.0, 7.0, 272.0, 103.0);
-                d.ui.put(r, |ui: &mut egui::Ui| ui.add_sized(r.size(), egui::TextEdit::multiline(&mut text).interactive(false)));
-                // the release's page, to download by hand (the only way when no program for this system is attached)
-                let page = d.button(7.0, 116.0, 76.0, 14.0, "Download page", true);
-                if page {
-                    open_url(&rel.page);
-                }
-                let now = d.button(105.0, 116.0, 76.0, 14.0, "Update now", !rel.exe.is_empty());
-                if now {
-                    let (got, total, done) = (Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(Mutex::new(None)));
-                    let (agent, url, g, t, dn, c) = (self.core.agent(&rel.exe), rel.exe.clone(), got.clone(), total.clone(), done.clone(), ctx.clone());
-                    std::thread::spawn(move || {
-                        *dn.lock().unwrap() = Some(install_update(&agent, &url, &g, &t));
-                        c.request_repaint();
+            Dialog::NewVersion { rel, get } => {
+                let v = ui.visuals().clone();
+                let accent = if v.dark_mode { Color32::from_rgb(110, 170, 255) } else { BAR };
+                let (paper, line) = if v.dark_mode { (Color32::from_gray(26), Color32::from_gray(55)) } else { (Color32::WHITE, Color32::from_rgb(226, 230, 236)) };
+                let logo = help_logo(ctx);
+                let mut keep = true;
+                egui::Frame::new().inner_margin(egui::Margin::same(18)).show(ui, |ui| {
+                    // header: logo, the new version and the one installed
+                    ui.horizontal(|ui| {
+                        if let Some(t) = &logo {
+                            ui.add(egui::Image::new((t.id(), Vec2::splat(48.0))));
+                        }
+                        ui.add_space(8.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(tr("A new version is available")).size(19.0).strong().color(v.strong_text_color()));
+                            ui.label(RichText::new(format!("{} {} \u{2192} {}", tr("Version"), env!("CARGO_PKG_VERSION"), rel.version)).size(13.0).color(accent));
+                        });
                     });
-                    self.open(Dialog::Update { slot: Arc::default(), quiet: true, get: Some((got, total, done)) });
-                }
-                !(now || page || d.button(203.0, 116.0, 76.0, 14.0, "Cancel", true))
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(tr("What's new")).size(13.0).strong());
+                    ui.add_space(4.0);
+                    // the release notes (GitHub markdown: headings, bullets, **bold**) in a card
+                    egui::Frame::new().fill(paper).stroke(egui::Stroke::new(1.0_f32, line)).corner_radius(8).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::ScrollArea::vertical().max_height(ui.available_height() - 80.0).auto_shrink(false).show(ui, |ui| {
+                            let notes = if rel.notes.trim().is_empty() { tr("No release notes.") } else { rel.notes.clone() };
+                            let plain = |t: &str| t.replace(['*', '`'], "");
+                            for l in notes.lines().map(str::trim_end) {
+                                if let Some(h) = l.strip_prefix('#') {
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new(plain(h.trim_start_matches('#').trim())).size(14.0).strong().color(v.strong_text_color()));
+                                } else if let Some(b) = l.trim_start().strip_prefix("* ").or_else(|| l.trim_start().strip_prefix("- ")) {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(RichText::new("\u{2022}").color(accent));
+                                        ui.label(plain(b));
+                                    });
+                                } else if !l.is_empty() {
+                                    ui.label(plain(l));
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(14.0);
+                    if let Some((got, total, done)) = get {
+                        // downloading: a progress bar and the amount in place of the buttons
+                        let (g, t) = (got.load(Relaxed), total.load(Relaxed));
+                        let amount = if t > 0 { format!("{} / {}", human(g), human(t)) } else { human(g) };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(tr("Downloading the update")).strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(RichText::new(amount).color(v.weak_text_color())));
+                        });
+                        ui.add(egui::ProgressBar::new(if t > 0 { g as f32 / t as f32 } else { 0.0 }).fill(accent).desired_height(8.0).corner_radius(4).animate(t == 0));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(tr("New Download Manager restarts by itself when the update is installed.")).size(11.5).color(v.weak_text_color()));
+                        let res = done.lock().unwrap().take();
+                        match res {
+                            Some(Ok(())) => {
+                                self.quitting = true;
+                                ctx.send_viewport_cmd(ViewportCommand::Close);
+                                keep = false;
+                            }
+                            Some(Err(e)) => {
+                                self.open(Dialog::Info { title: "Quick Update".into(), text: format!("{1}{0}{e}", if e.is_empty() { "" } else { "\r\n\r\n" }, tr("NDM cannot download the update file.\r\nYou can download a new version of NDM from NDM home site and install it over your current version manually")) });
+                                keep = false;
+                            }
+                            None => ui.ctx().request_repaint_after(Duration::from_millis(100)),
+                        }
+                        return;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let big = Vec2::new(110.0, 30.0);
+                        let now = ui.add_enabled(!rel.exe.is_empty(), egui::Button::new(RichText::new(tr("Update now")).strong().color(Color32::WHITE)).fill(accent).corner_radius(6).min_size(big));
+                        if now.clicked() {
+                            let (got, total, done) = (Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(Mutex::new(None)));
+                            let (agent, url, g, t, dn, c) = (self.core.agent(&rel.exe), rel.exe.clone(), got.clone(), total.clone(), done.clone(), ctx.clone());
+                            std::thread::spawn(move || {
+                                *dn.lock().unwrap() = Some(install_update(&agent, &url, &g, &t));
+                                c.request_repaint();
+                            });
+                            *get = Some((got, total, done));
+                        }
+                        if ui.add(egui::Button::new(tr("Later")).corner_radius(6).min_size(big)).clicked() {
+                            keep = false;
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            // the release's page, to download by hand (the only way when no program for this system is attached)
+                            if ui.link(tr("Download page")).clicked() {
+                                open_url(&rel.page);
+                            }
+                        });
+                    });
+                });
+                keep
             }
             Dialog::Virus { exe, args } => {
                 let mut d = dlu::D::new(ui);
@@ -6705,9 +6825,11 @@ impl eframe::App for App {
             }
         }
         // Closing the window keeps it running in the notification area.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray.is_some() {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && (self.tray.is_some() || LINUX_TRAY.load(Relaxed)) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             win::hide(self.hwnd.load(Relaxed));
+            #[cfg(not(windows))]
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
             return;
         }
         if let Some((tray, limit, _)) = &self.tray {

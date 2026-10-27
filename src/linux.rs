@@ -1,8 +1,7 @@
 //! Linux stand-ins for `win.rs`: the same functions, done the freedesktop way where there is one
-//! (xdg-open, ~/.config/autostart, the browsers' NativeMessagingHosts folders, fc-match) and no-ops where
+//! (xdg-open, ~/.config/autostart, the browsers' NativeMessagingHosts folders, fc-match, an AppIndicator
+//! tray) and no-ops where
 //! Linux has nothing alike (dial-up, WinINet cache, shell icons, the drop target).
-// ponytail: no tray icon on Linux (closing the window quits) and no clipboard watching; add them with a
-// GTK thread for tray-icon and an X11/Wayland clipboard owner check.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -32,8 +31,24 @@ pub fn visible(_hwnd: isize) -> bool {
 pub fn own_dialogs(_main: isize, _dark: bool, _retitle: bool, _light: &[String]) {}
 pub fn dark_title(_hwnd: isize, _dark: bool) {}
 
+/// X11 / Wayland keep no clipboard change counter: a hash of the clipboard text stands in for it.
 pub fn clip_seq() -> u32 {
-    0
+    use std::hash::{Hash, Hasher};
+    thread_local!(static CLIP: std::cell::RefCell<Option<arboard::Clipboard>> = std::cell::RefCell::new(arboard::Clipboard::new().ok()));
+    let text = CLIP.with(|c| c.borrow_mut().as_mut().and_then(|c| c.get_text().ok())).unwrap_or_default();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish() as u32
+}
+
+/// A tray on the desktop: a StatusNotifierItem host on the session bus (KDE, Xfce, Cinnamon, MATE,
+/// GNOME with the AppIndicator extension). Without one a tray icon would be invisible.
+pub fn tray_host() -> bool {
+    Command::new("gdbus")
+        .args(["call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.NameHasOwner", "org.kde.StatusNotifierWatcher"])
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("true"))
 }
 
 /// A sound file through PulseAudio / PipeWire, else ALSA.

@@ -4,7 +4,7 @@
 ; Output: installer\out\NDM-Setup-<version>.exe
 
 #define AppName "New Download Manager"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 #define AppUrl "https://github.com/MoeJoe37/New-Download-Manager"
 
 [Setup]
@@ -30,8 +30,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; NDM keeps everything per user (HKCU, %APPDATA%), so it installs without admin rights unless asked to
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-; a running NDM is closed for the update / uninstall
-CloseApplications=yes
+; NDM is waited for / asked to exit in [Code] (it hides to the tray, so closing its window doesn't end it)
+CloseApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -62,3 +62,45 @@ Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\com.ndm.host"; Flags:
 
 [Run]
 Filename: "{app}\ndm.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; an update from NDM runs this setup silently: start the new version afterwards
+Filename: "{app}\ndm.exe"; Flags: nowait skipifnotsilent
+
+[UninstallDelete]
+Type: files; Name: "{app}\ndm.old.exe"
+Type: files; Name: "{app}\ndm.*.old"
+
+[Code]
+const
+  NdmWindow = 'New Download Manager 1.0';
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  I: Integer;
+  Exe, Old: String;
+begin
+  Result := '';
+  { started by NDM's "Update now": NDM is closing, give it time to save and exit }
+  for I := 1 to 100 do
+  begin
+    if FindWindowByWindowName(NdmWindow) = 0 then Break;
+    Sleep(200);
+  end;
+  while FindWindowByWindowName(NdmWindow) <> 0 do
+    if SuppressibleMsgBox('New Download Manager is running. Exit it (right-click its tray icon, Exit), then click Retry.',
+         mbError, MB_RETRYCANCEL, IDCANCEL) = IDCANCEL then
+    begin
+      Result := 'New Download Manager is still running.';
+      Exit;
+    end;
+  { a browser can still hold ndm.exe open as its native messaging host: a running exe can be renamed but
+    not replaced, so move it aside (NDM deletes ndm.old.exe at its next start) }
+  Exe := ExpandConstant('{app}\ndm.exe');
+  if FileExists(Exe) then
+  begin
+    Old := ExpandConstant('{app}\ndm.old.exe');
+    DeleteFile(Old);
+    if FileExists(Old) then
+      Old := ExpandConstant('{app}\ndm.') + IntToStr(Random(1000000)) + '.old'; { ponytail: stays until uninstall }
+    RenameFile(Exe, Old);
+  end;
+end;
