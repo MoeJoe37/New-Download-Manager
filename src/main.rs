@@ -32,6 +32,8 @@ const TITLE: &str = "New Download Manager 1.0";
 const UPDATE_REPO: &str = "MoeJoe37/New-Download-Manager";
 /// The Linux tray icon is up (its GTK thread owns it): closing the window hides it instead of quitting.
 static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(not(windows))]
+thread_local!(static LIMIT_ITEM: std::cell::RefCell<Option<CheckMenuItem>> = const { std::cell::RefCell::new(None) });
 /// First argument of the copy started by "Update now".
 const UPDATED: &str = "/updated";
 /// The message when the release information can't be read.
@@ -433,7 +435,7 @@ fn open_folder_of(path: &Path) {
         #[cfg(windows)]
         explore(format!("/select,{}", path.display()));
         #[cfg(not(windows))]
-        explore(path.parent().unwrap_or(path));
+        win::show_in_folder(path);
     } else if let Some(p) = path.parent() {
         explore(p);
     }
@@ -778,12 +780,12 @@ fn open_url(u: &str) {
     win::open(u);
 }
 
-/// "Open with...": Windows' program chooser; elsewhere the default program.
+/// "Open with...": the system's program chooser.
 fn open_with(p: impl AsRef<std::ffi::OsStr>) {
     #[cfg(windows)]
     let _ = std::process::Command::new("rundll32").arg("shell32.dll,OpenAs_RunDLL").arg(p).spawn();
     #[cfg(not(windows))]
-    win::open(p);
+    win::open_with(Path::new(p.as_ref()));
 }
 
 const GRAB_FILTERS: [(&str, &str); 7] = [
@@ -1582,12 +1584,18 @@ impl App {
         if !UPDATE_REPO.is_empty() && chrono::Local::now().timestamp() - checked > 14 * 86400 {
             app.check_updates(ctx, true);
         }
+        // Windows hooks drops up once it has the window (update); the Linux drop target only needs a repaint
+        #[cfg(not(windows))]
+        {
+            let c = ctx.clone();
+            win::accept_drops(0, move || c.request_repaint());
+        }
         app
     }
 
-    /// Linux: an AppIndicator on its own GTK thread (tray-icon needs GTK's loop and keeps its items there),
-    /// only where the desktop shows one; else closing quits. Sets LINUX_TRAY; the UI keeps no handles.
-    // ponytail: the Speed Limiter tick isn't updated from the UI side; needs a channel into the GTK thread
+    /// Linux: an AppIndicator on the GTK thread (tray-icon needs GTK's loop and keeps its items there), only
+    /// where the desktop shows one; else closing quits. Sets LINUX_TRAY; the items stay on that thread
+    /// (`LIMIT_ITEM` for the Speed Limiter tick).
     #[cfg(not(windows))]
     fn tray(ctx: &egui::Context, core: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
         let style = core.settings().tray_icon;
@@ -1595,10 +1603,7 @@ impl App {
             return None;
         }
         let (core, ctx) = (core.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            if gtk::init().is_err() {
-                return;
-            }
+        win::gtk_spawn(move || {
             let open = MenuItem::new(i18n::tr("Open"), true, None);
             let startq = MenuItem::new(i18n::tr("Start queue"), true, None);
             let stopq = MenuItem::new(i18n::tr("Stop queue"), true, None);
@@ -1632,8 +1637,8 @@ impl App {
                 }
                 ctx.request_repaint();
             }));
-            gtk::main();
-            drop(tray);
+            LIMIT_ITEM.with(|l| *l.borrow_mut() = Some(limit));
+            std::mem::forget(tray); // lives as long as the app
         });
         None
     }
@@ -6846,6 +6851,25 @@ impl eframe::App for App {
         let h = self.hwnd.load(Relaxed);
         if tray_start() && win::visible(h) && !TRAYED.swap(true, Relaxed) {
             win::hide(h);
+        }
+        #[cfg(not(windows))]
+        if LINUX_TRAY.load(Relaxed) {
+            static TRAYED_LINUX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if tray_start() && !TRAYED_LINUX.swap(true, Relaxed) {
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            }
+            // the tray menu's Speed Limiter tick follows the setting (its item lives on the GTK thread)
+            static LIMIT_SHOWN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+            let on = self.core.settings().limit_on;
+            if LIMIT_SHOWN.swap(on as u8, Relaxed) != on as u8 {
+                win::gtk_spawn(move || LIMIT_ITEM.with(|l| l.borrow().as_ref().map(|l| l.set_checked(on))).unwrap_or_default());
+            }
+        }
+        // a link dropped on the drop target, or its double click, brings a hidden main window back
+        #[cfg(not(windows))]
+        if win::take_show() {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
         }
         while let Ok(inc) = self.rx.try_recv() {
             self.incoming(ctx, inc);

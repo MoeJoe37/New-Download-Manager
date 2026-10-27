@@ -1,6 +1,6 @@
 [package]
 name = "ndm"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 
 [dependencies]
@@ -30,8 +30,12 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphic
 aes = "0.8"
 cbc = "0.1"
 md5 = { package = "md-5", version = "0.10" }
-# the tray icon's own loop (tray-icon already builds on it)
+# the tray icon, drop target, choosers and icon theme (tray-icon already builds on it)
 gtk = "0.18"
+# NTLM (Windows does it in SSPI)
+md4 = "0.10"
+# PAC scripts (Windows runs them in WinHTTP)
+rquickjs = "0.9"
 
 [profile.release]
 opt-level = 3

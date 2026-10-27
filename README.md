@@ -79,7 +79,9 @@
 3. Start NDM once, so the browser can reach it.
 
 **Linux:** download `NDM-x86_64.AppImage` from Releases, make it executable (`chmod +x NDM-x86_64.AppImage`)
-and run it. On Linux NDM has no tray icon yet (closing the window quits) and no dial-up support.
+and run it. Everything the Windows version has works there too: the tray icon (on desktops with a tray: KDE, Xfce,
+Cinnamon, MATE, GNOME with the AppIndicator extension), the drop target, dial-up / VPN through NetworkManager,
+the desktop's proxy, PAC scripts, NTLM sign-in and Firefox's cache.
 
 NDM checks the Releases page for new versions (Help → Check for updates, and by itself every two weeks).
 

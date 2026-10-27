@@ -357,9 +357,162 @@ pub(crate) fn call(r: ureq::Request) -> Result<ureq::Response, String> {
 /// NTLM / Negotiate: Windows builds the tokens (SSPI), with the URL's login ("DOMAIN\user" allowed) or,
 /// without one, the signed-in Windows user. NTLM's legs must share the TCP connection: ureq's pool hands
 /// the same keep-alive connection back as long as each response is read to the end.
+/// Elsewhere NTLMv2 is done here (MS-NLMP), with the URL's login only: there is no signed-in Windows user.
+/// Negotiate gets the same NTLM tokens (SPNEGO servers accept raw NTLMSSP).
+// ponytail: no Kerberos; a Negotiate server that refuses NTLM fails
 #[cfg(not(windows))]
-fn sspi(_r: &ureq::Request, _u: &url::Url, pkg: &str) -> Result<ureq::Response, String> {
-    Err(format!("{pkg} sign-in needs Windows"))
+fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, String> {
+    let (login, pass) = (pct_decode(u.username()), pct_decode(u.password().unwrap_or("")));
+    if login.is_empty() {
+        return Err(format!("{pkg} sign-in needs a user name and password in the address"));
+    }
+    let (domain, user) = login.split_once('\\').unwrap_or(("", &login));
+    let send = |token: &[u8]| {
+        r.clone().set("Authorization", &format!("{pkg} {}", b64(token))).call().map_err(|e| match e {
+            ureq::Error::Status(401, resp) => {
+                let next = resp.all("WWW-Authenticate").iter().find_map(|c| strip_ci(c.trim(), &format!("{pkg} ")).map(str::to_string));
+                let _ = resp.into_string(); // the next leg goes on this keep-alive connection
+                next.map_or(Err("401 Unauthorized".to_string()), Ok)
+            }
+            e => Err(err(e)),
+        })
+    };
+    match send(&ntlm::negotiate()) {
+        Ok(resp) => Ok(resp),
+        Err(Ok(challenge)) => {
+            let auth = ntlm::authenticate(&unb64(&challenge), user, domain, &pass).ok_or(format!("{pkg} authentication failed"))?;
+            send(&auth).map_err(|e| e.map_or_else(|e| e, |_| "401 Unauthorized".into()))
+        }
+        Err(Err(e)) => Err(e),
+    }
+}
+
+/// NTLM's messages (MS-NLMP): NEGOTIATE, then AUTHENTICATE with an NTLMv2 response to the CHALLENGE.
+#[cfg(not(windows))]
+mod ntlm {
+    use md5::Digest;
+
+    // UNICODE | OEM | REQUEST_TARGET | NTLM | ALWAYS_SIGN | EXTENDED_SESSIONSECURITY | TARGET_INFO | 128 | 56
+    const FLAGS: u32 = 0x0000_0001 | 0x0000_0002 | 0x0000_0004 | 0x0000_0200 | 0x0000_8000 | 0x0008_0000 | 0x0080_0000 | 0x2000_0000 | 0x8000_0000;
+
+    pub fn negotiate() -> Vec<u8> {
+        let mut m = b"NTLMSSP\0".to_vec();
+        m.extend(1u32.to_le_bytes());
+        m.extend(FLAGS.to_le_bytes());
+        m.extend([0u8; 16]); // no domain, no workstation
+        m
+    }
+
+    fn utf16(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    fn hmac_md5(key: &[u8], parts: &[&[u8]]) -> [u8; 16] {
+        let mut k = [0u8; 64];
+        k[..key.len()].copy_from_slice(key); // keys here are 16 bytes
+        let mut inner = md5::Md5::new();
+        inner.update(k.map(|b| b ^ 0x36));
+        parts.iter().for_each(|p| inner.update(p));
+        let mut outer = md5::Md5::new();
+        outer.update(k.map(|b| b ^ 0x5c));
+        outer.update(inner.finalize());
+        outer.finalize().into()
+    }
+
+    /// NTOWFv2: HMAC-MD5(MD4(password), UPPER(user) + domain), UTF-16LE.
+    fn ntowf(user: &str, domain: &str, pass: &str) -> [u8; 16] {
+        use md4::Md4;
+        let nt: [u8; 16] = Md4::digest(utf16(pass)).into();
+        hmac_md5(&nt, &[&utf16(&(user.to_uppercase() + domain))])
+    }
+
+    /// The AUTHENTICATE message for a CHALLENGE (server challenge at 24, target info at 40).
+    pub fn authenticate(challenge: &[u8], user: &str, domain: &str, pass: &str) -> Option<Vec<u8>> {
+        authenticate_at(challenge, user, domain, pass, client_nonce(), now())
+    }
+
+    fn authenticate_at(challenge: &[u8], user: &str, domain: &str, pass: &str, cc: [u8; 8], now: u64) -> Option<Vec<u8>> {
+        if !challenge.starts_with(b"NTLMSSP\0\x02\0\0\0") {
+            return None;
+        }
+        let server = challenge.get(24..32)?;
+        let field = |at: usize| -> Option<&[u8]> {
+            let len = u16::from_le_bytes(challenge.get(at..at + 2)?.try_into().ok()?) as usize;
+            let off = u32::from_le_bytes(challenge.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+            challenge.get(off..off + len)
+        };
+        let info = field(40).unwrap_or(&[]);
+        // the server's time when it sends one (MsvAvTimestamp, id 7); then no LMv2 response either
+        let mut ts = None;
+        let mut i = 0;
+        while let (Some(id), Some(len)) = (info.get(i..i + 2), info.get(i + 2..i + 4)) {
+            let (id, len) = (u16::from_le_bytes([id[0], id[1]]), u16::from_le_bytes([len[0], len[1]]) as usize);
+            if id == 7 && len == 8 {
+                ts = info.get(i + 4..i + 12).map(|t| t.to_vec());
+            }
+            if id == 0 {
+                break;
+            }
+            i += 4 + len;
+        }
+        let key = ntowf(user, domain, pass);
+        let mut blob = vec![1, 1, 0, 0, 0, 0, 0, 0];
+        blob.extend(ts.clone().unwrap_or_else(|| now.to_le_bytes().to_vec()));
+        blob.extend(cc);
+        blob.extend([0u8; 4]);
+        blob.extend(info);
+        blob.extend([0u8; 4]);
+        let proof = hmac_md5(&key, &[server, &blob]);
+        let nt = [&proof[..], &blob].concat();
+        let lm = if ts.is_some() { vec![0u8; 24] } else { [&hmac_md5(&key, &[server, &cc])[..], &cc].concat() };
+        let (d, u, ws) = (utf16(domain), utf16(user), Vec::new());
+        // header: signature, type, 6 fields (len, max, offset), flags; then the payload
+        let mut m = b"NTLMSSP\0".to_vec();
+        m.extend(3u32.to_le_bytes());
+        let mut payload: Vec<u8> = Vec::new();
+        for part in [&lm, &nt, &d, &u, &ws, &Vec::new()] {
+            let off = 64 + payload.len();
+            m.extend((part.len() as u16).to_le_bytes());
+            m.extend((part.len() as u16).to_le_bytes());
+            m.extend((off as u32).to_le_bytes());
+            payload.extend(part.iter());
+        }
+        m.extend(FLAGS.to_le_bytes());
+        m.extend(payload);
+        Some(m)
+    }
+
+    /// 100 ns ticks since 1601 (Windows FILETIME).
+    fn now() -> u64 {
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        (unix.as_nanos() / 100) as u64 + 116_444_736_000_000_000
+    }
+
+    fn client_nonce() -> [u8; 8] {
+        use std::hash::BuildHasher;
+        std::collections::hash_map::RandomState::new().hash_one(now()).to_le_bytes()
+    }
+
+    #[test]
+    fn ntlmv2_reference() {
+        // MS-NLMP 4.2.4: User / Domain / Password, server challenge 0123456789abcdef, client challenge aa*8,
+        // time 0, target info: NetBIOS domain "Domain", NetBIOS server "Server"
+        assert_eq!(ntowf("User", "Domain", "Password"), [0x0c, 0x86, 0x8a, 0x40, 0x3b, 0xfd, 0x7a, 0x93, 0xa3, 0x00, 0x1e, 0xf2, 0x2e, 0xf0, 0x2e, 0x3f]);
+        let info: Vec<u8> = [&[2u8, 0, 12, 0][..], &utf16("Domain"), &[1, 0, 12, 0], &utf16("Server"), &[0, 0, 0, 0]].concat();
+        let mut ch = b"NTLMSSP\0\x02\0\0\0".to_vec();
+        ch.extend([0u8; 8]); // target name
+        ch.extend(FLAGS.to_le_bytes());
+        ch.extend([0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]);
+        ch.extend([0u8; 8]);
+        ch.extend((info.len() as u16).to_le_bytes());
+        ch.extend((info.len() as u16).to_le_bytes());
+        ch.extend(48u32.to_le_bytes());
+        ch.extend(&info);
+        let m = authenticate_at(&ch, "User", "Domain", "Password", [0xaa; 8], 0).unwrap();
+        let nt_off = u32::from_le_bytes(m[24..28].try_into().unwrap()) as usize;
+        // NTProofStr from the spec
+        assert_eq!(&m[nt_off..nt_off + 16], &[0x68, 0xcd, 0x0a, 0xb8, 0x51, 0xe5, 0x1c, 0x96, 0xaa, 0xbc, 0x92, 0x7b, 0xeb, 0xef, 0x6a, 0x1c]);
+    }
 }
 
 #[cfg(windows)]
@@ -417,10 +570,8 @@ fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, St
     }
 }
 
-#[cfg(windows)]
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-#[cfg(windows)]
 fn b64(data: &[u8]) -> String {
     let mut s = String::new();
     for c in data.chunks(3) {
@@ -432,7 +583,6 @@ fn b64(data: &[u8]) -> String {
     s
 }
 
-#[cfg(windows)]
 fn unb64(s: &str) -> Vec<u8> {
     let bits: Vec<u32> = s.bytes().filter_map(|b| B64.iter().position(|x| *x == b).map(|v| v as u32)).collect();
     let mut out = Vec::new();
@@ -1266,7 +1416,6 @@ mod tests {
     /// NTLM's first leg on one keep-alive connection: 401 "NTLM" -> the request carries Windows' NTLMSSP
     /// negotiate message (the server here accepts it without the challenge leg).
     #[test]
-    #[cfg(windows)]
     fn ntlm_negotiate_leg() {
         assert_eq!([b64(b"ab"), b64(b"abc"), b64(b"a")], ["YWI=", "YWJj", "YQ=="]);
         assert_eq!(unb64(&b64(b"\x00\x01binary\xff")), b"\x00\x01binary\xff");

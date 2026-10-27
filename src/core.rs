@@ -1839,7 +1839,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)] // PAC scripts go through WinHTTP
     fn proxies() {
         let mut s = Settings { proxy_mode: 3, proxy_host: "px".into(), proxy_port: "3128".into(), proxy_user: "u@x".into(), proxy_pass: "p".into(), ..Default::default() };
         assert_eq!(s.proxy_for("http://a.com/f"), "http://u%40x:p@px:3128");
@@ -1856,7 +1855,7 @@ mod tests {
         s.proxy_mode = 0;
         assert_eq!(s.proxy_for("http://a.com/f"), "");
 
-        // automatic configuration script, evaluated by WinHTTP
+        // automatic configuration script, evaluated by WinHTTP (Windows) or QuickJS
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         s.pac_url = format!("http://{}/proxy.pac", l.local_addr().unwrap());
         thread::spawn(move || {
