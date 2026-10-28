@@ -186,15 +186,26 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     win::register_host(core::store_path().parent().unwrap());
+    #[cfg(not(windows))]
+    win::install_desktop_entry();
     let (w, h, rgba) = app_icon();
-    let opts = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_title(TITLE)
-            .with_inner_size([1000.0, 560.0])
-            .with_min_inner_size([640.0, 320.0])
-            .with_icon(Arc::new(egui::IconData { rgba, width: w as u32, height: h as u32 })),
-        ..Default::default()
-    };
+    let viewport = ViewportBuilder::default()
+        .with_title(TITLE)
+        .with_inner_size([1000.0, 560.0])
+        .with_min_inner_size([640.0, 320.0])
+        .with_icon(Arc::new(egui::IconData { rgba, width: w as u32, height: h as u32 }));
+    // the X11 class / Wayland app id docks match to ndm.desktop (StartupWMClass=ndm)
+    #[cfg(not(windows))]
+    let viewport = viewport.with_app_id("ndm");
+    #[allow(unused_mut)]
+    let mut opts = eframe::NativeOptions { viewport, ..Default::default() };
+    #[cfg(not(windows))]
+    if win::prefer_x11() {
+        opts.event_loop_builder = Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            b.with_x11();
+        }));
+    }
     eframe::run_native(TITLE, opts, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
 }
 
@@ -6839,13 +6850,29 @@ impl eframe::App for App {
                 win::accept_drops(h.hwnd.get(), move || c.request_repaint());
             }
         }
-        // Closing the window keeps it running in the notification area.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && (self.tray.is_some() || LINUX_TRAY.load(Relaxed)) {
-            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            win::hide(self.hwnd.load(Relaxed));
-            #[cfg(not(windows))]
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-            return;
+        // Closing the window keeps NDM in the notification area; without a tray it minimizes while
+        // something downloads, so the downloads aren't lost, and quits otherwise.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            let queues: Vec<u32> = self.core.settings().queues.iter().map(|q| q.id).collect();
+            let busy = self.core.jobs().iter().any(|j| j.running()) || queues.iter().any(|q| self.core.queue_running(*q));
+            match close_action(self.tray.is_some() || LINUX_TRAY.load(Relaxed), busy) {
+                Close::Hide => {
+                    ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                    win::hide(self.hwnd.load(Relaxed));
+                    #[cfg(not(windows))]
+                    hide_linux(ctx);
+                    return;
+                }
+                Close::Minimize => {
+                    ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+                    let shown = std::mem::replace(&mut self.core.settings().close_note_shown, true);
+                    if !shown {
+                        self.open(Dialog::Info { title: TITLE.into(), text: "New Download Manager keeps downloading while its window is minimized. To quit, use Tasks → Exit.".into() });
+                    }
+                }
+                Close::Quit => {}
+            }
         }
         if let Some((tray, limit, _)) = &self.tray {
             let on = self.core.settings().limit_on;
@@ -6865,7 +6892,7 @@ impl eframe::App for App {
         if LINUX_TRAY.load(Relaxed) {
             static TRAYED_LINUX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if tray_start() && !TRAYED_LINUX.swap(true, Relaxed) {
-                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+                hide_linux(ctx);
             }
             // the tray menu's Speed Limiter tick follows the setting (its item lives on the GTK thread)
             static LIMIT_SHOWN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
@@ -6878,6 +6905,7 @@ impl eframe::App for App {
         #[cfg(not(windows))]
         if win::take_show() {
             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
         }
         while let Ok(inc) = self.rx.try_recv() {
@@ -7062,6 +7090,29 @@ impl eframe::App for App {
     }
 }
 
+/// What the window's close button does.
+#[derive(Debug, PartialEq)]
+enum Close {
+    Hide,
+    Minimize,
+    Quit,
+}
+
+/// To the tray when there is one; without one, minimized while downloads or queues run, else quit.
+fn close_action(tray: bool, busy: bool) -> Close {
+    match (tray, busy) {
+        (true, _) => Close::Hide,
+        (false, true) => Close::Minimize,
+        (false, false) => Close::Quit,
+    }
+}
+
+/// Hides the main window on Linux; Wayland can't hide a window, so there it is minimized.
+#[cfg(not(windows))]
+fn hide_linux(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(if win::prefer_x11() { ViewportCommand::Visible(false) } else { ViewportCommand::Minimized(true) });
+}
+
 /// NDM's windows are laid out in dialog units and break when zoomed, so the UI never zooms.
 fn no_zoom(ctx: &egui::Context) {
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -7096,6 +7147,14 @@ fn find_hit(flags: u32, needle: &str, r: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn close_rules() {
+        assert_eq!(close_action(true, false), Close::Hide);
+        assert_eq!(close_action(true, true), Close::Hide);
+        assert_eq!(close_action(false, true), Close::Minimize);
+        assert_eq!(close_action(false, false), Close::Quit);
+    }
 
     #[test]
     fn ui_never_zooms() {

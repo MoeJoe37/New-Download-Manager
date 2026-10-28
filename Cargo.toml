@@ -38,6 +38,8 @@ gtk = "0.18"
 md4 = "0.10"
 # PAC scripts (Windows runs them in WinHTTP)
 rquickjs = "0.9"
+# X11 first when DISPLAY is set (eframe already builds on it)
+winit = "0.30"
 # getifaddrs (the networks to download over)
 libc = "0.2"
 

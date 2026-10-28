@@ -876,3 +876,6 @@ pub fn nics() -> Vec<crate::net::Nic> {
     }
     out
 }
+
+/// A second start asked for the window: on Windows `running` brings it up itself.
+pub fn show_main() {}

@@ -286,6 +286,8 @@ pub struct Settings {
     /// Tip of the Day (template 105): "Show Tips on StartUp" and the next tip's index.
     /// ponytail: index, not NDM's byte offset TipFilePos + TipTimeStamp reset; a changed file only shifts the tip.
     pub tips_startup: bool,
+    /// The note "keeps downloading while minimized" was shown (closing without a tray icon).
+    pub close_note_shown: bool,
     pub tip_next: usize,
     /// View -> "Classic style" (3D toolbar, +/- tree boxes) instead of "Modern style".
     pub classic: bool,
@@ -544,6 +546,7 @@ impl Default for Settings {
             sel_sites: Vec::new(),
             sel_mini: false,
             tips_startup: true,
+            close_note_shown: false,
             tip_next: 0,
             classic: false,
             tray_icon: 1,
@@ -1609,6 +1612,13 @@ impl Core {
                 let reply = |status: &str, body: &str| {
                     let _ = (&s).write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
                 };
+                if req.as_ref().is_some_and(|(path, ..)| path == "/show") {
+                    // NDM started again (Linux): bring the window back
+                    crate::win::show_main();
+                    reply("200 OK", "");
+                    notify();
+                    continue;
+                }
                 if req.as_ref().is_some_and(|(path, ..)| path == "/config") {
                     // what the extension shows: context menu items (334) and download panel exceptions (370)
                     let c = {
@@ -1724,7 +1734,7 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
     }
     let origin_ok = h.get("origin").is_none_or(|o| o.starts_with("chrome-extension://") || o.starts_with("moz-extension://"));
     let path = line.strip_prefix("POST ")?.split(' ').next()?.to_string();
-    if !["/add", "/config", "/cookies"].contains(&path.as_str()) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
+    if !["/add", "/config", "/cookies", "/show"].contains(&path.as_str()) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
         return None;
     }
     let len: usize = h.get("content-length").map_or(Some(0), |l| l.parse().ok())?;

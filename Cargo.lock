@@ -2528,6 +2528,7 @@ dependencies = [
  "ureq",
  "url",
  "windows-sys 0.59.0",
+ "winit",
 ]
 
 [[package]]

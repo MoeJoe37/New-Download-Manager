@@ -20,6 +20,10 @@ fn gtk_ready() -> bool {
     *READY.get_or_init(|| {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            // like the main window (see `prefer_x11`): on Wayland GTK can't keep the drop target on top or place it
+            if prefer_x11() {
+                gdk::set_allowed_backends("x11");
+            }
             let ok = gtk::init().is_ok();
             let _ = tx.send(ok);
             if ok {
@@ -28,6 +32,12 @@ fn gtk_ready() -> bool {
         });
         rx.recv().unwrap_or(false)
     })
+}
+
+/// X11 (XWayland on a Wayland desktop) whenever DISPLAY is set: on Wayland a window can't hide itself
+/// or stay on top. Without DISPLAY, both NDM and GTK stay on Wayland.
+pub fn prefer_x11() -> bool {
+    std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty())
 }
 
 /// Run `f` on the GTK thread without waiting. False when there is no GTK.
@@ -542,7 +552,40 @@ pub fn set_autostart(on: bool) {
     }
     let Some(exe) = me() else { return };
     let _ = std::fs::create_dir_all(file.parent().unwrap());
-    let _ = std::fs::write(file, format!("[Desktop Entry]\nType=Application\nName=New Download Manager\nExec=\"{}\"\nIcon=ndm\nX-GNOME-Autostart-enabled=true\n", exe.display()));
+    let _ = std::fs::write(file, desktop_entry(&exe) + "X-GNOME-Autostart-enabled=true\n");
+}
+
+/// NDM's .desktop entry for `exe`. Exec quotes the path and escapes \ " ` $ inside it.
+pub fn desktop_entry(exe: &Path) -> String {
+    let mut path = String::new();
+    for c in exe.display().to_string().chars() {
+        if matches!(c, '\\' | '"' | '`' | '$') {
+            path.push('\\');
+        }
+        path.push(c);
+    }
+    format!("[Desktop Entry]\nType=Application\nName=New Download Manager\nGenericName=Download Manager\nExec=\"{path}\"\nIcon=ndm\nStartupWMClass=ndm\nCategories=Network;FileTransfer;\nTerminal=false\n")
+}
+
+/// Run from an AppImage: NDM's entry in the applications menu and its icon, rewritten only when they
+/// changed (the AppImage moved, or a new icon).
+pub fn install_desktop_entry() {
+    let Some(img) = std::env::var_os("APPIMAGE").map(PathBuf::from) else { return };
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|d| d.is_absolute()).unwrap_or_else(|| home().join(".local/share"));
+    let write = |file: PathBuf, bytes: &[u8]| {
+        if std::fs::read(&file).ok().as_deref() != Some(bytes) {
+            let _ = std::fs::create_dir_all(file.parent().unwrap());
+            let _ = std::fs::write(&file, bytes);
+        }
+    };
+    write(data.join("icons/hicolor/256x256/apps/ndm.png"), include_bytes!("../assets/ndm.png"));
+    write(data.join("applications/ndm.desktop"), desktop_entry(&img).as_bytes());
+}
+
+#[test]
+fn desktop_entry_quotes() {
+    let e = desktop_entry(Path::new("/home/u/My Apps/NDM \"1\".AppImage"));
+    assert!(e.contains("Exec=\"/home/u/My Apps/NDM \\\"1\\\".AppImage\"\n") && e.contains("StartupWMClass=ndm\n"), "{e}");
 }
 
 const HOST: &str = "com.ndm.host";
@@ -604,10 +647,20 @@ pub fn native_host(title: &str) {
     let _ = out.write_all(&(reply.len() as u32).to_le_bytes()).and_then(|_| out.write_all(reply)).and_then(|_| out.flush());
 }
 
-/// Is NDM running? Its browser endpoint answers on 127.0.0.1.
-pub fn running(_title: &str, _activate: bool) -> bool {
+/// Is NDM running? Its browser endpoint answers on 127.0.0.1. With `activate` the running copy is asked
+/// to show its window (POST /show).
+pub fn running(_title: &str, activate: bool) -> bool {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], crate::core::PORT));
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+    let up = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok();
+    if up && activate {
+        let _ = ureq::post(&format!("http://127.0.0.1:{}/show", crate::core::PORT)).set("X-NDM", "1").timeout(std::time::Duration::from_secs(3)).call();
+    }
+    up
+}
+
+/// A second start asked for the window: `take_show` hands it to the UI.
+pub fn show_main() {
+    SHOW_MAIN.store(true, Relaxed);
 }
 
 /// "Exit NDM" / "Saving settings..." while the app stops its downloads and saves; it goes away with the
