@@ -456,7 +456,64 @@ fn open_folder_of(path: &Path) {
 /// The unpacked browser extension: next to the exe or in one of its parent folders (cargo builds).
 fn extension_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    exe.ancestors().map(|a| a.join("extension")).find(|p| p.join("manifest.json").exists())
+    let bundled = exe.ancestors().map(|a| a.join("extension")).find(|p| p.join("manifest.json").exists())?;
+    if std::env::var_os("APPIMAGE").is_none() {
+        return Some(bundled);
+    }
+    // inside the AppImage the bundled copy is under /tmp/.mount_*, a new folder every run: browsers get a
+    // copy beside state.json that stays put, refreshed when NDM's extension changes
+    static STABLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    STABLE.get_or_init(|| {
+        let d = core::store_path().with_file_name("extension");
+        refresh_copy(&bundled, &d).ok().map(|_| d)
+    })
+    .clone()
+    .or(Some(bundled))
+}
+
+/// Makes `to` a copy of the folder `from` unless their manifest.json files are already the same.
+fn refresh_copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    let manifest = |d: &Path| std::fs::read(d.join("manifest.json")).ok();
+    if manifest(to).is_some() && manifest(to) == manifest(from) {
+        return Ok(());
+    }
+    copy_dir(from, to)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let target = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &target)?;
+        } else {
+            std::fs::copy(e.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn extension_copy_refreshes() {
+    let base = std::env::temp_dir().join(format!("ndm-test-ext-{}", std::process::id()));
+    let (from, to) = (base.join("bundled"), base.join("stable"));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(from.join("icons")).unwrap();
+    std::fs::write(from.join("manifest.json"), "v1").unwrap();
+    std::fs::write(from.join("icons/a.png"), "png").unwrap();
+    refresh_copy(&from, &to).unwrap();
+    assert_eq!(std::fs::read_to_string(to.join("icons/a.png")).unwrap(), "png");
+    // same manifest: left alone
+    std::fs::write(from.join("background.js"), "new").unwrap();
+    refresh_copy(&from, &to).unwrap();
+    assert!(!to.join("background.js").exists());
+    // a new version: copied again
+    std::fs::write(from.join("manifest.json"), "v2").unwrap();
+    refresh_copy(&from, &to).unwrap();
+    assert_eq!(std::fs::read_to_string(to.join("manifest.json")).unwrap(), "v2");
+    assert!(to.join("background.js").exists());
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// NDM's own help: `help\*.htm` next to the exe or in a parent folder.
@@ -1646,7 +1703,8 @@ impl App {
     #[cfg(not(windows))]
     fn tray(ctx: &egui::Context, core: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
         let style = core.settings().tray_icon;
-        if style == 3 || !win::tray_host() {
+        // without the indicator library tray-icon panics on the GTK thread, which aborts NDM
+        if style == 3 || !win::tray_host() || !win::indicator_lib() {
             return None;
         }
         let (core, ctx) = (core.clone(), ctx.clone());

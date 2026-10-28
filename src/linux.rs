@@ -204,17 +204,38 @@ pub fn clip_seq() -> u32 {
 /// A tray on the desktop: a StatusNotifierItem host on the session bus (KDE, Xfce, Cinnamon, MATE,
 /// GNOME with the AppIndicator extension). Without one a tray icon would be invisible.
 pub fn tray_host() -> bool {
-    Command::new("gdbus")
-        .args(["call", "--session", "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus", "--method", "org.freedesktop.DBus.NameHasOwner", "org.kde.StatusNotifierWatcher"])
-        .stderr(Stdio::null())
-        .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("true"))
+    dbus_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", ("org.kde.StatusNotifierWatcher",).to_variant()).and_then(|v| v.child_value(0).get::<bool>()).unwrap_or(false)
 }
 
-/// A sound file through PulseAudio / PipeWire, else ALSA.
+/// A method call on the session bus (gio, so no `gdbus` program is needed); None without a bus or on error.
+fn dbus_call(dest: &str, path: &str, iface: &str, method: &str, args: glib::Variant) -> Option<glib::Variant> {
+    static BUS: OnceLock<Option<gio::DBusConnection>> = OnceLock::new();
+    let bus = BUS.get_or_init(|| gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>).ok()).as_ref()?;
+    bus.call_sync(Some(dest), path, iface, method, Some(&args), None, gio::DBusCallFlags::NONE, 3000, None::<&gio::Cancellable>).ok()
+}
+
+/// Does the tray library load? tray-icon opens libayatana-appindicator3 (or the older libappindicator3)
+/// at run time and panics, taking NDM down, when neither is installed.
+pub fn indicator_lib() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        ["libayatana-appindicator3.so.1", "libappindicator3.so.1", "libayatana-appindicator3.so", "libappindicator3.so"].iter().any(|name| {
+            let c = std::ffi::CString::new(*name).unwrap();
+            // SAFETY: dlopen with a valid C string; the handle is kept open, as tray-icon opens the same library
+            !unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY) }.is_null()
+        })
+    })
+}
+
+/// A sound file through PulseAudio, PipeWire or ALSA, whichever player is installed.
 pub fn play_sound(path: &str) {
-    if Path::new(path).is_file() && Command::new("paplay").arg(path).spawn().is_err() {
-        let _ = Command::new("aplay").arg("-q").arg(path).spawn();
+    if !Path::new(path).is_file() {
+        return;
+    }
+    for (player, quiet) in [("paplay", None), ("pw-play", None), ("aplay", Some("-q"))] {
+        if Command::new(player).args(quiet).arg(path).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok() {
+            return;
+        }
     }
 }
 
@@ -228,12 +249,25 @@ pub fn decimal_sep() -> &'static str {
 }
 
 /// GNOME / GTK's dark preference.
+/// The desktop's dark style, asked again on every call (the UI checks about every 2 s): the desktop
+/// portal's color-scheme (1 = dark; GNOME, KDE, Xfce...), else GNOME's settings.
 pub fn system_dark() -> bool {
-    static DARK: OnceLock<bool> = OnceLock::new();
-    *DARK.get_or_init(|| {
-        let get = |key: &str| Command::new("gsettings").args(["get", "org.gnome.desktop.interface", key]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase()).unwrap_or_default();
-        get("color-scheme").contains("dark") || get("gtk-theme").contains("dark")
-    })
+    let portal = dbus_call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "Read", ("org.freedesktop.appearance", "color-scheme").to_variant()).and_then(|r| {
+        // (v), the v holding a u, or on older portals another v around it
+        let mut v = r.child_value(0);
+        while let Some(inner) = v.as_variant() {
+            v = inner;
+        }
+        v.get::<u32>()
+    });
+    match portal {
+        Some(1) => true,
+        Some(2) => false,
+        _ => {
+            let get = |key: &str| gsettings(&["get", "org.gnome.desktop.interface", key]).unwrap_or_default().to_lowercase();
+            get("color-scheme").contains("dark") || get("gtk-theme").contains("dark")
+        }
+    }
 }
 
 // ---------- proxy ----------
@@ -247,6 +281,9 @@ fn gsettings(args: &[&str]) -> Option<String> {
 /// bypass list). GNOME's settings (also Cinnamon, MATE, Budgie), else the environment (http_proxy,
 /// https_proxy, ftp_proxy, no_proxy).
 pub fn system_proxy() -> (bool, String, String) {
+    if is_kde() {
+        return kde_proxy(&std::fs::read_to_string(config_dir().join("kioslaverc")).unwrap_or_default());
+    }
     match gsettings(&["get", "org.gnome.system.proxy", "mode"]).as_deref() {
         Some("manual") => {
             let hp = |k: &str| {
@@ -271,10 +308,66 @@ pub fn system_proxy() -> (bool, String, String) {
     (!server.is_empty(), server, var("no_proxy").replace(',', ";"))
 }
 
-/// Sets the desktop's proxy (GNOME's settings, as `system_proxy` reads them) for the browsers.
+fn is_kde() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"))
+}
+
+/// KDE's proxy (~/.config/kioslaverc) in `system_proxy`'s shape. Only ProxyType=1 (manual) counts as on;
+/// a host is written "http://host port" or "host:port".
+fn kde_proxy(text: &str) -> (bool, String, String) {
+    let mut in_proxy = false;
+    let (mut on, mut server, mut bypass) = (false, vec![], String::new());
+    for l in text.lines().map(str::trim) {
+        if l.starts_with('[') {
+            in_proxy = l == "[Proxy Settings]";
+            continue;
+        }
+        let Some((k, v)) = l.split_once('=').filter(|_| in_proxy) else { continue };
+        let hp = |v: &str| {
+            let v = v.trim().split("://").last().unwrap_or("").trim_end_matches('/');
+            v.rsplit_once(' ').map_or(v.to_string(), |(h, p)| format!("{}:{p}", h.trim()))
+        };
+        match k.trim() {
+            "ProxyType" => on = v.trim() == "1",
+            "httpProxy" | "httpsProxy" | "ftpProxy" if !v.trim().is_empty() => server.push(format!("{}={}", k.trim().trim_end_matches("Proxy"), hp(v))),
+            "NoProxyFor" => bypass = v.split(',').map(str::trim).filter(|h| !h.is_empty()).collect::<Vec<_>>().join(";"),
+            _ => {}
+        }
+    }
+    (on && !server.is_empty(), server.join(";"), bypass)
+}
+
+#[test]
+fn kde_proxy_reads_kioslaverc() {
+    let t = "[General]\nhttpProxy=x\n[Proxy Settings]\nProxyType=1\nhttpProxy=http://10.0.0.1 3128\nhttpsProxy=10.0.0.2:3129\nNoProxyFor=localhost,.corp\n";
+    assert_eq!(kde_proxy(t), (true, "http=10.0.0.1:3128;https=10.0.0.2:3129".into(), "localhost;.corp".into()));
+    assert!(!kde_proxy(&t.replace("ProxyType=1", "ProxyType=2")).0);
+}
+
+/// Writes KDE's proxy (kioslaverc, through kwriteconfig6 or 5) and tells running KDE programs.
+fn set_kde_proxy(on: bool, server: &str, bypass: &str) {
+    let write = |key: &str, v: &str| {
+        let args = ["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, v];
+        let ok = |p: &str| Command::new(p).args(args).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+        let _ = ok("kwriteconfig6") || ok("kwriteconfig5");
+    };
+    if on {
+        for kind in ["http", "https", "ftp"] {
+            let hp = server.split(';').find_map(|p| p.strip_prefix(&format!("{kind}="))).or_else(|| (!server.contains('=')).then_some(server)).unwrap_or("");
+            write(&format!("{kind}Proxy"), &if hp.is_empty() { String::new() } else { format!("http://{hp}") });
+        }
+        write("NoProxyFor", &bypass.split(';').map(str::trim).filter(|h| !h.is_empty() && *h != "<local>").collect::<Vec<_>>().join(","));
+    }
+    write("ProxyType", if on { "1" } else { "0" });
+    let _ = Command::new("dbus-send").args(["--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:"]).stderr(Stdio::null()).status();
+}
+
+/// Sets the desktop's proxy (KDE's or GNOME's settings, as `system_proxy` reads them) for the browsers.
 /// `server` is "host:port" or "http=host:port;https=host:port".
-// ponytail: GNOME's settings only; KDE keeps its own in kioslaverc
 pub fn set_system_proxy(on: bool, server: &str, bypass: &str) {
+    if is_kde() {
+        return set_kde_proxy(on, server, bypass);
+    }
     let set = |schema: &str, key: &str, v: &str| {
         let _ = Command::new("gsettings").args(["set", schema, key, v]).stderr(Stdio::null()).status();
     };
@@ -601,27 +694,36 @@ pub fn register_host(_dir: &Path) {
     };
     let chrome = manifest(serde_json::json!({ "allowed_origins": [format!("chrome-extension://{EXT_ID}/")] }));
     let firefox = manifest(serde_json::json!({ "allowed_extensions": ["ndm@newdownloadmanager"] }));
-    let cfg = config_dir();
-    let dirs = [
-        (cfg.join("google-chrome"), &chrome),
-        (cfg.join("chromium"), &chrome),
-        (cfg.join("microsoft-edge"), &chrome),
-        (cfg.join("BraveSoftware/Brave-Browser"), &chrome),
-        (cfg.join("vivaldi"), &chrome),
-    ];
-    for (browser, text) in dirs {
-        // only browsers that are installed (their profile folder exists)
-        if browser.is_dir() {
-            let d = browser.join("NativeMessagingHosts");
-            let _ = std::fs::create_dir_all(&d);
-            let _ = std::fs::write(d.join(format!("{HOST}.json")), text);
-        }
-    }
-    if home().join(".mozilla").is_dir() {
-        let d = home().join(".mozilla/native-messaging-hosts");
+    for (d, is_firefox) in host_dirs(&home(), &config_dir()) {
         let _ = std::fs::create_dir_all(&d);
-        let _ = std::fs::write(d.join(format!("{HOST}.json")), &firefox);
+        let _ = std::fs::write(d.join(format!("{HOST}.json")), if is_firefox { &firefox } else { &chrome });
     }
+}
+
+/// The native messaging host folders of the installed browsers (their profile folder exists), and
+/// whether each is Firefox's. Snap's Firefox reads ~/.mozilla through the desktop portal.
+fn host_dirs(home: &Path, cfg: &Path) -> Vec<(PathBuf, bool)> {
+    let chromes = ["google-chrome", "google-chrome-beta", "google-chrome-unstable", "chromium", "microsoft-edge", "microsoft-edge-beta", "microsoft-edge-dev",
+        "BraveSoftware/Brave-Browser", "vivaldi", "vivaldi-snapshot", "opera", "yandex-browser"];
+    let mut d: Vec<(PathBuf, bool)> = chromes.iter().map(|b| cfg.join(b)).filter(|b| b.is_dir()).map(|b| (b.join("NativeMessagingHosts"), false)).collect();
+    if home.join(".mozilla").is_dir() || home.join("snap/firefox").is_dir() {
+        d.push((home.join(".mozilla/native-messaging-hosts"), true));
+    }
+    d
+}
+
+#[test]
+fn host_dirs_cover_snap_firefox() {
+    let home = std::env::temp_dir().join(format!("ndm-test-hosts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    for p in ["snap/firefox", ".config/google-chrome-beta"] {
+        std::fs::create_dir_all(home.join(p)).unwrap();
+    }
+    let d = host_dirs(&home, &home.join(".config"));
+    assert!(d.contains(&(home.join(".mozilla/native-messaging-hosts"), true)));
+    assert!(d.contains(&(home.join(".config/google-chrome-beta/NativeMessagingHosts"), false)));
+    assert_eq!(d.len(), 2);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 pub fn is_host_launch(args: &[String]) -> bool {
@@ -732,12 +834,7 @@ pub fn open_with(path: &Path) {
 /// Caja, Thunar), else its folder.
 pub fn show_in_folder(path: &Path) {
     let uri = gio::File::for_path(path).uri().to_string();
-    let shown = Command::new("gdbus")
-        .args(["call", "--session", "--dest", "org.freedesktop.FileManager1", "--object-path", "/org/freedesktop/FileManager1", "--method", "org.freedesktop.FileManager1.ShowItems", &format!("['{}']", uri.replace('\'', "%27")), ""])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+    let shown = dbus_call("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1", "ShowItems", (vec![uri], "").to_variant()).is_some();
     if !shown {
         open(path.parent().unwrap_or(path));
     }
