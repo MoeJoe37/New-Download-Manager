@@ -1177,6 +1177,23 @@ fn grayed((w, h, mut px): win::Rgba) -> win::Rgba {
     (w, h, px)
 }
 
+/// NDM Style's toolbar colours, one neon per button in `TB_BUTTONS` order: (on dark, on light). The light
+/// ones are deeper, so they stay readable on white.
+const TB_NEON: [([u8; 3], [u8; 3]); TB_ICONS] = [
+    ([0, 229, 255], [0, 166, 204]),   // Add URL: cyan
+    ([57, 255, 20], [26, 168, 30]),   // Resume: green
+    ([255, 49, 70], [218, 28, 52]),   // Stop: red
+    ([255, 145, 0], [226, 106, 0]),   // Stop All: orange
+    ([255, 32, 160], [212, 0, 122]),  // Delete: pink
+    ([0, 255, 178], [0, 160, 116]),   // Delete Completed: aqua
+    ([190, 80, 255], [136, 48, 230]), // Options: violet
+    ([255, 234, 0], [190, 146, 0]),   // Scheduler: yellow
+    ([44, 130, 255], [28, 92, 232]),  // Start Queue: blue
+    ([255, 0, 230], [184, 0, 190]),   // Stop Queue: magenta
+    ([190, 255, 0], [108, 166, 0]),   // Grabber: lime
+    ([255, 110, 90], [222, 72, 52]),  // Tell a Friend: coral
+];
+
 impl Toolbar {
     /// `skin`: the built-in set or a folder in `toolbars_dir()`; `ndm`: NDM Style's one-colour glyphs;
     /// `scale`: View -> Custom scale's toolbar size.
@@ -1222,13 +1239,15 @@ impl Toolbar {
         let tint = if !p.tint {
             Color32::WHITE
         } else {
-            let t = dlu::theme(dark);
+            let (on_dark, on_light) = TB_NEON[k];
+            let [r, g, b] = if dark { on_dark } else { on_light };
+            let neon = Color32::from_rgb(r, g, b);
             match state {
-                2 => t.muted.gamma_multiply(0.45),
-                1 => t.accent,
-                // Add URL, the toolbar's main action, in the accent colour
-                _ if k == 0 => t.accent,
-                _ => t.text.gamma_multiply(0.82),
+                2 => dlu::theme(dark).muted.gamma_multiply(0.45),
+                // hovered: brighter, towards white on dark, deeper on light
+                1 if dark => neon.lerp_to_gamma(Color32::WHITE, 0.3),
+                1 => neon.lerp_to_gamma(Color32::BLACK, 0.12),
+                _ => neon,
             }
         };
         Some((p.pics[state].id(), tint))
@@ -3059,6 +3078,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let icon = egui::Rect::from_center_size(egui::pos2(body.center().x, rect.top() + 4.0 * sc + ih / 2.0), Vec2::new(iw, ih));
                 match self.toolbar.as_ref().and_then(|t| t.pic(small, k, enabled, hot && !on_arrow, dark)) {
                     Some((tex, tint)) => {
+                        if ndm.is_some() && hot && !on_arrow && tint != Color32::WHITE {
+                            // a soft neon glow behind the hovered icon
+                            let r = iw.min(ih) * 0.5;
+                            for (f, a) in [(1.0, 0.07), (0.78, 0.09), (0.56, 0.11)] {
+                                p.circle_filled(icon.center(), r * f, tint.gamma_multiply(if dark { a * 1.6 } else { a }));
+                            }
+                        }
                         p.image(tex, icon, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                     }
                     None => {
