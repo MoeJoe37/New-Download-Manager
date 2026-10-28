@@ -116,11 +116,45 @@ pub fn exe_icon(path: &Path) -> Option<Rgba> {
     }
 }
 
+/// Started for the browser (`/tray`): eframe shows the main window after its first frame whatever NDM
+/// asks, so while this is on the window's subclass drops that show (and the WS_VISIBLE winit sets
+/// with it), and only the download's dialog comes up. Turned on in the first frame, before the show; off
+/// from the UI thread once it is past, or by `show`.
+static KEEP_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn keep_hidden(hwnd: isize, on: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
+    if hwnd == 0 {
+        return;
+    }
+    if on {
+        KEEP_HIDDEN.store(true, Relaxed);
+        unsafe { SetWindowSubclass(hwnd as HWND, Some(hidden_proc), 1, 0) };
+    } else {
+        KEEP_HIDDEN.store(false, Relaxed);
+        unsafe { RemoveWindowSubclass(hwnd as HWND, Some(hidden_proc), 1) };
+    }
+}
+
+unsafe extern "system" fn hidden_proc(h: HWND, msg: u32, w: usize, l: isize, _: usize, _: usize) -> isize {
+    use windows_sys::Win32::UI::Shell::DefSubclassProc;
+    if KEEP_HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
+        match msg {
+            WM_WINDOWPOSCHANGING => (*(l as *mut WINDOWPOS)).flags &= !SWP_SHOWWINDOW,
+            WM_STYLECHANGING if w as i32 == GWL_STYLE => (*(l as *mut STYLESTRUCT)).styleNew &= !WS_VISIBLE,
+            _ => {}
+        }
+    }
+    DefSubclassProc(h, msg, w, l)
+}
+
 pub fn show(hwnd: isize) {
     let h = hwnd as HWND;
     if h.is_null() {
         return;
     }
+    KEEP_HIDDEN.store(false, std::sync::atomic::Ordering::Relaxed);
     unsafe {
         ShowWindow(h, if IsIconic(h) != 0 { SW_RESTORE } else { SW_SHOW });
         SetForegroundWindow(h);

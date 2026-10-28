@@ -916,6 +916,31 @@ pub fn accept_drops(xid: isize, wake: impl Fn() + Send + Sync + 'static) {
     }
 }
 
+/// Started for the browser (`/tray`): eframe maps the main window after its first frame whatever NDM asks,
+/// so it is asked to map minimized (WM_HINTS initial state Iconic) until NDM hides it to the tray; `false`
+/// puts the normal state back for the next time it is shown. X11 only (`xid` 0 on Wayland does nothing).
+pub fn keep_hidden(xid: isize, on: bool) {
+    if xid != 0 {
+        let _ = initial_state(xid as u32, if on { 3 } else { 1 });
+    }
+}
+
+fn initial_state(xid: u32, state: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+    let (conn, _) = x11rb::connect(None)?;
+    let r = conn.get_property(false, xid, AtomEnum::WM_HINTS, AtomEnum::WM_HINTS, 0, 9)?.reply()?;
+    let mut hints: Vec<u32> = r.value32().map(|v| v.collect()).unwrap_or_default();
+    hints.resize(9, 0);
+    // flags: StateHint (2); then input, initial_state
+    hints[0] |= 2;
+    hints[2] = state;
+    conn.change_property32(PropMode::REPLACE, xid, AtomEnum::WM_HINTS, AtomEnum::WM_HINTS, &hints)?;
+    conn.flush()?;
+    Ok(())
+}
+
 /// The drop formats NDM takes, most useful first.
 const DROP_TYPES: [&str; 4] = ["text/uri-list", "text/x-moz-url", "UTF8_STRING", "text/plain"];
 

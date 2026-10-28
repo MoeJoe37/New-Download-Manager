@@ -33,6 +33,9 @@ const TITLE: &str = "New Download Manager 1.0";
 const UPDATE_REPO: &str = "MoeJoe37/New-Download-Manager";
 /// The Linux tray icon is up (its GTK thread owns it): closing the window hides it instead of quitting.
 static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The main window's X11 window (0 on Wayland, or before the first frame).
+#[cfg(not(windows))]
+static MAIN_XID: AtomicIsize = AtomicIsize::new(0);
 #[cfg(not(windows))]
 thread_local!(static LIMIT_ITEM: std::cell::RefCell<Option<CheckMenuItem>> = const { std::cell::RefCell::new(None) });
 /// First argument of the copy started by "Update now".
@@ -7413,6 +7416,7 @@ impl eframe::App for App {
                         RawWindowHandle::Xcb(h) => h.window.get() as isize,
                         _ => 0,
                     };
+                    MAIN_XID.store(xid, Relaxed);
                     let c = ctx.clone();
                     win::accept_drops(xid, move || c.request_repaint());
                 }
@@ -7450,18 +7454,50 @@ impl eframe::App for App {
             let total: f64 = self.core.jobs().iter().map(|j| j.speed()).sum();
             let _ = tray.set_tooltip(Some(if total > 0.0 { format!("{TITLE}\n{}", rate(total)) } else { TITLE.to_string() }));
         }
-        // eframe shows the window after its first frame: started for the browser, it goes back to the tray
+        // eframe shows the main window after its first frame whatever NDM asks. Started for the browser,
+        // that show is held back (Windows) or made minimized (X11) by `keep_hidden`, then the window goes to
+        // the tray, so only the download's dialog comes up.
+        static FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         static TRAYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let n = FRAME.fetch_add(1, Relaxed);
         let h = self.hwnd.load(Relaxed);
-        if tray_start() && win::visible(h) && !TRAYED.swap(true, Relaxed) {
-            win::hide(h);
+        #[cfg(windows)]
+        let native = h;
+        #[cfg(not(windows))]
+        let native = MAIN_XID.load(Relaxed);
+        if tray_start() && !TRAYED.load(Relaxed) {
+            if n == 0 {
+                win::keep_hidden(native, true);
+                // the next frame comes even though the window stays hidden
+                win::wake(h);
+                ctx.request_repaint();
+            } else {
+                #[cfg(windows)]
+                {
+                    win::keep_hidden(h, false);
+                    if win::visible(h) {
+                        win::hide(h);
+                    }
+                    TRAYED.store(true, Relaxed);
+                }
+                // Linux: to the tray once it is up (it starts on its own thread); without one it stays minimized
+                #[cfg(not(windows))]
+                {
+                    let tray = LINUX_TRAY.load(Relaxed);
+                    if tray {
+                        hide_linux(ctx);
+                    }
+                    if tray || n > 20 {
+                        win::keep_hidden(native, false);
+                        TRAYED.store(true, Relaxed);
+                    } else {
+                        ctx.request_repaint_after(Duration::from_millis(100));
+                    }
+                }
+            }
         }
         #[cfg(not(windows))]
         if LINUX_TRAY.load(Relaxed) {
-            static TRAYED_LINUX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-            if tray_start() && !TRAYED_LINUX.swap(true, Relaxed) {
-                hide_linux(ctx);
-            }
             // the tray menu's Speed Limiter tick follows the setting (its item lives on the GTK thread)
             static LIMIT_SHOWN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
             let on = self.core.settings().limit_on;
