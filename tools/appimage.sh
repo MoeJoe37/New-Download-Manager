@@ -52,8 +52,11 @@ tray="$(ldconfig -p | awk '/libayatana-appindicator3\.so\.1 /{print $NF; exit}')
 # modules and schemas and sets them up at start. appimagetool packs it with its static runtime, which
 # needs no libfuse2 (gone from Ubuntu 22.04 and later).
 cd "$work"
+# libxkbcommon stays the system's: winit opens the system's libxkbcommon-x11 at run time, which crashes
+# against an older bundled libxkbcommon. Every desktop has it.
 DEPLOY_GTK_VERSION=3 linuxdeploy-x86_64.AppImage --appdir "$app" --executable "$app/usr/bin/ndm" --library "$tray" \
-    --desktop-file "$app/usr/share/applications/ndm.desktop" --icon-file "$app/usr/share/icons/hicolor/256x256/apps/ndm.png" --plugin gtk
+    --exclude-library 'libxkbcommon.so*' --desktop-file "$app/usr/share/applications/ndm.desktop" --icon-file "$app/usr/share/icons/hicolor/256x256/apps/ndm.png" --plugin gtk
+rm -f "$app"/usr/lib/libxkbcommon.so* # in case a plugin copied it anyway
 ARCH=x86_64 appimagetool-x86_64.AppImage --no-appstream "$app" NDM-x86_64.AppImage
 mkdir -p "$src/installer/out"
 cp NDM-x86_64.AppImage "$src/installer/out/"
