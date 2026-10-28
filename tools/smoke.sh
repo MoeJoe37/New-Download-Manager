@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Start-up test of the AppImage on this distribution:  bash tools/smoke.sh NDM-x86_64.AppImage
-# Installs a virtual X server, Mesa, and the X and text libraries every desktop has (fribidi and
-# harfbuzz are left out of AppImages on purpose) (as root, with the
-# distribution's package manager), starts NDM and passes when its browser endpoint (127.0.0.1:9614)
+# Installs a virtual X server, Mesa, and the libraries every desktop has that AppImages leave out on
+# purpose (X, fribidi, harfbuzz, libgpg-error...), as root with the distribution's package manager.
+# Then starts NDM and passes when its browser endpoint (127.0.0.1:9614)
 # answers within 30 s without a crash.log. Used by CI in containers of each distribution.
 set -uo pipefail
 img="$(realpath "${1:?usage: smoke.sh NDM-x86_64.AppImage}")"
@@ -12,7 +12,7 @@ case " $ID ${ID_LIKE:-} " in
     *" debian "* | *" ubuntu "*)
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq && apt-get install -y -qq xvfb libgl1 libegl1 libgl1-mesa-dri libx11-6 libxcursor1 libxrandr2 libxi6 \
-            libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libfribidi0 libharfbuzz0b fonts-dejavu-core libdbus-1-3 >/dev/null ;;
+            libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libfribidi0 libharfbuzz0b libgpg-error0 fonts-dejavu-core libdbus-1-3 >/dev/null ;;
     *" fedora "* | *" rhel "* | *" centos "*)
         dnf install -y -q xorg-x11-server-Xvfb mesa-libGL mesa-libEGL mesa-dri-drivers libX11 libXcursor libXrandr libXi \
             libxkbcommon libxkbcommon-x11 fontconfig fribidi harfbuzz dejavu-sans-fonts dbus-libs >/dev/null ;;
