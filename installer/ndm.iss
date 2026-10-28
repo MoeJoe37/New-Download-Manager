@@ -4,7 +4,7 @@
 ; Output: installer\out\NDM-Setup-<version>.exe
 
 #define AppName "New Download Manager"
-#define AppVersion "1.1.0"
+#define AppVersion "1.2.0"
 #define AppUrl "https://github.com/MoeJoe37/New-Download-Manager"
 
 [Setup]
@@ -74,10 +74,13 @@ Type: files; Name: "{app}\ndm.*.old"
 const
   NdmWindow = 'New Download Manager 1.0';
   SYNCHRONIZE = $00100000;
+  PROCESS_TERMINATE = $0001;
+  WAIT_TIMEOUT = $00000102;
 
 function OpenProcess(Access: DWORD; Inherit: BOOL; Pid: DWORD): THandle; external 'OpenProcess@kernel32.dll stdcall';
 function WaitForSingleObject(H: THandle; Ms: DWORD): DWORD; external 'WaitForSingleObject@kernel32.dll stdcall';
 function CloseHandle(H: THandle): BOOL; external 'CloseHandle@kernel32.dll stdcall';
+function TerminateProcess(H: THandle; Code: DWORD): BOOL; external 'TerminateProcess@kernel32.dll stdcall';
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
@@ -95,10 +98,17 @@ begin
     Pid := StrToIntDef(ExpandConstant('{param:NDMPID|0}'), 0);
     if Pid <> 0 then
     begin
-      H := OpenProcess(SYNCHRONIZE, False, Pid);
+      { NDM 1.1.0 and older didn't close after starting the update: after 15 s it is ended, so the new
+        version starts alone (its download list is saved every few seconds, and downloads resume) }
+      H := OpenProcess(SYNCHRONIZE or PROCESS_TERMINATE, False, Pid);
       if H <> 0 then
       begin
-        WaitForSingleObject(H, 30000);
+        if WaitForSingleObject(H, 15000) = WAIT_TIMEOUT then
+        begin
+          Log('NDM ' + IntToStr(Pid) + ' is still running: ending it');
+          TerminateProcess(H, 0);
+          WaitForSingleObject(H, 5000);
+        end;
         CloseHandle(H);
       end;
     end
