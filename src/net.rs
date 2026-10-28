@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn local_proxy_relays_http() {
-        let url = format!("http://localhost:{}/", hello());
+        let url = format!("http://127.0.0.1:{}/", hello());
         assert_eq!(crate::engine::agent(&local_proxy(""), "").get(&url).call().unwrap().into_string().unwrap(), "hello");
     }
 
@@ -322,10 +322,10 @@ mod tests {
     fn socks5_name_lookup_side() {
         let port = hello();
         let (f, atyp) = fake_socks(None);
-        assert!(get(&mut connect(&format!("socks5h://127.0.0.1:{f}"), "localhost", port).unwrap()).ends_with("hello"));
-        assert!(get(&mut connect(&format!("socks5://127.0.0.1:{f}"), "localhost", port).unwrap()).ends_with("hello"));
+        assert!(get(&mut connect(&format!("socks5h://127.0.0.1:{f}"), "127.0.0.1", port).unwrap()).ends_with("hello"));
+        assert!(get(&mut connect(&format!("socks5://127.0.0.1:{f}"), "127.0.0.1", port).unwrap()).ends_with("hello"));
         let a = atyp.lock().unwrap().clone();
-        assert_eq!(a[0], 3); // the name went to the proxy
+        assert_eq!(a[0], 3); // the name went to the proxy (as text, even for an address)
         assert!(a[1] == 1 || a[1] == 4); // an address went to the proxy
     }
 
@@ -333,9 +333,9 @@ mod tests {
     fn socks5_login_passes_through() {
         let port = hello();
         let (f, _) = fake_socks(Some(("u", "p")));
-        assert!(connect(&format!("socks5://u:p@127.0.0.1:{f}"), "localhost", port).is_ok());
-        assert!(connect(&format!("socks5://u:x@127.0.0.1:{f}"), "localhost", port).is_err());
-        assert!(connect(&format!("bogus://127.0.0.1:{f}"), "localhost", port).is_err());
+        assert!(connect(&format!("socks5://u:p@127.0.0.1:{f}"), "127.0.0.1", port).is_ok());
+        assert!(connect(&format!("socks5://u:x@127.0.0.1:{f}"), "127.0.0.1", port).is_err());
+        assert!(connect(&format!("bogus://127.0.0.1:{f}"), "127.0.0.1", port).is_err());
     }
 
     #[test]
