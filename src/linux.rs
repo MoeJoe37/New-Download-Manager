@@ -12,6 +12,34 @@ use std::sync::{mpsc, Mutex, OnceLock};
 
 pub type Rgba = (usize, usize, Vec<u8>);
 
+// ---------- programs NDM starts ----------
+
+/// What the AppImage's GTK hook sets for NDM's own GTK (bundled schemas, modules, pixbuf loaders, X11);
+/// other programs need their own system's.
+const APPIMAGE_ENV: [&str; 13] = ["GTK_DATA_PREFIX", "GTK_THEME", "GDK_BACKEND", "GSETTINGS_SCHEMA_DIR", "GI_TYPELIB_PATH", "GTK_EXE_PREFIX", "GTK_PATH",
+    "GTK_IM_MODULE_FILE", "GDK_PIXBUF_MODULE_FILE", "APPDIR", "APPIMAGE", "ARGV0", "OWD"];
+
+/// A program to run with the environment it would have outside the AppImage.
+fn cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut c = Command::new(program);
+    clean_env(&mut c);
+    c
+}
+
+/// Takes the AppImage's own settings out of a child's environment (nothing to do outside an AppImage).
+pub fn clean_env(c: &mut Command) {
+    let Some(dir) = std::env::var_os("APPDIR") else { return };
+    for k in APPIMAGE_ENV {
+        c.env_remove(k);
+    }
+    if let Some(dirs) = std::env::var_os("XDG_DATA_DIRS") {
+        let kept: Vec<PathBuf> = std::env::split_paths(&dirs).filter(|d| !d.starts_with(&dir)).collect();
+        if let Ok(v) = std::env::join_paths(kept) {
+            c.env("XDG_DATA_DIRS", v);
+        }
+    }
+}
+
 // ---------- GTK thread ----------
 
 /// GTK lives on one thread: started on first use, it runs GTK's main loop for good. False = no display.
@@ -233,7 +261,7 @@ pub fn play_sound(path: &str) {
         return;
     }
     for (player, quiet) in [("paplay", None), ("pw-play", None), ("aplay", Some("-q"))] {
-        if Command::new(player).args(quiet).arg(path).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok() {
+        if cmd(player).args(quiet).arg(path).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok() {
             return;
         }
     }
@@ -243,7 +271,7 @@ pub fn play_sound(path: &str) {
 pub fn decimal_sep() -> &'static str {
     static SEP: OnceLock<String> = OnceLock::new();
     SEP.get_or_init(|| {
-        let o = Command::new("locale").arg("decimal_point").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let o = cmd("locale").arg("decimal_point").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
         if o.is_empty() { ".".into() } else { o }
     })
 }
@@ -273,7 +301,7 @@ pub fn system_dark() -> bool {
 // ---------- proxy ----------
 
 fn gsettings(args: &[&str]) -> Option<String> {
-    let o = Command::new("gsettings").args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    let o = cmd("gsettings").args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&o.stdout).trim().trim_matches('\'').to_string())
 }
 
@@ -348,7 +376,7 @@ fn kde_proxy_reads_kioslaverc() {
 fn set_kde_proxy(on: bool, server: &str, bypass: &str) {
     let write = |key: &str, v: &str| {
         let args = ["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, v];
-        let ok = |p: &str| Command::new(p).args(args).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+        let ok = |p: &str| cmd(p).args(args).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
         let _ = ok("kwriteconfig6") || ok("kwriteconfig5");
     };
     if on {
@@ -359,7 +387,7 @@ fn set_kde_proxy(on: bool, server: &str, bypass: &str) {
         write("NoProxyFor", &bypass.split(';').map(str::trim).filter(|h| !h.is_empty() && *h != "<local>").collect::<Vec<_>>().join(","));
     }
     write("ProxyType", if on { "1" } else { "0" });
-    let _ = Command::new("dbus-send").args(["--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:"]).stderr(Stdio::null()).status();
+    let _ = cmd("dbus-send").args(["--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:"]).stderr(Stdio::null()).status();
 }
 
 /// Sets the desktop's proxy (KDE's or GNOME's settings, as `system_proxy` reads them) for the browsers.
@@ -369,7 +397,7 @@ pub fn set_system_proxy(on: bool, server: &str, bypass: &str) {
         return set_kde_proxy(on, server, bypass);
     }
     let set = |schema: &str, key: &str, v: &str| {
-        let _ = Command::new("gsettings").args(["set", schema, key, v]).stderr(Stdio::null()).status();
+        let _ = cmd("gsettings").args(["set", schema, key, v]).stderr(Stdio::null()).status();
     };
     if !on {
         set("org.gnome.system.proxy", "mode", "none");
@@ -507,7 +535,7 @@ const DIAL_TYPES: [&str; 5] = ["vpn", "wireguard", "pppoe", "gsm", "cdma"];
 /// Dial connections as nmcli lists them ("name:type", a ':' in a name as "\:"): (name, type).
 /// None = no NetworkManager.
 fn nm_conns(active: bool) -> Option<Vec<(String, String)>> {
-    let mut c = Command::new("nmcli");
+    let mut c = cmd("nmcli");
     c.args(["-t", "-f", "NAME,TYPE", "connection", "show"]);
     if active {
         c.arg("--active");
@@ -545,7 +573,7 @@ fn nm_kind(entry: &str) -> Option<String> {
 }
 
 fn nmcli(args: &[&str]) -> Result<(), String> {
-    let o = Command::new("nmcli").args(args).output().map_err(|e| e.to_string())?;
+    let o = cmd("nmcli").args(args).output().map_err(|e| e.to_string())?;
     if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).trim().trim_start_matches("Error: ").to_string()) }
 }
 
@@ -741,7 +769,7 @@ pub fn native_host(title: &str) {
     if !running(title, false) {
         if let Some(exe) = me() {
             // its own process group, so closing the browser doesn't close the app
-            let _ = Command::new(exe).arg("/tray").process_group(0).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            let _ = cmd(exe).arg("/tray").process_group(0).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
         }
     }
     let reply = br#"{"ok":true}"#;
@@ -803,7 +831,7 @@ pub fn choose_font(_owner: isize, face: &str, px: f32) -> Option<(String, f32)> 
 
 /// The file of an installed font face, from fontconfig.
 pub fn font_file(face: &str) -> Option<PathBuf> {
-    let o = Command::new("fc-match").args(["-f", "%{file}", face]).output().ok()?;
+    let o = cmd("fc-match").args(["-f", "%{file}", face]).output().ok()?;
     let f = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
     f.is_file().then_some(f)
 }
@@ -968,15 +996,15 @@ pub fn drop_target_visible() -> bool {
 
 /// Opens a file, folder or address with the desktop's default program.
 pub fn open(target: impl AsRef<std::ffi::OsStr>) {
-    let _ = Command::new("xdg-open").arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let _ = cmd("xdg-open").arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
 /// "Turn off computer when done": shut down in a minute (`shutdown -c` cancels it), suspend or hibernate.
 pub fn power_off(kind: u8, _force: bool) {
     let _ = match kind {
-        1 => Command::new("systemctl").arg("suspend").spawn(),
-        2 => Command::new("systemctl").arg("hibernate").spawn(),
-        _ => Command::new("shutdown").args(["-h", "+1", "Downloads complete. The computer will shut down in a minute."]).spawn(),
+        1 => cmd("systemctl").arg("suspend").spawn(),
+        2 => cmd("systemctl").arg("hibernate").spawn(),
+        _ => cmd("shutdown").args(["-h", "+1", "Downloads complete. The computer will shut down in a minute."]).spawn(),
     };
 }
 

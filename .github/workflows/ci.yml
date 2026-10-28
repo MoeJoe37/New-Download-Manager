@@ -23,12 +23,47 @@ jobs:
         run: python tools/ndm_lng.py --check
 
   linux:
+    # the release's AppImage is built on Ubuntu 20.04 (glibc 2.31), so it starts on every newer distribution
     runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
     steps:
-      - uses: actions/checkout@v4
       - name: Build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq build-essential pkg-config curl ca-certificates git file rsync patchelf \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-common
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: cargo test --release
+      - name: AppImage
+        run: bash tools/appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: |
+            installer/out/NDM-x86_64.AppImage
+            tools/smoke.sh
+
+  smoke:
+    # does the AppImage start on each mainstream distribution?
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ 'ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'debian:11', 'debian:12', 'fedora:latest', 'rockylinux:9',
+                  'opensuse/leap:15.6', 'opensuse/tumbleweed', 'archlinux:latest' ]
+    container: ${{ matrix.distro }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: appimage
+      - name: Start NDM
+        shell: bash
+        run: |
+          chmod +x installer/out/NDM-x86_64.AppImage
+          bash tools/smoke.sh installer/out/NDM-x86_64.AppImage

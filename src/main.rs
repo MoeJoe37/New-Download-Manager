@@ -174,6 +174,11 @@ fn main() -> eframe::Result {
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_extension("old.exe")); // left behind by an update
     }
+    // the AppImage's GTK hook asks for X11; on a Wayland desktop without XWayland GTK would then fail
+    #[cfg(not(windows))]
+    if !win::prefer_x11() && std::env::var_os("GDK_BACKEND").is_some_and(|b| b == "x11") {
+        std::env::remove_var("GDK_BACKEND"); // no other thread runs yet
+    }
     let cli = core::cli_args(&args);
     // a second start for the browser (/tray) mustn't bring the window out of the tray
     if win::running(TITLE, !tray_start()) {
@@ -4901,7 +4906,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 });
                 d.readonly(14.0, 92.0, 458.0, 14.0, &dir);
                 if d.button(14.0, 162.0, 90.0, 14.0, "Open extensions page", !page.is_empty()) {
-                    let _ = std::process::Command::new(&b.exe).arg(&page).spawn();
+                    let mut c = std::process::Command::new(&b.exe);
+                    win::clean_env(&mut c);
+                    let _ = c.arg(&page).spawn();
                 }
                 if d.button(110.0, 162.0, 70.0, 14.0, "Open folder", !dir.is_empty()) {
                     explore(&dir);
@@ -7000,7 +7007,9 @@ impl eframe::App for App {
                 self.dialogs.retain(|(_, d)| !matches!(d, Dialog::Progress { id: i, .. } if *i == id));
                 let (exe, args) = { let s = self.core.settings(); (s.virus_exe.clone(), s.virus_args.clone()) };
                 if !exe.is_empty() {
-                    if let Err(e) = std::process::Command::new(&exe).args(virus_args(&args, &j.info().path())).spawn() {
+                    let mut c = std::process::Command::new(&exe);
+                    win::clean_env(&mut c);
+                    if let Err(e) = c.args(virus_args(&args, &j.info().path())).spawn() {
                         self.open(Dialog::Info { title: "Virus checking".into(), text: i18n::trf("Can not start virus checking program.\n%s", &[&e]) });
                     }
                 }

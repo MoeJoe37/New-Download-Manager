@@ -935,7 +935,9 @@ pub fn run_media(job: &Job) -> Result<bool, String> {
         fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
         (i.url.clone(), i.path())
     };
-    let mut child = std::process::Command::new("ffmpeg")
+    let mut ffmpeg = std::process::Command::new("ffmpeg");
+    crate::win::clean_env(&mut ffmpeg);
+    let mut child = ffmpeg
         .args(["-y", "-v", "error", "-nostdin", "-progress", "pipe:1", "-i"])
         .arg(&url)
         .args(["-c", "copy"])

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Builds NDM-x86_64.AppImage on Linux (or in WSL):  bash tools/appimage.sh
-# Needs: Rust, build-essential, pkg-config, libgtk-3-dev, libxdo-dev, libayatana-appindicator3-dev, curl, file.
+# Needs: Rust, build-essential, pkg-config, libgtk-3-dev, libxdo-dev, libayatana-appindicator3-dev,
+# librsvg2-common, patchelf, curl, file.
+# Releases are built on Ubuntu 20.04 (glibc 2.31, see .github/workflows/release.yml), so the AppImage
+# starts on that and every newer distribution; a build on a newer system only runs on newer ones.
 # The source is copied to ~/.cache/ndm-build first: building on /mnt/c is slow and would share target/.
 set -euo pipefail
 src="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,20 +26,35 @@ cat > "$app/usr/share/applications/ndm.desktop" <<'EOF'
 Type=Application
 Name=New Download Manager
 GenericName=Download Manager
-Comment=Fast segmented downloads, browser capture, video streams and site grabbing
+Comment=Segmented downloads, browser capture, video streams and site grabbing
 Exec=ndm
 Icon=ndm
+StartupWMClass=ndm
 Categories=Network;FileTransfer;
 Terminal=false
 EOF
 
-# linuxdeploy copies the libraries ndm links (GTK...) into the AppDir and packs it
-tool="$work/linuxdeploy-x86_64.AppImage"
-[ -x "$tool" ] || { curl -sSL -o "$tool" https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage; chmod +x "$tool"; }
-cd "$work"
+fetch() { # url file
+    [ -s "$work/$2" ] || { curl -sSfL -o "$work/$2" "$1"; chmod +x "$work/$2"; }
+}
+fetch https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage linuxdeploy-x86_64.AppImage
+fetch https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gtk.sh
+fetch https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage appimagetool-x86_64.AppImage
 export APPIMAGE_EXTRACT_AND_RUN=1 # no FUSE needed (WSL, containers)
-OUTPUT="NDM-x86_64.AppImage" "$tool" --appdir "$app" --executable "$app/usr/bin/ndm" \
-    --desktop-file "$app/usr/share/applications/ndm.desktop" --icon-file "$app/usr/share/icons/hicolor/256x256/apps/ndm.png" --output appimage
+export PATH="$work:$PATH"         # linuxdeploy finds its gtk plugin on PATH
+
+# The tray library is opened at run time (dlopen), so linuxdeploy can't see it: name it, and its
+# dbusmenu / indicator libraries come along. Distributions without it then still get a tray icon.
+tray="$(ldconfig -p | awk '/libayatana-appindicator3\.so\.1 /{print $NF; exit}')"
+[ -n "$tray" ] || { echo "libayatana-appindicator3.so.1 not found"; exit 1; }
+
+# linuxdeploy copies the libraries ndm links into the AppDir; the gtk plugin adds GTK's pixbuf loaders,
+# modules and schemas and sets them up at start. appimagetool packs it with its static runtime, which
+# needs no libfuse2 (gone from Ubuntu 22.04 and later).
+cd "$work"
+DEPLOY_GTK_VERSION=3 linuxdeploy-x86_64.AppImage --appdir "$app" --executable "$app/usr/bin/ndm" --library "$tray" \
+    --desktop-file "$app/usr/share/applications/ndm.desktop" --icon-file "$app/usr/share/icons/hicolor/256x256/apps/ndm.png" --plugin gtk
+ARCH=x86_64 appimagetool-x86_64.AppImage --no-appstream "$app" NDM-x86_64.AppImage
 mkdir -p "$src/installer/out"
 cp NDM-x86_64.AppImage "$src/installer/out/"
 echo "built $src/installer/out/NDM-x86_64.AppImage"

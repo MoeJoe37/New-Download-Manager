@@ -879,3 +879,6 @@ pub fn nics() -> Vec<crate::net::Nic> {
 
 /// A second start asked for the window: on Windows `running` brings it up itself.
 pub fn show_main() {}
+
+/// Linux takes the AppImage's settings out of a child's environment; nothing to do on Windows.
+pub fn clean_env(_c: &mut std::process::Command) {}
