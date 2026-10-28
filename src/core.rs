@@ -199,9 +199,11 @@ pub struct Settings {
     pub pac_url: String,
     /// "Use FTP in PASV mode".
     pub ftp_pasv: bool,
-    /// "Use this proxy for protocols: http https".
+    /// "Use this proxy for the following protocols: http https".
     pub proxy_http: bool,
     pub proxy_https: bool,
+    /// "ftp": ftp:// addresses go through the manual HTTP proxy (which does the FTP).
+    pub proxy_ftp: bool,
     /// Proxy / Socks page: "Use proxy/socks from a browser's request if there are download errors for the
     /// downloads intercepted from the browser" (`Info::browser_proxy`, `Core::start_now`).
     pub proxy_browser: bool,
@@ -490,6 +492,7 @@ impl Default for Settings {
             ftp_pasv: true,
             proxy_http: true,
             proxy_https: true,
+            proxy_ftp: false,
             proxy_browser: false,
             proxy_bypass_on: false,
             proxy_bypass: String::new(),
@@ -601,10 +604,13 @@ impl Settings {
                     return String::new();
                 }
                 let a = &self.adv;
+                if scheme == "ftp" && a.ftp_on && !a.ftp_host.trim().is_empty() {
+                    return proxy_url("ftp", &a.ftp_host, &a.ftp_port, &a.ftp_user, &a.ftp_pass);
+                }
                 if scheme == "https" && a.https_on && !a.https_host.trim().is_empty() {
                     return proxy_url("http", &a.https_host, &a.https_port, &a.https_user, &a.https_pass);
                 }
-                let ticked = (scheme == "http" && self.proxy_http) || (scheme == "https" && self.proxy_https);
+                let ticked = (scheme == "http" && self.proxy_http) || (scheme == "https" && self.proxy_https) || (scheme == "ftp" && self.proxy_ftp);
                 if ticked && !self.proxy_host.trim().is_empty() {
                     return proxy_url("http", &self.proxy_host, &self.proxy_port, &self.proxy_user, &self.proxy_pass);
                 }
@@ -872,11 +878,9 @@ impl Core {
         let s = self.settings().clone();
         self.limiter.rate.store(if s.limit_on { s.limit_kb * 1024 } else { 0 }, Relaxed);
         self.agents.lock().unwrap().clear();
-        let a = &s.adv;
-        *engine::FTP.lock().unwrap() = engine::FtpCfg {
-            pasv: s.ftp_pasv,
-            proxy: if s.proxy_mode == 3 && a.ftp_on { (a.ftp_host.clone(), a.ftp_port.clone(), a.ftp_user.clone(), a.ftp_pass.clone()) } else { Default::default() },
-        };
+        let pasv = s.ftp_pasv;
+        let routes = s;
+        *engine::FTP.lock().unwrap() = engine::FtpCfg { pasv, route: Some(Arc::new(move |u: &str| routes.proxy_for(u))) };
     }
 
     /// The agent for downloading `url`, with the proxy the settings choose for it.
@@ -1851,6 +1855,21 @@ mod tests {
             "adv":{"socks_on":true,"socks_host":"sx","socks_port":"1080","socks5":true}}"#).unwrap();
         assert_eq!(s.proxy_for("http://a.com/f"), "http://px:3128");
         assert_eq!(s.proxy_for("https://a.com/f"), "socks5h://sx:1080");
+        // ftp not ticked goes by SOCKS, as the Advanced dialog's note says
+        assert_eq!(s.proxy_for("ftp://a.com/f"), "socks5h://sx:1080");
+        assert!(!s.proxy_ftp);
+    }
+
+    #[test]
+    fn ftp_routes() {
+        let mut s = Settings { proxy_mode: 3, proxy_host: "px".into(), proxy_port: "3128".into(), ..Default::default() };
+        assert_eq!(s.proxy_for("ftp://a.com/f"), "");
+        s.proxy_ftp = true;
+        assert_eq!(s.proxy_for("ftp://a.com/f"), "http://px:3128");
+        s.adv = AdvProxy { ftp_on: true, ftp_host: "fx".into(), ftp_port: "2121".into(), ..Default::default() };
+        assert_eq!(s.proxy_for("ftp://a.com/f"), "ftp://fx:2121"); // the FTP proxy comes first
+        (s.proxy_bypass_on, s.proxy_bypass) = (true, "a.com".into());
+        assert_eq!(s.proxy_for("ftp://a.com/f"), "");
     }
 
     #[test]

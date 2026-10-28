@@ -220,48 +220,56 @@ fn ftp_cmd(c: &mut BufReader<TcpStream>, cmd: &str) -> Result<(u32, String), Str
     }
 }
 
-/// App-wide FTP options (Options -> Proxy / Socks): passive mode, and an FTP proxy (host, port, user,
-/// password; empty host = none).
+/// App-wide FTP options (Options -> Proxy / Socks): passive mode, and the route of an ftp:// address
+/// (`Settings::proxy_for`: "" direct, `ftp://` FTP proxy, `http://` HTTP proxy, `socks…`).
 #[derive(Clone)]
 pub struct FtpCfg {
     pub pasv: bool,
-    pub proxy: (String, String, String, String),
+    pub route: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
 }
 
 // ponytail: one global, as the options are app-wide; per-job copies if downloads ever need their own
-pub static FTP: Mutex<FtpCfg> = Mutex::new(FtpCfg { pasv: true, proxy: (String::new(), String::new(), String::new(), String::new()) });
+pub static FTP: Mutex<FtpCfg> = Mutex::new(FtpCfg { pasv: true, route: None });
 
 /// Log in (anonymous unless the URL has a login), binary mode, SIZE, passive (or active, PORT) data
 /// connection, REST `from`, RETR. Returns (size, resumable, data). Through an FTP proxy the login is
-/// `USER user@host[:port] [proxy user]`, `PASS`, then `ACCT proxy password`.
+/// `USER user@host[:port] [proxy user]`, `PASS`, then `ACCT proxy password`. Through an HTTP proxy the
+/// proxy does the FTP (`ftp_http`); through SOCKS both connections go through it, always passive.
 fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body), String> {
     let cfg = FTP.lock().unwrap().clone();
+    let route = cfg.route.as_ref().map(|f| f(url)).unwrap_or_default();
+    if route.starts_with("http://") || route.starts_with("https://") {
+        return ftp_http(url, from, &route);
+    }
     let u = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let host = u.host_str().ok_or("no host")?;
-    let (ph, pp, pu, ppass) = &cfg.proxy;
-    let via = !ph.trim().is_empty();
-    let s = if via {
-        TcpStream::connect((ph.trim(), pp.trim().parse().unwrap_or(21))).map_err(|e| e.to_string())?
-    } else {
-        TcpStream::connect((host, u.port().unwrap_or(21))).map_err(|e| e.to_string())?
-    };
+    let host = u.host_str().ok_or("no host")?.trim_matches(['[', ']']).to_string();
+    let port = u.port().unwrap_or(21);
+    let fp = route.strip_prefix("ftp://").and_then(|_| url::Url::parse(&route).ok());
+    let socks = if fp.is_none() { route.as_str() } else { "" };
+    let s = match &fp {
+        Some(p) => crate::net::connect("", p.host_str().unwrap_or_default(), p.port().unwrap_or(21)),
+        None => crate::net::connect(socks, &host, port),
+    }
+    .map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
     let mut c = BufReader::new(s);
     let ok = |r: (u32, String), class: u32| if r.0 / 100 == class { Ok(r) } else { Err(format!("FTP {} {}", r.0, r.1)) };
     ok(ftp_cmd(&mut c, "")?, 2)?;
     let mut user = if u.username().is_empty() { "anonymous".into() } else { pct_decode(u.username()) };
-    if via {
+    let mut acct = String::new();
+    if let Some(p) = &fp {
         user = format!("{user}@{host}{}", u.port().map_or(String::new(), |p| format!(":{p}")));
-        if !pu.trim().is_empty() {
-            user = format!("{user} {}", pu.trim());
+        if !p.username().is_empty() {
+            user = format!("{user} {}", pct_decode(p.username()));
         }
+        acct = p.password().map(pct_decode).unwrap_or_default();
     }
     let mut r = ftp_cmd(&mut c, &format!("USER {user}"))?;
     if r.0 == 331 {
         r = ftp_cmd(&mut c, &format!("PASS {}", u.password().map_or("ndm@".into(), pct_decode)))?;
     }
     if r.0 == 332 {
-        r = ftp_cmd(&mut c, &format!("ACCT {ppass}"))?;
+        r = ftp_cmd(&mut c, &format!("ACCT {acct}"))?;
     }
     ok(r, 2)?;
     ok(ftp_cmd(&mut c, "TYPE I")?, 2)?;
@@ -270,16 +278,23 @@ fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body), String> {
     let size = Some(size).filter(|r| r.0 == 213).and_then(|r| r.1.parse().ok());
     let mut listen = None;
     let mut data = None;
-    if cfg.pasv {
+    // a SOCKS server can't take the server's PORT connection
+    if cfg.pasv || !socks.is_empty() {
         // 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2): the port; the address is the server's own
         let (_, pasv) = ok(ftp_cmd(&mut c, "PASV")?, 2)?;
         let n: Vec<u16> = pasv.split(|ch: char| !ch.is_ascii_digit()).filter_map(|x| x.parse().ok()).collect();
-        let port = match n[..] {
+        let dport = match n[..] {
             [.., p1, p2] if n.len() >= 6 => p1 * 256 + p2,
             _ => return Err(format!("FTP {pasv}")),
         };
-        let ip = c.get_ref().peer_addr().map_err(|e| e.to_string())?.ip();
-        data = Some(TcpStream::connect((ip, port)).map_err(|e| e.to_string())?);
+        // through SOCKS the peer is the proxy, so the data connection goes to the server's name
+        let d = if socks.is_empty() {
+            let ip = c.get_ref().peer_addr().map_err(|e| e.to_string())?.ip();
+            TcpStream::connect((ip, dport))
+        } else {
+            crate::net::connect(socks, &host, dport)
+        };
+        data = Some(d.map_err(|e| e.to_string())?);
     } else {
         // active mode: the server connects back to us (PORT h1,h2,h3,h4,p1,p2)
         let me = c.get_ref().local_addr().map_err(|e| e.to_string())?;
@@ -300,6 +315,49 @@ fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body), String> {
     };
     data.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
     Ok((size, ranges && size.is_some(), Box::new(Ftp { data, _ctl: c })))
+}
+
+/// An ftp:// address fetched by an HTTP proxy: `GET ftp://… HTTP/1.0` (1.0, so the reply is never
+/// chunked) with `Range: bytes=from-`. Returns (size, resumable, body) like `ftp_open`.
+fn ftp_http(url: &str, from: u64, proxy: &str) -> Result<(Option<u64>, bool, Body), String> {
+    let p = url::Url::parse(proxy).map_err(|e| e.to_string())?;
+    let u = url::Url::parse(url).map_err(|e| e.to_string())?;
+    let s = crate::net::connect("", p.host_str().unwrap_or_default(), p.port_or_known_default().unwrap_or(8080)).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+    let host = u.host_str().unwrap_or_default().to_string() + &u.port().map_or(String::new(), |p| format!(":{p}"));
+    let mut head = format!("GET {url} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: {UA}\r\nRange: bytes={from}-\r\n");
+    if !p.username().is_empty() {
+        let login = format!("{}:{}", pct_decode(p.username()), p.password().map(pct_decode).unwrap_or_default());
+        head += &format!("Proxy-Authorization: Basic {}\r\n", b64(login.as_bytes()));
+    }
+    head += "Connection: close\r\n\r\n";
+    (&s).write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+    let mut r = BufReader::new(s);
+    let mut line = String::new();
+    r.read_line(&mut line).map_err(|e| e.to_string())?;
+    let mut status = line.trim_end().splitn(3, ' ').skip(1);
+    let code: u32 = status.next().and_then(|c| c.parse().ok()).ok_or_else(|| format!("bad reply from the proxy: {}", line.trim()))?;
+    let reason = status.next().unwrap_or_default().to_string();
+    let (mut length, mut range) = (None, None);
+    loop {
+        line.clear();
+        if r.read_line(&mut line).map_err(|e| e.to_string())? == 0 || line.trim().is_empty() {
+            break;
+        }
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let v = v.trim();
+        if k.eq_ignore_ascii_case("Content-Length") {
+            length = v.parse::<u64>().ok();
+        } else if k.eq_ignore_ascii_case("Content-Range") {
+            range = v.rsplit('/').next().and_then(|t| t.trim().parse::<u64>().ok());
+        }
+    }
+    match code {
+        206 => Ok((range, range.is_some(), Box::new(r))),
+        200 if from > 0 => Err("server ignored the Range request".into()),
+        200 => Ok((length, false, Box::new(r))),
+        _ => Err(format!("HTTP {code} {reason}")),
+    }
 }
 
 pub fn agent(proxy: &str, user_agent: &str) -> ureq::Agent {
@@ -1384,8 +1442,17 @@ mod tests {
         url
     }
 
+    /// `FTP` is global and tests run in parallel: every FTP test holds this.
+    static FTP_TESTS: Mutex<()> = Mutex::new(());
+
+    fn ftp_route(route: String) {
+        *FTP.lock().unwrap() = FtpCfg { pasv: true, route: Some(Arc::new(move |_: &str| route.clone())) };
+    }
+
     #[test]
     fn ftp_downloads_and_resumes() {
+        let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        *FTP.lock().unwrap() = FtpCfg { pasv: true, route: None };
         let data: Arc<Vec<u8>> = Arc::new((0..2 * 1024 * 1024 + 77).map(|i: u32| (i * 13 % 241) as u8).collect());
         let url = ftp_serve(data.clone());
         let dir = std::env::temp_dir().join(format!("ndm-test-ftp-{}", std::process::id()));
@@ -1402,15 +1469,95 @@ mod tests {
         i.limit_kb = 0;
         // resume in active mode through an "FTP proxy" (the test server, reached as user@host)
         let addr = i.url.split('/').nth(2).unwrap().to_string();
-        let (ph, pp) = addr.split_once(':').unwrap();
-        *FTP.lock().unwrap() = FtpCfg { pasv: false, proxy: (ph.into(), pp.into(), String::new(), String::new()) };
+        let proxy = format!("ftp://{addr}");
+        *FTP.lock().unwrap() = FtpCfg { pasv: false, route: Some(Arc::new(move |_: &str| proxy.clone())) };
         i.url = i.url.replace(&addr, "files.example");
         let j = Job::new(i);
         run(&j);
-        *FTP.lock().unwrap() = FtpCfg { pasv: true, proxy: Default::default() };
+        *FTP.lock().unwrap() = FtpCfg { pasv: true, route: None };
         assert_eq!(j.info().status, Status::Complete);
         assert_eq!(fs::read(j.info().path()).unwrap(), *data);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An HTTP proxy that fetches ftp:// addresses: records each request head and answers from `data`,
+    /// with 206 + Content-Range when `honour_range`, else 200 + the whole file.
+    fn fake_http_proxy(data: Arc<Vec<u8>>, honour_range: bool) -> (u16, Arc<Mutex<Vec<String>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let heads = Arc::new(Mutex::new(vec![]));
+        let heads2 = heads.clone();
+        thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let (data, heads) = (data.clone(), heads2.clone());
+                thread::spawn(move || {
+                    let mut r = BufReader::new(&s);
+                    let mut head = String::new();
+                    while r.read_line(&mut head).unwrap_or(0) > 0 && !head.ends_with("\r\n\r\n") {}
+                    let from: usize = head.split("Range: bytes=").nth(1).and_then(|v| v.split('-').next()).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    heads.lock().unwrap().push(head);
+                    let mut w = &s;
+                    let (h, body) = if honour_range {
+                        (format!("HTTP/1.0 206 Partial\r\nContent-Range: bytes {from}-{}/{}\r\nContent-Length: {}\r\n\r\n", data.len() - 1, data.len(), data.len() - from), &data[from..])
+                    } else {
+                        (format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", data.len()), &data[..])
+                    };
+                    let _ = w.write_all(h.as_bytes());
+                    for c in body.chunks(64 * 1024) {
+                        if w.write_all(c).is_err() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                });
+            }
+        });
+        (port, heads)
+    }
+
+    fn ftp_via(route: String, url: &str, data: &[u8], tag: &str) -> Info {
+        let dir = std::env::temp_dir().join(format!("ndm-test-ftp-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        ftp_route(route);
+        let j = Job::new(Info { conns: 4, ..info(url.into(), &dir) });
+        run(&j);
+        *FTP.lock().unwrap() = FtpCfg { pasv: true, route: None };
+        let i = j.info().clone();
+        assert_eq!(i.status, Status::Complete);
+        assert_eq!(fs::read(i.path()).unwrap(), data);
+        let _ = fs::remove_dir_all(&dir);
+        i
+    }
+
+    #[test]
+    fn ftp_through_http_proxy() {
+        let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let data: Arc<Vec<u8>> = Arc::new((0..1024 * 1024 + 5).map(|i: u32| (i * 7 % 251) as u8).collect());
+        let (port, heads) = fake_http_proxy(data.clone(), true);
+        let i = ftp_via(format!("http://u:p@127.0.0.1:{port}"), "ftp://h.example/f.bin", &data, "http");
+        assert!(i.ranges);
+        let first = &heads.lock().unwrap()[0];
+        assert!(first.starts_with("GET ftp://h.example/f.bin HTTP/1.0\r\n"), "{first}");
+        assert!(first.contains("\r\nRange: bytes=0-\r\n") && first.contains("\r\nProxy-Authorization: Basic dTpw\r\n"), "{first}");
+    }
+
+    #[test]
+    fn ftp_http_proxy_without_ranges() {
+        let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let data: Arc<Vec<u8>> = Arc::new((0..1024 * 1024 + 5).map(|i: u32| (i * 11 % 251) as u8).collect());
+        let (port, heads) = fake_http_proxy(data.clone(), false);
+        let i = ftp_via(format!("http://127.0.0.1:{port}"), "ftp://h.example/f.bin", &data, "norange");
+        assert!(!i.ranges);
+        assert_eq!(heads.lock().unwrap().len(), 1, "one connection");
+    }
+
+    #[test]
+    fn ftp_through_socks() {
+        let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let data: Arc<Vec<u8>> = Arc::new((0..1024 * 1024 + 9).map(|i: u32| (i * 3 % 253) as u8).collect());
+        let url = ftp_serve(data.clone());
+        let i = ftp_via(crate::net::local_proxy(""), &url, &data, "socks");
+        assert!(i.ranges);
     }
 
     /// NTLM's first leg on one keep-alive connection: 401 "NTLM" -> the request carries Windows' NTLMSSP

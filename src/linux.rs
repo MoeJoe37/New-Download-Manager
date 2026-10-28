@@ -235,7 +235,7 @@ fn gsettings(args: &[&str]) -> Option<String> {
 
 /// The desktop's proxy as Windows' Internet Settings would give it: (on, "http=host:port;https=host:port",
 /// bypass list). GNOME's settings (also Cinnamon, MATE, Budgie), else the environment (http_proxy,
-/// https_proxy, no_proxy).
+/// https_proxy, ftp_proxy, no_proxy).
 pub fn system_proxy() -> (bool, String, String) {
     match gsettings(&["get", "org.gnome.system.proxy", "mode"]).as_deref() {
         Some("manual") => {
@@ -245,7 +245,7 @@ pub fn system_proxy() -> (bool, String, String) {
                 let port = gsettings(&["get", &schema, "port"]).unwrap_or_default();
                 (!host.is_empty() && port != "0").then(|| format!("{k}={host}:{port}"))
             };
-            let server = [hp("http"), hp("https")].into_iter().flatten().collect::<Vec<_>>().join(";");
+            let server = [hp("http"), hp("https"), hp("ftp")].into_iter().flatten().collect::<Vec<_>>().join(";");
             // ['localhost', '127.0.0.0/8']
             let ignore = gsettings(&["get", "org.gnome.system.proxy", "ignore-hosts"]).unwrap_or_default();
             let bypass = ignore.split(',').map(|h| h.trim().trim_matches(['[', ']', '\'', ' '])).filter(|h| !h.is_empty()).collect::<Vec<_>>().join(";");
@@ -256,8 +256,8 @@ pub fn system_proxy() -> (bool, String, String) {
     }
     let var = |k: &str| std::env::var(k).or_else(|_| std::env::var(k.to_uppercase())).unwrap_or_default();
     let host = |v: String| v.split("://").last().unwrap_or("").trim_end_matches('/').to_string();
-    let (http, https) = (host(var("http_proxy")), host(var("https_proxy")));
-    let server = [("http", http), ("https", https)].into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(";");
+    let (http, https, ftp) = (host(var("http_proxy")), host(var("https_proxy")), host(var("ftp_proxy")));
+    let server = [("http", http), ("https", https), ("ftp", ftp)].into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(";");
     (!server.is_empty(), server, var("no_proxy").replace(',', ";"))
 }
 

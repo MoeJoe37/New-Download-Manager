@@ -4214,7 +4214,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.label(13.0, 164.0, 235.0, 10.0, "Use this proxy for the following protocols:");
                         d2.at(13.0, 176.0, 28.0, 10.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_http, tr("http"))));
                         d2.at(58.0, 176.0, 31.0, 10.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_https, tr("https"))));
-                        d2.at(109.0, 176.0, 24.0, 10.0, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut false, tr("ftp"))));
+                        d2.at(109.0, 176.0, 24.0, 10.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_ftp, tr("ftp"))));
                         if d2.button(149.0, 179.0, 107.0, 14.0, "Advanced...", m) {
                             adv = Some(s.adv.clone());
                         }
