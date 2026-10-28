@@ -36,7 +36,7 @@
 <p>NDM keeps a copy of its browser extension in <kbd>~/.config/NewDownloadManager/extension</kbd>. Load that folder (see <a href="starting.htm#Browser">From your browser</a>): it stays in place when the AppImage is updated or moved, so the browser keeps finding it.</p>
 <ul>
 <li>NDM registers itself with Chrome, Chromium, Edge, Brave, Vivaldi, Opera and Firefox, including Firefox from Snap.</li>
-<li>Browsers installed as Flatpak, and Chromium from Snap, keep programs outside their sandbox from starting, so they can't hand downloads to NDM.</li>
+<li>Browsers installed as Flatpak, and Chromium from Snap, hand downloads to NDM while it is running, but their sandbox keeps them from starting it. Tick <b>Launch New Download Manager on startup</b> (Options → General) so NDM is always running.</li>
 </ul>
 
 <h2 id="Files">Where NDM keeps its files</h2>
@@ -53,9 +53,9 @@
 
 <h2 id="Limits">Limits on Linux</h2>
 <ul>
-<li>Links can be dropped on the drop target, not on the main window.</li>
+<li>Links can be dropped on the main window under X11 and XWayland (most desktops); on Wayland without XWayland, drop them on the drop target.</li>
 <li>Choosing the network for <a href="segmentation.htm#Networks">several networks at once</a> needs Linux 5.7 or later.</li>
-<li>Sign-in to proxies and sites with NTLM uses the name and password in the address; Kerberos isn't supported.</li>
+<li>Sites asking for Negotiate sign in with your Kerberos ticket (from <code>kinit</code> or the desktop's domain sign-in), as Windows uses your Windows account. NTLM, and Negotiate without a ticket, use the name and password in the address.</li>
 <li>"Look up files in browser cache" reads Firefox's cache only.</li>
 </ul>
 </body></html>

@@ -2,6 +2,7 @@
 //! Scale measured from the original dialogs rendered by Windows from their templates
 //! (Tahoma 8pt): 1 DLU = 1.395 px across, 1.6 px down at 100% DPI.
 use crate::i18n::tr;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use eframe::egui::{self, Align, Color32, Layout, Pos2, Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2, WidgetText};
 
 /// Static text for the helpers: plain strings are translated (`i18n::tr`), RichText is used as given
@@ -30,6 +31,71 @@ impl Txt for egui::RichText {
     }
 }
 
+/// View -> Toolbar -> "NDM Style": NDM's own look for every window (set by main's `style`).
+pub static NDM_STYLE: AtomicBool = AtomicBool::new(false);
+
+pub fn ndm() -> bool {
+    NDM_STYLE.load(Relaxed)
+}
+
+/// NDM Style's colours: a cool grey ground, white (or slate) surfaces, one blue accent.
+pub struct Theme {
+    pub bg: Color32,
+    pub surface: Color32,
+    pub raised: Color32,
+    pub border: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub accent: Color32,
+    pub accent_hot: Color32,
+    pub accent_soft: Color32,
+    pub on_accent: Color32,
+    pub danger: Color32,
+    pub success: Color32,
+}
+
+pub fn theme(dark: bool) -> Theme {
+    let c = Color32::from_rgb;
+    if dark {
+        Theme {
+            bg: c(0x15, 0x17, 0x1c),
+            surface: c(0x1d, 0x20, 0x27),
+            raised: c(0x27, 0x2b, 0x34),
+            border: c(0x34, 0x39, 0x46),
+            text: c(0xe6, 0xe8, 0xec),
+            muted: c(0x9a, 0xa1, 0xae),
+            accent: c(0x4c, 0x8d, 0xff),
+            accent_hot: c(0x6a, 0xa1, 0xff),
+            accent_soft: c(0x23, 0x34, 0x52),
+            on_accent: Color32::WHITE,
+            danger: c(0xf0, 0x62, 0x62),
+            success: c(0x3f, 0xbf, 0x7a),
+        }
+    } else {
+        Theme {
+            bg: c(0xf3, 0xf5, 0xf9),
+            surface: Color32::WHITE,
+            raised: c(0xec, 0xef, 0xf4),
+            border: c(0xd9, 0xde, 0xe7),
+            text: c(0x1c, 0x23, 0x30),
+            muted: c(0x67, 0x70, 0x81),
+            accent: c(0x2f, 0x6f, 0xeb),
+            accent_hot: c(0x24, 0x59, 0xc4),
+            accent_soft: c(0xe2, 0xeb, 0xfd),
+            on_accent: Color32::WHITE,
+            danger: c(0xd9, 0x3a, 0x3a),
+            success: c(0x1f, 0x9d, 0x55),
+        }
+    }
+}
+
+/// NDM Style's corner radii: controls, and cards (groups, lists, tab pages).
+pub const R_CTRL: f32 = 5.0;
+pub const R_CARD: f32 = 7.0;
+
+/// Buttons NDM Style fills with the accent colour: the action a dialog is for.
+const PRIMARY: [&str; 6] = ["OK", "Start Download", "Download Now", "Yes", "Save", "Install"];
+
 pub const DX: f32 = 1.395;
 pub const DY: f32 = 1.6;
 pub const WIN_GREEN: Color32 = Color32::from_rgb(6, 176, 37);
@@ -55,6 +121,21 @@ pub struct Pal {
 
 pub fn pal(ui: &Ui) -> Pal {
     let v = ui.visuals();
+    if ndm() {
+        let t = theme(v.dark_mode);
+        return Pal {
+            field: t.surface,
+            text: t.text,
+            edge: t.border,
+            etch_dark: t.border,
+            etch_light: t.border,
+            tab: t.raised,
+            tab_hot: t.accent_soft,
+            line: t.border,
+            panel: v.panel_fill,
+            list: t.surface,
+        };
+    }
     if v.dark_mode {
         Pal {
             field: v.extreme_bg_color,
@@ -154,10 +235,21 @@ impl<'a> D<'a> {
 
     pub fn button(&mut self, x: f32, y: f32, w: f32, h: f32, t: &str, enabled: bool) -> bool {
         let r = self.rect(x, y, w, h);
+        let primary = ndm() && PRIMARY.contains(&t);
         self.ui
             .put(r, |ui: &mut Ui| {
                 ui.spacing_mut().button_padding = Vec2::new(2.0, 1.0);
-                ui.add_enabled(enabled, egui::Button::new(tr(t)).wrap_mode(egui::TextWrapMode::Extend).min_size(r.size()))
+                let b = if primary {
+                    let th = theme(ui.visuals().dark_mode);
+                    let v = ui.visuals_mut();
+                    v.widgets.hovered.weak_bg_fill = th.accent_hot;
+                    v.widgets.active.weak_bg_fill = th.accent_hot;
+                    (v.widgets.hovered.bg_stroke, v.widgets.active.bg_stroke) = (Stroke::NONE, Stroke::NONE);
+                    egui::Button::new(egui::RichText::new(tr(t)).color(th.on_accent)).fill(th.accent).stroke(Stroke::NONE)
+                } else {
+                    egui::Button::new(tr(t))
+                };
+                ui.add_enabled(enabled, b.wrap_mode(egui::TextWrapMode::Extend).min_size(r.size()))
             })
             .clicked()
     }
@@ -183,7 +275,12 @@ impl<'a> D<'a> {
     pub fn readonly(&mut self, x: f32, y: f32, w: f32, h: f32, s: &str) {
         let r = self.rect(x, y, w, h);
         let c = pal(self.ui);
-        self.ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
+        if ndm() {
+            let t = theme(self.ui.visuals().dark_mode);
+            self.ui.painter().rect(r, R_CTRL, t.raised, Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
+        } else {
+            self.ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
+        }
         let inner = r.shrink2(Vec2::new(4.0, 0.0));
         let l = self.row();
         self.ui.scope_builder(UiBuilder::new().max_rect(inner).layout(l), |ui| ui.add(egui::Label::new(s).truncate()));
@@ -244,6 +341,30 @@ impl<'a> D<'a> {
         let c = pal(self.ui);
         let frame = Rect::from_min_max(r.min + Vec2::new(0.0, 6.0), r.max);
         let p = self.ui.painter();
+        if ndm() {
+            // a rounded card; the caption breaks its top edge in the accent colour (the edge is left out under
+            // it, so the caption needs no background of its own: groups sit on tab pages and dialogs alike)
+            let stroke = Stroke::new(1.0_f32, c.edge);
+            if t.is_empty() {
+                p.rect_stroke(frame, R_CARD, stroke, egui::StrokeKind::Inside);
+                return;
+            }
+            let font = egui::TextStyle::Body.resolve(self.ui.style());
+            let ink = theme(self.ui.visuals().dark_mode).accent;
+            let g = p.layout_no_wrap(tr(t), font, ink);
+            let cap = Rect::from_min_size(r.min + Vec2::new(8.0, 0.0), g.size() + Vec2::new(8.0, 0.0));
+            let clip = p.clip_rect();
+            let all = frame.expand(2.0);
+            for part in [
+                Rect::from_min_max(all.min, egui::pos2(cap.left(), all.bottom())),
+                Rect::from_min_max(egui::pos2(cap.right(), all.top()), all.max),
+                Rect::from_min_max(egui::pos2(cap.left(), cap.bottom()), egui::pos2(cap.right(), all.bottom())),
+            ] {
+                p.with_clip_rect(part.intersect(clip)).rect_stroke(frame, R_CARD, stroke, egui::StrokeKind::Inside);
+            }
+            p.galley(cap.min + Vec2::new(4.0, 0.0), g, ink);
+            return;
+        }
         p.rect_stroke(frame, 0.0, Stroke::new(1.0_f32, c.etch_dark), egui::StrokeKind::Inside);
         if !t.is_empty() {
             let font = egui::TextStyle::Body.resolve(self.ui.style());
@@ -260,6 +381,9 @@ impl<'a> D<'a> {
         let c = pal(self.ui);
         let p = self.ui.painter();
         p.hline(r.x_range(), r.top(), Stroke::new(1.0_f32, c.etch_dark));
+        if ndm() {
+            return; // one hairline
+        }
         p.hline(r.x_range(), r.top() + 1.0, Stroke::new(1.0_f32, c.etch_light));
     }
 
@@ -269,6 +393,9 @@ impl<'a> D<'a> {
         let c = pal(self.ui);
         let p = self.ui.painter();
         p.vline(r.left(), r.y_range(), Stroke::new(1.0_f32, c.etch_dark));
+        if ndm() {
+            return;
+        }
         p.vline(r.left() + 1.0, r.y_range(), Stroke::new(1.0_f32, c.etch_light));
     }
 
@@ -277,6 +404,18 @@ impl<'a> D<'a> {
         let r = self.rect(x, y, w, h);
         let c = pal(self.ui);
         let p = self.ui.painter();
+        if ndm() {
+            // a rounded track with the accent filling it
+            let t = theme(self.ui.visuals().dark_mode);
+            let rad = (r.height() / 2.0).min(R_CTRL);
+            p.rect_filled(r, rad, t.raised);
+            let fill = Rect::from_min_size(r.min, Vec2::new(r.width() * frac.clamp(0.0, 1.0), r.height()));
+            if fill.width() >= 1.0 {
+                p.rect_filled(fill, rad, t.accent);
+            }
+            let _ = c;
+            return;
+        }
         // msctls_progress32 isn't darkened: NDM's bars stay light in dark mode (E6E6E6 in a BCBCBC frame)
         let _ = c;
         p.rect_filled(r, 0.0, Color32::from_gray(230));
@@ -345,8 +484,23 @@ impl<'a> D<'a> {
                 if sel {
                     active = Some(r);
                 }
-                let fill = if sel { c.field } else if resp.hovered() { c.tab_hot } else { c.tab };
                 let p = self.ui.painter();
+                if ndm() {
+                    // flat tabs: the selected one in the accent colour, underlined
+                    let t = theme(self.ui.visuals().dark_mode);
+                    let full = Rect::from_min_max(egui::pos2(r.left(), row_top), egui::pos2(r.right(), row_top + row_h - 1.0));
+                    if resp.hovered() && !sel {
+                        p.rect_filled(full.shrink2(Vec2::new(1.0, 2.0)), R_CTRL, t.raised);
+                    }
+                    let ink = if sel { t.accent } else { t.muted };
+                    p.text(egui::pos2(r.center().x, row_top + (row_h - 2.0) / 2.0), egui::Align2::CENTER_CENTER, &names[*k], font.clone(), ink);
+                    if sel {
+                        p.rect_filled(Rect::from_min_max(egui::pos2(full.left() + 3.0, full.bottom() - 2.0), egui::pos2(full.right() - 3.0, full.bottom())), 1.0, t.accent);
+                    }
+                    left += tw - 1.0;
+                    continue;
+                }
+                let fill = if sel { c.field } else if resp.hovered() { c.tab_hot } else { c.tab };
                 p.rect_filled(r, 0.0, fill);
                 p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, c.line), egui::StrokeKind::Inside);
                 p.text(egui::pos2(r.center().x, top + (row_h - 2.0) / 2.0), egui::Align2::CENTER_CENTER, &names[*k], font.clone(), c.text);
@@ -354,6 +508,10 @@ impl<'a> D<'a> {
             }
         }
         let p = self.ui.painter();
+        if ndm() {
+            p.rect(body, R_CARD, c.field, Stroke::new(1.0_f32, c.line), egui::StrokeKind::Inside);
+            return (x + 4.0, y + head + 3.0, w - 8.0, h - head - 6.0);
+        }
         p.rect_filled(body, 0.0, c.field);
         p.rect_stroke(body, 0.0, Stroke::new(1.0_f32, c.line), egui::StrokeKind::Inside);
         if let Some(a) = active {
@@ -384,17 +542,22 @@ impl<'a> D<'a> {
         let c = pal(self.ui);
         let font = egui::TextStyle::Body.resolve(self.ui.style());
         let p = self.ui.painter();
-        p.rect_filled(r, 0.0, c.list);
-        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
+        let (rad, ndm) = if ndm() { (R_CTRL, Some(theme(self.ui.visuals().dark_mode))) } else { (0.0, None) };
+        p.rect(r, rad, c.list, Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
         if cols.is_empty() {
             return r.shrink(1.0); // tree view: no header
         }
         let hh = 20.0;
+        if let Some(t) = &ndm {
+            let head = Rect::from_min_size(r.min + Vec2::splat(1.0), Vec2::new(r.width() - 2.0, hh - 1.0));
+            p.rect_filled(head, egui::CornerRadius { nw: rad as u8, ne: rad as u8, sw: 0, se: 0 }, t.raised);
+        }
+        let ink = ndm.as_ref().map_or(c.text, |t| t.muted);
         let mut cx = r.left() + 1.0;
         for (name, cw) in cols {
             let cr = Rect::from_min_size(egui::pos2(cx, r.top() + 1.0), Vec2::new(cw * self.dx, hh));
             p.vline(cr.right() - 1.0, cr.y_range().shrink(3.0), Stroke::new(1.0_f32, c.line));
-            p.text(cr.left_center() + Vec2::new(6.0, 0.0), egui::Align2::LEFT_CENTER, tr(name), font.clone(), c.text);
+            p.text(cr.left_center() + Vec2::new(6.0, 0.0), egui::Align2::LEFT_CENTER, tr(name), font.clone(), ink);
             cx += cw * self.dx;
         }
         p.hline(r.x_range().shrink(1.0), r.top() + hh, Stroke::new(1.0_f32, c.line));

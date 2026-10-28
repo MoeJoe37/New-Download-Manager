@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/MoeJoe37/New-Download-Manager/releases"><b>Download</b></a> ·
   <a href="#features">Features</a> ·
+  <a href="#custom-toolbars">Custom toolbars</a> ·
   <a href="#building-from-source">Build</a> ·
   <a href="#translating">Translate</a> ·
   <a href="LICENSE">License (AGPL-3.0)</a>
@@ -28,7 +29,7 @@
   half of the slowest part, so they all stay busy to the end
 - Resumes broken downloads, after checking that the file on the server hasn't changed
 - http, https and ftp (passive and active); mms, rtmp and rtsp through ffmpeg
-- Sign-in: Basic, Digest, NTLM / Negotiate (your Windows account), saved site logins
+- Sign-in: Basic, Digest, NTLM / Negotiate (your Windows account, or your Kerberos ticket on Linux), saved site logins
 - Proxies: Windows' settings, auto-configuration scripts, HTTP, HTTPS, FTP and SOCKS 4/5
 - Speed limiter, download limits per period, per-server connection limits
 
@@ -55,7 +56,9 @@
 - Saved projects, templates and schedules
 
 **And**
-- Dark mode, two looks (Modern / Classic), customizable toolbar and columns
+- Dark mode and three looks: Modern, Classic and **NDM Style**, NDM's own modern design for every window
+- Custom scale for the toolbar, the categories pane and the text (View → Custom scale...)
+- Customizable toolbar and columns, and [custom toolbars](#custom-toolbars) with your own pictures
 - Clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
 - Import and export of download lists, built-in help, automatic update check
 
@@ -69,6 +72,16 @@
   <sub>Light mode</sub>
 </p>
 
+<p align="center">
+  <img src="docs/ndm-style.png" alt="NDM main window in NDM Style, dark mode" width="820"><br>
+  <sub>NDM Style (View → Toolbar → NDM Style), dark mode</sub>
+</p>
+
+<p align="center">
+  <img src="docs/ndm-style-light.png" alt="NDM main window in NDM Style, light mode" width="820"><br>
+  <sub>NDM Style, light mode</sub>
+</p>
+
 ## Installing
 
 1. Download `NDM-Setup-<version>.exe` from [Releases](https://github.com/MoeJoe37/New-Download-Manager/releases)
@@ -78,12 +91,75 @@
    (Start menu → New Download Manager → *Browser extension folder*).
 3. Start NDM once, so the browser can reach it.
 
-**Linux:** download `NDM-x86_64.AppImage` from Releases, make it executable (`chmod +x NDM-x86_64.AppImage`)
-and run it. Everything the Windows version has works there too: the tray icon (on desktops with a tray: KDE, Xfce,
+**Linux:** download the package for your distribution from Releases: `ndm_<version>_amd64.deb` (Debian, Ubuntu,
+Mint), `ndm-<version>-1.x86_64.rpm` (Fedora, RHEL, openSUSE), `NDM-x86_64.AppImage` (any distribution: make it
+executable with `chmod +x NDM-x86_64.AppImage` and run it) or `ndm-<version>-x86_64.tar.gz` (unpack and run `./ndm`). Everything the Windows version has works there too: the tray icon (on desktops with a tray: KDE, Xfce,
 Cinnamon, MATE, GNOME with the AppIndicator extension), the drop target, dial-up / VPN through NetworkManager,
-the desktop's proxy, PAC scripts, NTLM sign-in and Firefox's cache.
+the desktop's proxy, PAC scripts, NTLM and Kerberos sign-in, links dropped on the main window and Firefox's cache.
 
 NDM checks the Releases page for new versions (Help → Check for updates, and by itself every two weeks).
+
+## Custom toolbars
+
+A custom toolbar replaces the pictures on NDM's toolbar buttons with your own. It is a folder of PNG files, one
+per button; NDM lists every such folder under **View → Toolbar** (also on the toolbar's right-click menu).
+
+**1. Find the toolbars folder.** Choose **View → Toolbar → Open toolbars folder**. NDM creates and opens it:
+
+| System | Folder |
+|---|---|
+| Windows | `%APPDATA%\NewDownloadManager\toolbars` |
+| Linux | `~/.config/NewDownloadManager/toolbars` (or `$XDG_CONFIG_HOME/NewDownloadManager/toolbars`) |
+
+**2. Make a folder for your toolbar** inside it. The folder's name is the toolbar's name in the menu, for example
+`toolbars/Sunset`.
+
+**3. Add one PNG per button**, named after the button:
+
+| Button | File |
+|---|---|
+| Add URL | `add-url.png` |
+| Resume | `resume.png` |
+| Stop | `stop.png` |
+| Stop All | `stop-all.png` |
+| Delete | `delete.png` |
+| Delete Completed | `delete-completed.png` |
+| Options | `options.png` |
+| Scheduler | `scheduler.png` |
+| Start Queue | `start-queue.png` |
+| Stop Queue | `stop-queue.png` |
+| Grabber | `grabber.png` |
+| Tell a Friend | `tell-a-friend.png` |
+
+Optional, for each button:
+
+- `<button>-hot.png`: shown while the mouse is over the button (otherwise NDM lightens the normal picture)
+- `<button>-disabled.png`: shown while the button can't be used (otherwise NDM greys the normal picture)
+- `small/<button>.png` (and `small/<button>-hot.png`, `small/<button>-disabled.png`): drawn for
+  **Small Buttons** instead of the large picture made smaller
+
+Pictures should be square-ish with a transparent background. NDM fits each one into the button, keeping its
+proportions: large buttons are 56 × 42 pixels and small ones 32 × 32 at 100% scale, so draw them at least 112 × 84
+(or 96 × 96) to stay sharp at higher **View → Custom scale** sizes. A button without a picture keeps NDM's own icon,
+so a toolbar can change just a few buttons.
+
+```
+toolbars/
+└── Sunset/
+    ├── add-url.png
+    ├── add-url-hot.png
+    ├── resume.png
+    ├── stop.png
+    ├── options.png
+    └── small/
+        └── add-url.png
+```
+
+**4. Choose it:** **View → Toolbar → Sunset**. **Built-in toolbar** goes back to NDM's own icons. After changing
+the pictures, choose another toolbar and then yours again to reload them.
+
+To share a toolbar, zip its folder; whoever gets it unzips it into their toolbars folder. You can post toolbars
+for others in [Issues](https://github.com/MoeJoe37/New-Download-Manager/issues).
 
 ## Building from source
 

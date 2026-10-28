@@ -935,12 +935,18 @@ fn texture(ctx: &egui::Context, name: &str, (w, h, px): &win::Rgba) -> egui::Tex
 }
 
 /// NDM's toolbar strips (normal, hot, and a generated disabled one), 12 icons each.
+/// One toolbar button's pictures in one size: normal, hovered, disabled. `tint`: white glyphs the
+/// toolbar colours as it draws them (NDM Style).
+struct TbPics {
+    pics: [egui::TextureHandle; 3],
+    tint: bool,
+}
+
+/// The toolbar's pictures, large and small, one per button in `TB_BUTTONS` order: the built-in glyphs, or
+/// a custom toolbar's PNGs (README, Custom toolbars) with the glyphs standing in for any it lacks.
 struct Toolbar {
-    normal: egui::TextureHandle,
-    hot: egui::TextureHandle,
-    disabled: egui::TextureHandle,
-    /// View -> Toolbar -> Small Buttons: 32x32 strips (normal, hot, disabled) from the same skin.
-    small: [Option<egui::TextureHandle>; 3],
+    large: Vec<Option<TbPics>>,
+    small: Vec<Option<TbPics>>,
 }
 
 const TB_ICONS: usize = 12;
@@ -1119,38 +1125,110 @@ const TB_GLYPHS: [(u32, [u8; 3]); TB_ICONS] = [
     (0xE715, [142, 36, 170]),  // Tell a Friend
 ];
 
+/// A custom toolbar's file name for each button (`<name>.png`, `<name>-hot.png`, `<name>-disabled.png`).
+const TB_FILES: [&str; TB_ICONS] = ["add-url", "resume", "stop", "stop-all", "delete", "delete-completed", "options", "scheduler", "start-queue", "stop-queue", "grabber", "tell-a-friend"];
+
+/// The built-in toolbar's name (`Settings::tb_skin`).
+const TB_BUILTIN: &str = "Neon";
+
+/// Where custom toolbars live: one folder per toolbar, next to NDM's settings.
+fn toolbars_dir() -> PathBuf {
+    core::store_path().with_file_name("toolbars")
+}
+
+/// The custom toolbars installed: folder names with at least one button picture, sorted.
+fn toolbar_sets() -> Vec<String> {
+    let mut sets: Vec<String> = std::fs::read_dir(toolbars_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| TB_FILES.iter().any(|f| e.path().join(format!("{f}.png")).is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    sets.sort_by_key(|s| s.to_lowercase());
+    sets
+}
+
+/// A picture file fitted into a `cw` x `ch` cell, centred, its proportions kept.
+fn tb_picture(file: &Path, cw: usize, ch: usize) -> Option<win::Rgba> {
+    let img = image::open(file).ok()?.into_rgba8();
+    let (w, h) = (img.width().max(1) as f32, img.height().max(1) as f32);
+    let k = (cw as f32 / w).min(ch as f32 / h);
+    let (nw, nh) = (((w * k).round() as u32).clamp(1, cw as u32), ((h * k).round() as u32).clamp(1, ch as u32));
+    let img = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Lanczos3);
+    let mut out = vec![0u8; cw * ch * 4];
+    let (ox, oy) = ((cw - nw as usize) / 2, (ch - nh as usize) / 2);
+    for (x, y, p) in img.enumerate_pixels() {
+        let i = ((oy + y as usize) * cw + ox + x as usize) * 4;
+        out[i..i + 4].copy_from_slice(&p.0);
+    }
+    Some((cw, ch, out))
+}
+
+/// A greyed, half transparent copy, for disabled buttons.
+fn grayed((w, h, mut px): win::Rgba) -> win::Rgba {
+    for p in px.chunks_mut(4) {
+        let l = ((p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10) as u8;
+        p.copy_from_slice(&[l, l, l, p[3] / 2]);
+    }
+    (w, h, px)
+}
+
 impl Toolbar {
-    fn load(ctx: &egui::Context, _skin: &str, _dark: bool) -> Option<Toolbar> {
-        // cells as the toolbar draws them: 56 x 42 px large, 32 x 32 px small
-        let normal = glyph_strip(&TB_GLYPHS, 56, 42, 34.0)?;
-        let small = glyph_strip(&TB_GLYPHS, 32, 32, 24.0);
-        let (hot, small_hot) = (Some(lighter(normal.clone())), small.clone().map(lighter));
-        let hot = hot.unwrap_or_else(|| normal.clone());
-        let small_hot = small_hot.or_else(|| small.clone());
-        let gray = |mut g: win::Rgba| {
-            for p in g.2.chunks_mut(4) {
-                let l = ((p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10) as u8;
-                p.copy_from_slice(&[l, l, l, p[3] / 2]);
+    /// `skin`: the built-in set or a folder in `toolbars_dir()`; `ndm`: NDM Style's one-colour glyphs;
+    /// `scale`: View -> Custom scale's toolbar size.
+    fn load(ctx: &egui::Context, skin: &str, ndm: bool, scale: f32) -> Toolbar {
+        let dir = Some(toolbars_dir().join(skin)).filter(|d| skin != TB_BUILTIN && d.is_dir());
+        let px = |v: f32| ((v * scale).round() as usize).max(8);
+        let mut sizes = [vec![], vec![]];
+        // cells as the toolbar draws them: 56 x 42 px large, 32 x 32 px small (at 100%)
+        for (si, (cw, ch, glyph)) in [(px(56.0), px(42.0), 34.0 * scale), (px(32.0), px(32.0), 24.0 * scale)].into_iter().enumerate() {
+            for k in 0..TB_ICONS {
+                let file = |suffix: &str| {
+                    let d = dir.as_ref()?;
+                    let name = format!("{}{suffix}.png", TB_FILES[k]);
+                    // a small/ folder holds pictures drawn for the small buttons
+                    let f = Some(d.join("small").join(&name)).filter(|f| si == 1 && f.is_file()).unwrap_or_else(|| d.join(&name));
+                    tb_picture(&f, cw, ch)
+                };
+                let pics = match file("") {
+                    Some(n) => {
+                        let hot = file("-hot").unwrap_or_else(|| lighter(n.clone()));
+                        let off = file("-disabled").unwrap_or_else(|| grayed(n.clone()));
+                        Some(([n, hot, off], false))
+                    }
+                    // NDM Style: lighter, smaller line icons
+                    None if ndm => glyph_strip(&[(TB_GLYPHS[k].0, [255; 3])], cw, ch, glyph * 0.78).map(|g| ([g.clone(), g.clone(), g], true)),
+                    None => glyph_strip(&[TB_GLYPHS[k]], cw, ch, glyph).map(|g| ([g.clone(), lighter(g.clone()), grayed(g)], false)),
+                };
+                sizes[si].push(pics.map(|(p, tint)| {
+                    let [a, b, c] = p;
+                    let t = |n: usize, b: &win::Rgba| texture(ctx, &format!("tb{si}_{k}_{n}"), b);
+                    TbPics { pics: [t(0, &a), t(1, &b), t(2, &c)], tint }
+                }));
             }
-            g
-        };
-        let small_gray = small.clone().map(gray);
-        let tex = |n: &str, b: &Option<win::Rgba>| b.as_ref().map(|b| texture(ctx, n, b));
-        Some(Toolbar {
-            normal: texture(ctx, "tb", &normal),
-            hot: texture(ctx, "tbh", &hot),
-            disabled: texture(ctx, "tbd", &gray(normal.clone())),
-            small: [tex("tbs", &small), tex("tbsh", &small_hot), tex("tbsd", &small_gray)],
-        })
+        }
+        let [large, small] = sizes;
+        Toolbar { large, small }
     }
 
-    /// The image strip for a button state; falls back to the large strip when there is no small one.
-    fn strip(&self, small: bool, enabled: bool, hot: bool) -> egui::TextureId {
-        let k = if !enabled { 2 } else if hot { 1 } else { 0 };
-        match &self.small[k] {
-            Some(t) if small => t.id(),
-            _ => [&self.normal, &self.hot, &self.disabled][k].id(),
-        }
+    /// Button `k`'s picture for a state, and the colour to draw it in.
+    fn pic(&self, small: bool, k: usize, enabled: bool, hot: bool, dark: bool) -> Option<(egui::TextureId, Color32)> {
+        let p = if small { &self.small } else { &self.large }.get(k)?.as_ref()?;
+        let state = if !enabled { 2 } else if hot { 1 } else { 0 };
+        let tint = if !p.tint {
+            Color32::WHITE
+        } else {
+            let t = dlu::theme(dark);
+            match state {
+                2 => t.muted.gamma_multiply(0.45),
+                1 => t.accent,
+                // Add URL, the toolbar's main action, in the accent colour
+                _ if k == 0 => t.accent,
+                _ => t.text.gamma_multiply(0.82),
+            }
+        };
+        Some((p.pics[state].id(), tint))
     }
 }
 
@@ -1378,6 +1456,8 @@ enum Dialog {
     /// "Manual login page": the page is open in the browser; OK explores with the browser's cookies.
     GrabManual { url: String },
     About,
+    /// View -> Custom scale: the toolbar, categories pane and text sizes when it opened (Cancel restores them).
+    Scale { orig: [f32; 3] },
     /// "Customize Toolbar": the edited button order (-1 = separator) and the selected rows of both lists.
     TbCustomize { layout: Vec<i8>, avail: Option<usize>, cur: Option<usize> },
     /// Tip of the Day (template 105, CTipDlg): the tip shown.
@@ -1454,7 +1534,8 @@ struct App {
     expanded: HashSet<String>,
     toolbar: Option<Toolbar>,
     /// (skin, dark) the toolbar strips were loaded for
-    tb_key: (String, bool),
+    /// What the toolbar's pictures were made for: (set, NDM Style, scale %).
+    tb_key: (String, bool, u32),
     icons: HashMap<String, Option<egui::TextureHandle>>,
     hwnd: Arc<AtomicIsize>,
     /// The tray icon, its Speed Limiter item and the other items with their English text (relabelled on a
@@ -1576,6 +1657,9 @@ fn style(ctx: &egui::Context, dark: bool) {
             wv.fg_stroke.color = text;
             wv.expansion = 0.0;
         }
+        if dlu::ndm() {
+            ndm_visuals(&mut v, dark);
+        }
         ctx.set_visuals_of(if dark { egui::Theme::Dark } else { egui::Theme::Light }, v);
     }
     ctx.all_styles_mut(|s| {
@@ -1588,6 +1672,43 @@ fn style(ctx: &egui::Context, dark: bool) {
             s.text_styles.insert(t, FontId::proportional(size));
         }
     });
+}
+
+/// NDM Style: soft rounded controls on a cool grey ground, the accent colour for selection, focus and
+/// the active control, light shadows under menus and windows.
+fn ndm_visuals(v: &mut egui::Visuals, dark: bool) {
+    let t = dlu::theme(dark);
+    let r = |x: f32| egui::CornerRadius::same(x as u8);
+    (v.panel_fill, v.window_fill, v.extreme_bg_color, v.faint_bg_color) = (t.bg, t.surface, t.surface, t.raised);
+    v.override_text_color = Some(t.text);
+    v.window_corner_radius = r(dlu::R_CARD + 3.0);
+    v.menu_corner_radius = r(dlu::R_CARD);
+    v.window_stroke = egui::Stroke::new(1.0_f32, t.border);
+    v.window_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 40 }) };
+    v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(if dark { 100 } else { 34 }) };
+    v.selection.bg_fill = t.accent_soft;
+    v.selection.stroke = egui::Stroke::new(1.0_f32, t.accent);
+    v.hyperlink_color = t.accent;
+    v.text_cursor.stroke = egui::Stroke::new(1.5_f32, t.accent);
+    let w = &mut v.widgets;
+    let states: [(&mut egui::style::WidgetVisuals, Color32, Color32); 5] = [
+        (&mut w.noninteractive, t.bg, t.border),
+        (&mut w.inactive, t.surface, t.border),
+        (&mut w.hovered, t.raised, t.accent),
+        (&mut w.active, t.accent_soft, t.accent),
+        (&mut w.open, t.accent_soft, t.accent),
+    ];
+    for (wv, fill, stroke) in states {
+        wv.corner_radius = r(dlu::R_CTRL);
+        (wv.bg_fill, wv.weak_bg_fill) = (fill, fill);
+        wv.bg_stroke = egui::Stroke::new(1.0_f32, stroke);
+        wv.fg_stroke.color = t.text;
+        wv.expansion = 0.0;
+    }
+    // ticks, radio dots and slider handles in the accent colour
+    w.active.fg_stroke.color = t.accent;
+    w.noninteractive.fg_stroke.color = t.text;
+    w.noninteractive.bg_stroke.color = t.border;
 }
 
 /// "Start positions and download progress by connections" bar: one filled span per segment.
@@ -1709,6 +1830,7 @@ impl App {
         let dark =core.settings().dark_support && win::system_dark();
         *LIST_FONT.lock().unwrap() = core.settings().list_font.clone();
         i18n::load(&core.settings().language.clone());
+        dlu::NDM_STYLE.store(core.settings().ndm_style, Relaxed);
         style(ctx, dark);
         let hwnd = Arc::new(AtomicIsize::new(0));
         let (tx, rx) = channel();
@@ -1760,7 +1882,7 @@ impl App {
             serial: 0,
             quitting: false,
             toolbar: None,
-            tb_key: (String::new(), false),
+            tb_key: (String::new(), false, 0),
             icons: HashMap::new(),
             hwnd,
             tray,
@@ -2425,7 +2547,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             // NDM's menu bar pads each item differently (measured with GetMenuItemRect at 125%, item width
             // minus the label's width in the menu font): Tasks 42, File 28, Downloads 52, View 33, Help 29 px
             let pad = |ui: &mut egui::Ui, px: f32| ui.spacing_mut().button_padding.x = px / 1.25 / 2.0;
-            ui.style_mut().text_styles.insert(egui::TextStyle::Button, segoe(12.2)); // NDM's menu font
+            // NDM's menu font, at View -> Custom scale's text size
+            let sc = self.core.settings().scale_text;
+            ui.style_mut().text_styles.insert(egui::TextStyle::Button, segoe(12.2 * sc));
             ui.spacing_mut().item_spacing.x = 0.0;
             let (font, ink) = (egui::TextStyle::Button.resolve(ui.style()), ui.visuals().text_color());
             let mn = |t: &str| {
@@ -2629,6 +2753,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         style(ui.ctx(), self.dark);
                     }
                 });
+                if ui.button(tr("Custom scale...")).clicked() {
+                    let orig = { let s = self.core.settings(); [s.scale_toolbar, s.scale_tree, s.scale_text] };
+                    if !self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::Scale { .. })) {
+                        self.open(Dialog::Scale { orig });
+                    }
+                    ui.close_menu();
+                }
                 ui.separator();
                 ui.menu_button(tr("Language"), |ui| {
                     // NDM's Language menu: English plus every Languages\ndm_*.lng
@@ -2700,6 +2831,40 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
             });
         });
+    }
+
+    /// NDM Style's status bar: how many downloads the list holds, how many run, the total speed and
+    /// whether the Speed Limiter is on.
+    fn status_bar(&mut self, ctx: &egui::Context, t: &dlu::Theme, rows: &[Row]) {
+        let sc = self.core.settings().scale_text;
+        let frame = egui::Frame::new().fill(t.surface).inner_margin(egui::Margin { left: 12, right: 12, top: 4, bottom: 4 });
+        let bar = egui::TopBottomPanel::bottom("status").frame(frame).show_separator_line(false).show(ctx, |ui| {
+            let font = FontId::new(10.0 * sc, egui::FontFamily::Name("segoe".into()));
+            let running = rows.iter().filter(|r| r.running).count();
+            let speed: f64 = self.core.jobs().iter().map(|j| j.speed()).sum();
+            let limit = self.core.settings().limit_on;
+            let dir = if i18n::is_rtl() { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
+            ui.with_layout(dir, |ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                ui.label(RichText::new(i18n::trf("%d downloads", &[&rows.len()])).font(font.clone()).color(t.muted));
+                let dot = |ui: &mut egui::Ui, c: Color32| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                    ui.painter().circle_filled(r.center(), 3.5, c);
+                };
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    dot(ui, if running > 0 { t.accent } else { t.border });
+                    ui.label(RichText::new(i18n::trf("%d downloading", &[&running])).font(font.clone()).color(if running > 0 { t.text } else { t.muted }));
+                });
+                if speed > 0.0 {
+                    ui.label(RichText::new(rate(speed)).font(font.clone()).color(t.text));
+                }
+                if limit {
+                    ui.label(RichText::new(tr("Speed Limiter on")).font(font.clone()).color(t.accent));
+                }
+            });
+        });
+        ctx.layer_painter(egui::LayerId::background()).hline(ctx.screen_rect().x_range(), bar.response.rect.top() + 0.5, egui::Stroke::new(1.0_f32, t.border));
     }
 
     fn ask_delete(&mut self, ids: Vec<u64>) {
@@ -2797,12 +2962,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let small = self.core.settings().small_buttons;
         let enabled = [true, can_resume, can_stop, any_running, !sel.is_empty(), any_done, true, true, queues.iter().any(|q| !q.2), queues.iter().any(|q| q.2), true, true];
         let buttons: Vec<TbButton> = TB_BUTTONS.iter().enumerate().map(|(k, (g, l, t))| (k, *g, tr(l), tr(t), enabled[k], k == 8 || k == 9)).collect();
-        let key = (self.core.settings().tb_skin.clone(), self.dark);
+        let key = { let s = self.core.settings(); (s.tb_skin.clone(), dlu::ndm(), (s.scale_toolbar * 100.0).round() as u32) };
         if self.tb_key != key {
-            self.toolbar = Toolbar::load(ui.ctx(), &key.0, key.1);
+            self.toolbar = Some(Toolbar::load(ui.ctx(), &key.0, key.1, key.2 as f32 / 100.0));
             self.tb_key = key;
         }
-        if !self.core.settings().classic {
+        if !self.core.settings().classic && !dlu::ndm() {
             // NDM draws an etched line between the menu and the toolbar
             let (r, w) = (ui.max_rect(), ui.ctx().screen_rect().x_range());
             for (dy, g) in [(0.0, 240), (1.0, 160), (2.0, 255)] {
@@ -2834,16 +2999,22 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
     /// The toolbar's buttons in the user's order (Customize...), separators as gaps. Returns the clicked button.
     fn tool_buttons(&mut self, ui: &mut egui::Ui, buttons: &[TbButton], queues: &[(u32, String, bool)], small: bool) -> Option<usize> {
-        let font = segoe(11.6);
+        // View -> Custom scale: the pictures are made at this size (Toolbar::load), the rest follows
+        let sc = self.core.settings().scale_toolbar;
+        let font = segoe(11.6 * sc);
         // NDM draws the strip 1:1 in screen pixels at any DPI, every button image width + 19 px wide with the
         // label cut to "..."
         let ppp = ui.ctx().pixels_per_point();
-        let (iw, ih) = if small { (32.0 / ppp, 32.0 / ppp) } else { (56.0 / ppp, 42.0 / ppp) };
-        let bw = iw + 19.0 / ppp;
-        let bh = ih + 28.0 / ppp;
-        let arrow_w = 19.0 / ppp; // BTNS_DROPDOWN arrow: 19 px
+        let cell = |v: f32| ((v * sc).round()).max(8.0) / ppp;
+        let (iw, ih) = if small { (cell(32.0), cell(32.0)) } else { (cell(56.0), cell(42.0)) };
+        let bw = iw + 19.0 * sc / ppp;
+        let bh = ih + 28.0 * sc / ppp;
+        let arrow_w = 19.0 * sc / ppp; // BTNS_DROPDOWN arrow: 19 px
         let dark = ui.visuals().dark_mode;
-        let (hot_fill, hot_edge, down_fill) = if dark {
+        let ndm = dlu::ndm().then(|| dlu::theme(dark));
+        let (hot_fill, hot_edge, down_fill) = if let Some(t) = &ndm {
+            (t.raised, Color32::TRANSPARENT, t.accent_soft)
+        } else if dark {
             (Color32::from_gray(0x45), Color32::from_gray(0x60), Color32::from_gray(0x55))
         } else {
             (Color32::from_rgb(229, 243, 255), Color32::from_rgb(204, 232, 255), Color32::from_rgb(204, 232, 255))
@@ -2856,7 +3027,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             for b in layout {
                 let Some((k, glyph, label, tip, enabled, dropdown)) = usize::try_from(b).ok().and_then(|b| buttons.get(b)).cloned() else {
                     let (r, _) = ui.allocate_exact_size(Vec2::new(8.0, bh), Sense::hover());
-                    ui.painter().vline(r.center().x, r.y_range().shrink(6.0), egui::Stroke::new(1.0_f32, Color32::from_gray(if dark { 90 } else { 190 })));
+                    let c = ndm.as_ref().map_or(Color32::from_gray(if dark { 90 } else { 190 }), |t| t.border);
+                    ui.painter().vline(r.center().x, r.y_range().shrink(10.0 * sc), egui::Stroke::new(1.0_f32, c));
                     continue;
                 };
                 let w = bw + if dropdown { arrow_w } else { 0.0 };
@@ -2869,19 +3041,22 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let p = ui.painter();
                 if hot {
                     let fill = if resp.is_pointer_button_down_on() { down_fill } else { hot_fill };
-                    p.rect_filled(rect.shrink(1.0), 2.0, fill);
+                    let rad = if ndm.is_some() { dlu::R_CARD } else { 2.0 };
+                    p.rect_filled(rect.shrink(if ndm.is_some() { 2.0 } else { 1.0 }), rad, fill);
                     p.rect_stroke(rect.shrink(1.0), 2.0, egui::Stroke::new(1.0_f32, hot_edge), egui::StrokeKind::Inside);
                     if dropdown {
                         p.vline(arrow.left(), arrow.y_range().shrink(3.0), egui::Stroke::new(1.0_f32, hot_edge));
                     }
                 }
-                let color = if enabled { ui.visuals().text_color() } else { Color32::from_gray(if dark { 110 } else { 150 }) };
+                let color = match &ndm {
+                    Some(t) => if enabled { t.text } else { t.muted.gamma_multiply(0.6) },
+                    None => if enabled { ui.visuals().text_color() } else { Color32::from_gray(if dark { 110 } else { 150 }) },
+                };
                 let body = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right() - if dropdown { arrow_w } else { 0.0 }, rect.bottom()));
-                let icon = egui::Rect::from_center_size(egui::pos2(body.center().x, rect.top() + 4.0 + ih / 2.0), Vec2::new(iw, ih));
-                match self.toolbar.as_ref().map(|t| t.strip(small, enabled, hot && !on_arrow)) {
-                    Some(tex) => {
-                        let u = egui::Rect::from_min_max(egui::pos2(k as f32 / TB_ICONS as f32, 0.0), egui::pos2((k + 1) as f32 / TB_ICONS as f32, 1.0));
-                        p.image(tex, icon, u, Color32::WHITE);
+                let icon = egui::Rect::from_center_size(egui::pos2(body.center().x, rect.top() + 4.0 * sc + ih / 2.0), Vec2::new(iw, ih));
+                match self.toolbar.as_ref().and_then(|t| t.pic(small, k, enabled, hot && !on_arrow, dark)) {
+                    Some((tex, tint)) => {
+                        p.image(tex, icon, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                     }
                     None => {
                         p.text(icon.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(28.0), if enabled { BAR } else { color });
@@ -2890,8 +3065,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let mut job = egui::text::LayoutJob::simple_singleline(label.clone(), font.clone(), color);
                 job.wrap = egui::text::TextWrapping { max_width: body.width() - 7.0 / ppp, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
                 let g = ui.painter().layout_job(job);
-                p.galley(egui::pos2(body.center().x - g.size().x / 2.0, rect.bottom() - 9.0 - g.size().y / 2.0), g, color);
-                if dropdown {
+                p.galley(egui::pos2(body.center().x - g.size().x / 2.0, rect.bottom() - 9.0 * sc - g.size().y / 2.0), g, color);
+                if let (true, Some(t)) = (dropdown, &ndm) {
+                    // NDM Style: a thin chevron beside the icon
+                    let c = egui::pos2(arrow.center().x, icon.center().y);
+                    let d = 3.0 * sc;
+                    let pts = vec![c + Vec2::new(-d, -d / 2.0), c + Vec2::new(0.0, d / 2.0), c + Vec2::new(d, -d / 2.0)];
+                    p.add(egui::Shape::line(pts, egui::Stroke::new(1.4_f32, if enabled { t.muted } else { color })));
+                } else if dropdown {
                     // NDM (measured at 125%): a solid 9x5 px near-black triangle, 3 px right of the arrow
                     // column's middle and 10 px below the icon's centre, black in dark mode too
                     let px = |v: f32| v / ppp;
@@ -2950,18 +3131,45 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
         }
         ui.separator();
+        // the built-in pictures, or a custom toolbar from the toolbars folder (README, Custom toolbars)
+        let skin = self.core.settings().tb_skin.clone();
+        let sets = toolbar_sets();
+        let builtin = skin == TB_BUILTIN || !sets.contains(&skin);
+        let mut pick = None;
+        if ui.radio(builtin, tr("Built-in toolbar")).clicked() {
+            pick = Some(TB_BUILTIN.to_string());
+        }
+        for name in sets {
+            if ui.radio(skin == name, name.as_str()).clicked() {
+                pick = Some(name);
+            }
+        }
+        if let Some(name) = pick {
+            self.core.settings().tb_skin = name;
+            self.core.save();
+            ui.close_menu();
+        }
+        if ui.button(tr("Open toolbars folder")).clicked() {
+            let dir = toolbars_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            explore(dir);
+            ui.close_menu();
+        }
         if ui.button(tr("Look for new toolbars")).clicked() {
-            // new toolbar styles come with new NDM releases
-            open_url(&format!("https://github.com/{UPDATE_REPO}/releases"));
+            // how to make and install a toolbar
+            open_url(&format!("https://github.com/{UPDATE_REPO}#custom-toolbars"));
             ui.close_menu();
         }
         ui.separator();
-        // Modern (tree chevrons, list grid lines) or Classic (+/- tree boxes, 3D look)
-        let classic = self.core.settings().classic;
-        for (name, c) in [("Modern style", false), ("Classic style", true)] {
-            if ui.radio(classic == c, tr(name)).clicked() {
-                self.core.settings().classic = c;
+        // Modern (tree chevrons, list grid lines), Classic (+/- tree boxes, 3D look) or NDM Style (NDM's own
+        // look for every window)
+        let (classic, ndm) = { let s = self.core.settings(); (s.classic, s.ndm_style) };
+        for (name, c, n) in [("Modern style", false, false), ("Classic style", true, false), ("NDM Style", classic, true)] {
+            if ui.radio(ndm == n && (n || classic == c), tr(name)).clicked() {
+                { let mut s = self.core.settings(); (s.classic, s.ndm_style) = (c, n); }
                 self.core.save();
+                dlu::NDM_STYLE.store(n, Relaxed);
+                style(ui.ctx(), self.dark);
                 ui.close_menu();
             }
         }
@@ -2973,27 +3181,52 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     fn categories(&mut self, ui: &mut egui::Ui) {
         let dark = ui.visuals().dark_mode;
         let (edge, text) = (if dark { Color32::from_gray(90) } else { Color32::from_gray(160) }, ui.visuals().text_color());
-        // header: group frame [4,1,95,16] with "Categories" and the owner-drawn x [87,8,9,8]
-        let head = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14.4), Sense::hover()).0;
-        ui.painter().rect_stroke(head, 0.0, egui::Stroke::new(1.0_f32, edge), egui::StrokeKind::Inside);
+        // View -> Custom scale: rows, icons and text of the pane
+        let sc = self.core.settings().scale_tree;
+        let nt = dlu::ndm().then(|| dlu::theme(dark));
         let rtl = i18n::is_rtl();
-        if rtl {
-            ui.painter().text(head.right_center() + Vec2::new(-5.0, 1.0), Align2::RIGHT_CENTER, tr("Categories"), egui::TextStyle::Body.resolve(ui.style()), text);
+        if let Some(t) = &nt {
+            // NDM Style: a quiet section title with the hide button beside it
+            let head = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0 * sc), Sense::hover()).0;
+            let font = FontId::new(9.0 * sc, egui::FontFamily::Name("segoe".into()));
+            let title = tr("Categories").to_uppercase();
+            let (at, align) = if rtl { (head.right_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER) } else { (head.left_center() + Vec2::new(10.0, 0.0), Align2::LEFT_CENTER) };
+            ui.painter().text(at, align, title, font, t.muted);
+            let xc = if rtl { head.left_center() + Vec2::new(12.0, 0.0) } else { head.right_center() - Vec2::new(12.0, 0.0) };
+            let xr = egui::Rect::from_center_size(xc, Vec2::splat(18.0 * sc));
+            let x = ui.interact(xr, ui.id().with("cats_x"), Sense::click()).on_hover_text(tr("Hide categories"));
+            if x.hovered() {
+                ui.painter().rect_filled(xr, dlu::R_CTRL, t.raised);
+            }
+            let d = 3.5 * sc;
+            for (a, b) in [(Vec2::new(-d, -d), Vec2::new(d, d)), (Vec2::new(-d, d), Vec2::new(d, -d))] {
+                ui.painter().line_segment([xr.center() + a, xr.center() + b], egui::Stroke::new(1.3_f32, if x.hovered() { t.text } else { t.muted }));
+            }
+            if x.clicked() {
+                self.show_cats = false;
+            }
         } else {
-            ui.painter().text(head.left_center() + Vec2::new(5.0, 1.0), Align2::LEFT_CENTER, tr("Categories"), egui::TextStyle::Body.resolve(ui.style()), text);
-        }
-        let xc = if rtl { head.left_center() + Vec2::new(10.0, 1.0) } else { head.right_center() - Vec2::new(10.0, -1.0) };
-        let xr = egui::Rect::from_center_size(xc, Vec2::splat(13.0));
-        let x = ui.interact(xr, ui.id().with("cats_x"), Sense::click()).on_hover_text(tr("Hide categories"));
-        if x.hovered() {
-            ui.painter().rect_filled(xr, 0.0, if dark { Color32::from_gray(80) } else { Color32::from_gray(220) });
-        }
-        // NDM's owner-drawn close cross
-        for (a, b) in [(Vec2::new(-3.5, -3.5), Vec2::new(3.5, 3.5)), (Vec2::new(-3.5, 3.5), Vec2::new(3.5, -3.5))] {
-            ui.painter().line_segment([xr.center() + a, xr.center() + b], egui::Stroke::new(1.2_f32, text));
-        }
-        if x.clicked() {
-            self.show_cats = false;
+            // header: group frame [4,1,95,16] with "Categories" and the owner-drawn x [87,8,9,8]
+            let head = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14.4 * sc), Sense::hover()).0;
+            ui.painter().rect_stroke(head, 0.0, egui::Stroke::new(1.0_f32, edge), egui::StrokeKind::Inside);
+            if rtl {
+                ui.painter().text(head.right_center() + Vec2::new(-5.0, 1.0), Align2::RIGHT_CENTER, tr("Categories"), egui::TextStyle::Body.resolve(ui.style()), text);
+            } else {
+                ui.painter().text(head.left_center() + Vec2::new(5.0, 1.0), Align2::LEFT_CENTER, tr("Categories"), egui::TextStyle::Body.resolve(ui.style()), text);
+            }
+            let xc = if rtl { head.left_center() + Vec2::new(10.0, 1.0) } else { head.right_center() - Vec2::new(10.0, -1.0) };
+            let xr = egui::Rect::from_center_size(xc, Vec2::splat(13.0));
+            let x = ui.interact(xr, ui.id().with("cats_x"), Sense::click()).on_hover_text(tr("Hide categories"));
+            if x.hovered() {
+                ui.painter().rect_filled(xr, 0.0, if dark { Color32::from_gray(80) } else { Color32::from_gray(220) });
+            }
+            // NDM's owner-drawn close cross
+            for (a, b) in [(Vec2::new(-3.5, -3.5), Vec2::new(3.5, 3.5)), (Vec2::new(-3.5, 3.5), Vec2::new(3.5, -3.5))] {
+                ui.painter().line_segment([xr.center() + a, xr.center() + b], egui::Stroke::new(1.2_f32, text));
+            }
+            if x.clicked() {
+                self.show_cats = false;
+            }
         }
 
         // one settings() lock per statement: two in the same expression deadlock
@@ -3037,18 +3270,89 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let fill = if dark { DARK_TREE } else { Color32::WHITE };
         let line = if dark { Color32::from_gray(110) } else { Color32::from_gray(160) };
         // NDM's tree at 125%: 19 px rows, 21 px indent
-        let (row_h, indent) = (15.2, 17.0);
-        egui::Frame::new().fill(fill).stroke(egui::Stroke::new(1.0_f32, edge)).inner_margin(egui::Margin { left: 2, right: 2, top: 2, bottom: 2 }).show(ui, |ui| {
+        let (row_h, indent) = (15.2 * sc, 17.0 * sc);
+        let frame = if nt.is_some() { egui::Frame::new().inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 2 }) } else { egui::Frame::new().fill(fill).stroke(egui::Stroke::new(1.0_f32, edge)).inner_margin(egui::Margin { left: 2, right: 2, top: 2, bottom: 2 }) };
+        // NDM Style's pictures: one-colour glyphs, coloured as they are drawn
+        let gctx = ui.ctx().clone();
+        let glyph = |cp: u32| {
+            let px = (16.0 * sc * gctx.pixels_per_point()).round() as usize;
+            cached_texture(&gctx, &format!("side{cp:x}_{px}"), || glyph_strip(&[(cp, [255; 3])], px, px, px as f32 * 0.95)).map(|t| t.id())
+        };
+        let running: HashSet<u32> = queues.iter().map(|q| q.0).filter(|q| self.core.queue_running(*q)).collect();
+        let side_glyph = |v: &Cat| match v {
+            Cat::Files(Which::All, None) => 0xE896,
+            Cat::Files(Which::Unfinished, None) => 0xE769,
+            Cat::Files(Which::Finished, None) => 0xE930,
+            Cat::Files(_, Some(c)) => match c.as_str() {
+                "Compressed" => 0xE7B8,
+                "Documents" => 0xE8A5,
+                "Music" => 0xE8D6,
+                "Programs" => 0xE756,
+                "Video" => 0xE714,
+                _ => 0xE8B7,
+            },
+            Cat::Grabber(_) => 0xE774,
+            Cat::Queue(None) => 0xE8FD,
+            Cat::Queue(Some(q)) => if running.contains(q) { 0xE768 } else { 0xE823 },
+        };
+        frame.show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             let modern = !self.core.settings().classic;
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for (k, (depth, key, icon, open_icon, label, value, kids)) in nodes.iter().enumerate() {
+                    let resp = if let Some(t) = &nt {
+                    // NDM Style: tall rows, a rounded highlight, chevrons and one-colour icons, no tree lines
+                    let rh = 25.0 * sc;
+                    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), rh), Sense::hover());
+                    let resp = ui.interact(row, ui.id().with(("node", k)), Sense::click());
+                    let p = ui.painter();
+                    let sel = self.cat == *value;
+                    let pill = row.shrink2(Vec2::new(0.0, 1.0 * sc));
+                    if sel {
+                        p.rect_filled(pill, dlu::R_CTRL, t.accent_soft);
+                    } else if resp.hovered() {
+                        p.rect_filled(pill, dlu::R_CTRL, t.raised);
+                    }
+                    let dir = if rtl { -1.0 } else { 1.0 };
+                    let edge_x = if rtl { row.right() } else { row.left() };
+                    let x0 = edge_x + (6.0 + *depth as f32 * 16.0) * sc * dir;
+                    let my = row.center().y;
+                    if *kids {
+                        let open = !key.is_empty() && self.expanded.contains(*key);
+                        let c = egui::pos2(x0 + 5.0 * sc * dir, my);
+                        let v = |x: f32, y: f32| c + Vec2::new(x * sc * dir, y * sc);
+                        let pts = if open { vec![v(-3.5, -1.5), v(0.0, 2.0), v(3.5, -1.5)] } else { vec![v(-1.5, -3.5), v(2.0, 0.0), v(-1.5, 3.5)] };
+                        let hr = egui::Rect::from_center_size(c, Vec2::splat(14.0 * sc));
+                        let er = ui.interact(hr, ui.id().with(("exp", k)), Sense::click());
+                        ui.painter().add(egui::Shape::line(pts, egui::Stroke::new(1.4_f32, if er.hovered() { t.text } else { t.muted })));
+                        if er.clicked() {
+                            toggle = Some(key.to_string());
+                        }
+                    }
+                    let ix = x0 + 14.0 * sc * dir;
+                    let isz = 16.0 * sc;
+                    let ir = egui::Rect::from_min_size(egui::pos2(if rtl { ix - isz } else { ix }, my - isz / 2.0), Vec2::splat(isz));
+                    let ink = if sel { t.accent } else if *depth == 0 { t.text } else { t.muted };
+                    if let Some(tex) = glyph(side_glyph(value)) {
+                        ui.painter().image(tex, ir, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), if sel { t.accent } else { t.muted });
+                    }
+                    let font = FontId::new(10.4 * sc, egui::FontFamily::Name("segoe".into()));
+                    let lx = ix + (isz + 7.0 * sc) * dir;
+                    let room = (if rtl { lx - row.left() } else { row.right() - lx }) - 4.0;
+                    let mut job = egui::text::LayoutJob::simple_singleline(label.clone(), font, if sel { t.accent } else { ink });
+                    job.wrap = egui::text::TextWrapping { max_width: room.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                    let g = ui.painter().layout_job(job);
+                    let gx = if rtl { lx - g.size().x } else { lx };
+                    ui.painter().galley(egui::pos2(gx, my - g.size().y / 2.0), g, ink);
+                    let _ = (icon, open_icon);
+                    resp
+                    } else {
                     let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
                     let p = ui.painter();
                     // RTL languages mirror the tree as Windows does (WS_EX_LAYOUTRTL): levels grow leftwards
                     let dir = if rtl { -1.0 } else { 1.0 };
-                    let cx = |d: u8| if rtl { row.right() - 7.0 - d as f32 * indent } else { row.left() + 7.0 + d as f32 * indent }; // centre of a level's +/- box
+                    let cx = |d: u8| if rtl { row.right() - 7.0 * sc - d as f32 * indent } else { row.left() + 7.0 * sc + d as f32 * indent }; // centre of a level's +/- box
                     let my = row.center().y;
                     // dotted lines: to the item, down to the next sibling, and the parent's line passing by
                     let dots = |a: egui::Pos2, b: egui::Pos2| {
@@ -3089,22 +3393,23 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     let sel = self.cat == *value;
                     // x: the icon's edge nearest the line; in RTL the icon and label run leftwards from it
-                    let mut x = cx(*depth) + 9.0 * dir;
+                    let mut x = cx(*depth) + 9.0 * sc * dir;
                     if let Some(t) = if open || sel { open_icon.or(*icon) } else { *icon } {
-                        let left = if rtl { x - 16.0 } else { x };
-                        p.image(t, egui::Rect::from_min_size(egui::pos2(left, my - 6.5), Vec2::new(16.0, 13.0)), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                        let left = if rtl { x - 16.0 * sc } else { x };
+                        p.image(t, egui::Rect::from_min_size(egui::pos2(left, my - 6.5 * sc), Vec2::new(16.0, 13.0) * sc), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                     }
-                    x += 17.0 * dir;
-                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    x += 17.0 * sc * dir;
+                    let font = FontId::proportional(10.0 * sc);
                     let g = ui.painter().layout_no_wrap(label.clone(), font, if sel { Color32::WHITE } else { text });
                     let lw = g.size().x + 4.0;
-                    let lr = egui::Rect::from_min_size(egui::pos2(if rtl { x - lw } else { x }, my - 8.0), Vec2::new(lw, 16.0));
+                    let lr = egui::Rect::from_min_size(egui::pos2(if rtl { x - lw } else { x }, my - 8.0 * sc), Vec2::new(lw, 16.0 * sc));
                     if sel {
                         ui.painter().rect_filled(lr, 0.0, if dark { Color32::from_gray(0x50) } else { Color32::from_rgb(0, 120, 215) });
                     }
                     ui.painter().galley(egui::pos2(lr.left() + 2.0, my - g.size().y / 2.0), g, text);
                     let hit = if rtl { egui::Rect::from_min_max(egui::pos2(row.left(), row.top()), egui::pos2(x + 19.0, row.bottom())) } else { egui::Rect::from_min_max(egui::pos2(x - 19.0, row.top()), egui::pos2(row.right(), row.bottom())) };
-                    let resp = ui.interact(hit, ui.id().with(("node", k)), Sense::click());
+                    ui.interact(hit, ui.id().with(("node", k)), Sense::click())
+                    };
                     if resp.clicked() || resp.secondary_clicked() {
                         self.cat = value.clone();
                     }
@@ -3216,12 +3521,18 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         }
         let icons: Vec<Option<egui::TextureId>> = rows.iter().map(|r| self.icon(ui.ctx(), &core::ext(&r.cell(Col::Name)))).collect();
         let modern = !self.core.settings().classic;
-        let row_h = ROW_H.max(egui::TextStyle::Body.resolve(ui.style()).size * 1.5); // taller rows for a bigger font
+        let nt = dlu::ndm().then(|| dlu::theme(ui.visuals().dark_mode));
+        let font_h = egui::TextStyle::Body.resolve(ui.style()).size;
+        // taller rows for a bigger font; NDM Style gives every row room to breathe
+        let row_h = if nt.is_some() { (font_h * 2.4).max(24.0) } else { ROW_H.max(font_h * 1.5) };
         // Q column: the queue's tree picture (main / synchronization, idle / running) like NDM's list
         let qpics: HashMap<u32, egui::TextureId> = self.core.settings().queues.iter().filter_map(|q| {
             self.res.tree([[311, 312], [315, 316]][q.sync as usize][self.core.queue_running(q.id) as usize]).map(|t| (q.id, t))
         }).collect();
         let mut row_rects = Vec::new();
+        if let Some(t) = &nt {
+            ui.visuals_mut().widgets.noninteractive.bg_stroke.color = t.raised; // the column edges
+        }
         // NDM's columns touch; cell text starts 7 px in (icon 8 px), measured at 125%
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let mut tb = TableBuilder::new(ui);
@@ -3233,12 +3544,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             tb = tb.column(if k + 1 == cols.len() { Column::remainder().at_least(*w) } else { Column::initial(*w).at_least(20.0).clip(true) });
         }
         // NDM's list at 125%: 24 px header, 19 px rows
-        tb.header(19.2, |mut h| {
+        tb.header(if nt.is_some() { (font_h * 2.4).max(24.0) } else { 19.2 }, |mut h| {
             for (c, name, _) in &cols {
                 let (_, resp) = h.col(|ui| {
-                    ui.add_space(4.0);
+                    ui.add_space(if nt.is_some() { 8.0 } else { 4.0 });
                     let arrow = if self.sort.0 == *c { if self.sort.1 { " ⏶" } else { " ⏷" } } else { "" };
-                    if ui.add(egui::Label::new(format!("{}{arrow}", tr(name))).selectable(false).sense(Sense::click())).clicked() {
+                    let head = match &nt {
+                        Some(t) => RichText::new(format!("{}{arrow}", tr(name))).color(if self.sort.0 == *c { t.accent } else { t.muted }),
+                        None => RichText::new(format!("{}{arrow}", tr(name))),
+                    };
+                    if ui.add(egui::Label::new(head).selectable(false).sense(Sense::click())).clicked() {
                         sort = Some(*c);
                     }
                 });
@@ -3258,7 +3573,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 row.set_selected(self.sel.contains(&r.id));
                 for (c, _, _) in &cols {
                     row.col(|ui| {
-                        ui.add_space(if *c == Col::Name { 1.6 } else { 4.0 });
+                        ui.add_space(if nt.is_some() { 8.0 } else if *c == Col::Name { 1.6 } else { 4.0 });
                         if *c == Col::Name {
                             if let Some(t) = icons[k] {
                                 ui.add(egui::Image::new((t, Vec2::splat(16.0))));
@@ -3270,7 +3585,23 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             return;
                         }
                         let text = r.cell(*c);
-                        let text = if *c == Col::Status && matches!(r.status, Status::Error(_)) { RichText::new(text).color(Color32::RED) } else { RichText::new(text) };
+                        let error = matches!(r.status, Status::Error(_));
+                        if let (Some(t), Col::Status) = (&nt, *c) {
+                            // NDM Style: the status in its colour over a thin progress bar
+                            let ink = if error { t.danger } else if r.status == Status::Complete { t.success } else if r.running { t.accent } else { t.muted };
+                            if let Some(f) = r.pct().filter(|f| *f > 0.0 && r.status != Status::Complete) {
+                                let cell = ui.max_rect();
+                                let bar = egui::Rect::from_min_max(egui::pos2(cell.left(), cell.bottom() - 6.0), egui::pos2(cell.right() - 10.0, cell.bottom() - 3.0));
+                                if bar.width() > 8.0 {
+                                    ui.painter().rect_filled(bar, 1.5, t.raised);
+                                    let done = egui::Rect::from_min_size(bar.min, Vec2::new(bar.width() * (f / 100.0).clamp(0.0, 1.0) as f32, bar.height()));
+                                    ui.painter().rect_filled(done, 1.5, if r.running { t.accent } else { t.muted });
+                                }
+                            }
+                            ui.add(egui::Label::new(RichText::new(text).color(ink)).selectable(false).truncate());
+                            return;
+                        }
+                        let text = if *c == Col::Status && error { RichText::new(text).color(Color32::RED) } else { RichText::new(text) };
                         ui.add(egui::Label::new(text).selectable(false).truncate());
                     });
                 }
@@ -3338,7 +3669,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 });
             });
         });
-        if modern {
+        if let Some(t) = &nt {
+            // NDM Style: a hairline between rows, none below the last
+            for r in &row_rects {
+                ui.painter().hline(r.x_range(), r.bottom() + ui.spacing().item_spacing.y / 2.0, egui::Stroke::new(1.0_f32, t.raised));
+            }
+        } else if modern {
             // NDM's list grid (LVS_EX_GRIDLINES / its dark-mode custom grid, 0x475710): a line under every row,
             // continued down the empty part of the list
             let area = ui.min_rect().intersect(ui.clip_rect()); // only the visible part
@@ -3544,6 +3880,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
+            Dialog::Scale { .. } => ("Custom scale".into(), tpl(232.0, 100.0)),
             Dialog::Tip { .. } => ("Tip of the Day".into(), tpl(253.0, 164.0)),
             Dialog::TbCustomize { .. } => ("Customize Toolbar".into(), tpl(357.0, 125.0)),
             // NDM puts its menu bar (menu 256) over both and the toolbar (260) over the results
@@ -3582,7 +3919,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         }
         // NDM darkens only these (and message boxes); Options, Scheduler... stay light (0x407c90,
         // 0x4409e0, 0x4a528e, 0x444cf0, 0x5569c0, 0x4c3170 use the dark palette); NDM's help follows the theme too
-        let dark = self.dark && matches!(d, Dialog::AddUrl { .. } | Dialog::FileInfo { .. } | Dialog::Progress { .. } | Dialog::Complete { .. } | Dialog::Info { .. } | Dialog::Help { .. });
+        // NDM Style darkens every window
+        let dark = self.dark && (dlu::ndm() || matches!(d, Dialog::AddUrl { .. } | Dialog::FileInfo { .. } | Dialog::Progress { .. } | Dialog::Complete { .. } | Dialog::Info { .. } | Dialog::Help { .. }));
         if self.dark && !dark {
             self.light_titles.push(i18n::tr_os(&title));
             ctx.set_theme(egui::ThemePreference::Light);
@@ -3604,6 +3942,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let closed = ctx.input(|i| i.viewport().close_requested());
             if let (true, Dialog::FileInfo { early: Some(j), .. }) = (closed, &*d) {
                 discard(j);
+            }
+            if let (true, Dialog::Scale { orig }) = (closed, &*d) {
+                let mut s = self.core.settings();
+                [s.scale_toolbar, s.scale_tree, s.scale_text] = *orig;
             }
             keep && !closed
         });
@@ -6451,6 +6793,39 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 !(ok || d.button(179.0, 155.0, 50.0, 14.0, "Cancel", true))
             }
+            Dialog::Scale { orig } => {
+                let mut d = dlu::D::new(ui);
+                d.text(7.0, 6.0, 218.0, 18.0, "Change the size of the toolbar, the categories pane and the text of the main window. Changes show at once.");
+                let before = { let s = self.core.settings(); [s.scale_toolbar, s.scale_tree, s.scale_text] };
+                let mut v = before;
+                for (name, k) in [("Toolbar", 0), ("Categories pane", 1), ("Text size", 2)] {
+                    let y = 28.0 + k as f32 * 15.0;
+                    d.label(7.0, y + 2.0, 66.0, 9.0, name);
+                    let mut pct = (v[k] * 100.0).round() as i32;
+                    d.at(76.0, y, 149.0, 13.0, |ui| {
+                        ui.spacing_mut().slider_width = (ui.available_width() - 58.0).max(40.0);
+                        ui.add(egui::Slider::new(&mut pct, 50..=200).step_by(5.0).suffix("%").trailing_fill(true));
+                    });
+                    v[k] = pct as f32 / 100.0;
+                }
+                d.hline(7.0, 76.0, 218.0);
+                if d.button(7.0, 81.0, 50.0, 14.0, "Reset", v != [1.0; 3]) {
+                    v = [1.0; 3];
+                }
+                let ok = d.button(120.0, 81.0, 50.0, 14.0, "OK", true);
+                let cancel = d.button(175.0, 81.0, 50.0, 14.0, "Cancel", true);
+                if cancel {
+                    v = *orig;
+                }
+                if v != before {
+                    let mut s = self.core.settings();
+                    [s.scale_toolbar, s.scale_tree, s.scale_text] = v;
+                }
+                if ok || cancel {
+                    self.core.save();
+                }
+                !(ok || cancel)
+            }
             Dialog::About => {
                 let icon = texture(ctx, "app_icon", &app_icon());
                 let mut d = dlu::D::new(ui);
@@ -6466,7 +6841,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let mut d = dlu::D::new(ui);
                 // available: a separator always, plus the buttons not on the bar (comctl32's lists)
                 let left: Vec<i8> = std::iter::once(-1).chain((0..TB_ICONS as i8).filter(|b| !layout.contains(b))).collect();
-                let strip = self.toolbar.as_ref().map(|t| t.strip(true, true, false));
+                let dark = d.ui.visuals().dark_mode;
+                let pics: Vec<Option<(egui::TextureId, Color32)>> = (0..TB_ICONS).map(|k| self.toolbar.as_ref().and_then(|t| t.pic(true, k, true, false, dark))).collect();
                 let list = |ui: &mut egui::Ui, items: &[i8], sel: &mut Option<usize>| {
                     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
@@ -6477,9 +6853,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             }
                             let label = match usize::try_from(*b) {
                                 Ok(b) => {
-                                    if let Some(t) = strip {
-                                        let u = egui::Rect::from_min_max(egui::pos2(b as f32 / TB_ICONS as f32, 0.0), egui::pos2((b + 1) as f32 / TB_ICONS as f32, 1.0));
-                                        ui.painter().image(t, egui::Rect::from_min_size(r.0.min + Vec2::new(2.0, 2.0), Vec2::splat(18.0)), u, Color32::WHITE);
+                                    if let Some((t, tint)) = pics[b] {
+                                        ui.painter().image(t, egui::Rect::from_min_size(r.0.min + Vec2::new(2.0, 2.0), Vec2::splat(18.0)), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                                     }
                                     tr(TB_BUTTONS[b].1)
                                 }
@@ -7026,6 +7401,23 @@ impl eframe::App for App {
                 win::accept_drops(h.hwnd.get(), move || c.request_repaint());
             }
         }
+        // Linux: links dropped on the main window (X11; Wayland's own windows take none)
+        #[cfg(not(windows))]
+        {
+            static XDND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !XDND.load(Relaxed) {
+                if let Ok(raw) = frame.window_handle().map(|h| h.as_raw()) {
+                    XDND.store(true, Relaxed);
+                    let xid = match raw {
+                        RawWindowHandle::Xlib(h) => h.window as isize,
+                        RawWindowHandle::Xcb(h) => h.window.get() as isize,
+                        _ => 0,
+                    };
+                    let c = ctx.clone();
+                    win::accept_drops(xid, move || c.request_repaint());
+                }
+            }
+        }
         // Closing the window keeps NDM in the notification area; without a tray it minimizes while
         // something downloads, so the downloads aren't lost, and quits otherwise.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
@@ -7168,9 +7560,13 @@ impl eframe::App for App {
         }
 
         // NDM's menu bar: 24 px tall, first item 3 px from the edge
-        let menu_frame = egui::Frame::new().inner_margin(egui::Margin { left: 2, right: 2, top: 1, bottom: 0 }).fill(if self.dark { DARK_TREE } else { ctx.style().visuals.panel_fill });
-        egui::TopBottomPanel::top("menu").frame(menu_frame).show(ctx, |ui| {
-            if self.dark {
+        let nt = dlu::ndm().then(|| dlu::theme(self.dark));
+        let menu_frame = match &nt {
+            Some(t) => egui::Frame::new().inner_margin(egui::Margin { left: 6, right: 6, top: 3, bottom: 2 }).fill(t.surface),
+            None => egui::Frame::new().inner_margin(egui::Margin { left: 2, right: 2, top: 1, bottom: 0 }).fill(if self.dark { DARK_TREE } else { ctx.style().visuals.panel_fill }),
+        };
+        egui::TopBottomPanel::top("menu").frame(menu_frame).show_separator_line(false).show(ctx, |ui| {
+            if self.dark && nt.is_none() {
                 ui.visuals_mut().widgets.hovered.weak_bg_fill = DARK_MENU_HOT;
                 ui.visuals_mut().widgets.open.weak_bg_fill = DARK_MENU_HOT;
             }
@@ -7186,19 +7582,47 @@ impl eframe::App for App {
         // it (measured at 125%).
         let m = |l: f32, r: f32, t: f32, b: f32| egui::Margin { left: l as i8, right: r as i8, top: t as i8, bottom: b as i8 };
         let fill = ctx.style().visuals.panel_fill;
-        egui::TopBottomPanel::top("toolbar").frame(egui::Frame::new().fill(fill).inner_margin(m(0.0, 0.0, 0.0, 3.0))).show_separator_line(false).show(ctx, |ui| self.toolbar(ui, &rows, &sel));
+        let tb_frame = match &nt {
+            Some(t) => egui::Frame::new().fill(t.surface).inner_margin(m(6.0, 6.0, 2.0, 4.0)),
+            None => egui::Frame::new().fill(fill).inner_margin(m(0.0, 0.0, 0.0, 3.0)),
+        };
+        let tb = egui::TopBottomPanel::top("toolbar").frame(tb_frame).show_separator_line(false).show(ctx, |ui| self.toolbar(ui, &rows, &sel));
+        if let Some(t) = &nt {
+            // one hairline under the menu and toolbar
+            let y = tb.response.rect.bottom() - 0.5;
+            ctx.layer_painter(egui::LayerId::background()).hline(ctx.screen_rect().x_range(), y, egui::Stroke::new(1.0_f32, t.border));
+        }
+        if let Some(t) = &nt {
+            self.status_bar(ctx, t, &rows);
+        }
         let main_font = |ui: &mut egui::Ui| _ = ui.style_mut().text_styles.insert(egui::TextStyle::Body, FontId::proportional(10.0));
         if self.show_cats {
             let side = if i18n::is_rtl() { egui::SidePanel::right("cats") } else { egui::SidePanel::left("cats") };
-            side.frame(egui::Frame::new().fill(fill).inner_margin(m(6.0, 0.0, 3.0, 3.0))).show_separator_line(false).resizable(true).default_width(122.0).min_width(80.0).show(ctx, |ui| {
+            let side_frame = match &nt {
+                Some(t) => egui::Frame::new().fill(t.surface).inner_margin(m(6.0, 6.0, 6.0, 6.0)),
+                None => egui::Frame::new().fill(fill).inner_margin(m(6.0, 0.0, 3.0, 3.0)),
+            };
+            let sp = side.frame(side_frame).show_separator_line(false).resizable(true).default_width(if nt.is_some() { 170.0 } else { 122.0 }).min_width(80.0).show(ctx, |ui| {
                 main_font(ui);
                 self.categories(ui)
             });
+            if let Some(t) = &nt {
+                let r = sp.response.rect;
+                let x = if i18n::is_rtl() { r.left() + 0.5 } else { r.right() - 0.5 };
+                ctx.layer_painter(egui::LayerId::background()).vline(x, r.y_range(), egui::Stroke::new(1.0_f32, t.border));
+            }
         }
-        let edge = if self.dark { Color32::from_gray(70) } else { Color32::from_gray(170) };
-        let list = egui::Frame::new().fill(if self.dark { DARK_DLG } else { Color32::WHITE }).stroke(egui::Stroke::new(1.0_f32, edge)).inner_margin(2.0);
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(fill).inner_margin(m(5.0, 6.0, 3.0, 3.0))).show(ctx, |ui| {
-            let px = self.core.settings().list_font_px;
+        let list = match &nt {
+            Some(t) => egui::Frame::new().fill(t.surface).stroke(egui::Stroke::new(1.0_f32, t.border)).corner_radius(dlu::R_CARD + 1.0).inner_margin(egui::Margin { left: 2, right: 2, top: 2, bottom: 6 }),
+            None => {
+                let edge = if self.dark { Color32::from_gray(70) } else { Color32::from_gray(170) };
+                egui::Frame::new().fill(if self.dark { DARK_DLG } else { Color32::WHITE }).stroke(egui::Stroke::new(1.0_f32, edge)).inner_margin(2.0)
+            }
+        };
+        let central = if nt.is_some() { egui::Frame::new().fill(fill).inner_margin(m(10.0, 10.0, 10.0, 8.0)) } else { egui::Frame::new().fill(fill).inner_margin(m(5.0, 6.0, 3.0, 3.0)) };
+        egui::CentralPanel::default().frame(central).show(ctx, |ui| {
+            // View -> Custom scale: the list's text
+            let px = { let s = self.core.settings(); s.list_font_px * s.scale_text };
             ui.style_mut().text_styles.insert(egui::TextStyle::Body, FontId::new(px, egui::FontFamily::Name("list".into())));
             list.show(ui, |ui| self.table(ui, &rows));
         });

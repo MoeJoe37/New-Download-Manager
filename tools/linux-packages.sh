@@ -78,7 +78,7 @@ Architecture: amd64
 Maintainer: New Download Manager <https://github.com/MoeJoe37/New-Download-Manager>
 Installed-Size: $(du -sk "$deb/usr" | cut -f1)
 Depends: $depends
-Recommends: libayatana-appindicator3-1 | libappindicator3-1
+Recommends: libayatana-appindicator3-1 | libappindicator3-1, libgssapi-krb5-2
 Homepage: https://github.com/MoeJoe37/New-Download-Manager
 Description: download manager with segmented downloads and browser capture
  New Download Manager downloads each file over several connections, resumes

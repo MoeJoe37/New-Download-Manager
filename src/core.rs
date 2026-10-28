@@ -291,6 +291,13 @@ pub struct Settings {
     pub tip_next: usize,
     /// View -> "Classic style" (3D toolbar, +/- tree boxes) instead of "Modern style".
     pub classic: bool,
+    /// View -> Toolbar -> "NDM Style": NDM's own modern look (rounded controls, accent colour, flat
+    /// sidebar, status bar); `classic` is kept for when it is turned off again.
+    pub ndm_style: bool,
+    /// View -> "Custom scale...": the toolbar, the categories pane and the main window's text, 1.0 = 100%.
+    pub scale_toolbar: f32,
+    pub scale_tree: f32,
+    pub scale_text: f32,
     /// View -> "NDM tray icon": 1 3D style (app icon), 2 Classic style (2D icon), 3 Don't show.
     pub tray_icon: u8,
     /// "Customize download progress dialog" (template 367, 0x435a00): Start view 0 normal / 1 minimized /
@@ -337,7 +344,7 @@ pub struct Settings {
     pub prog_tab_btns: bool,
     /// Download progress dialog shows the connections.
     pub prog_details: bool,
-    /// Toolbar skin: "Neon" or a `<NDM>\Toolbar\*.tbi` name.
+    /// Toolbar set: "Neon" (built in) or the name of a folder in `<config>/toolbars` (see README, Custom toolbars).
     pub tb_skin: String,
     /// Toolbar buttons in order, -1 = separator.
     pub tb_layout: Vec<i8>,
@@ -549,6 +556,10 @@ impl Default for Settings {
             close_note_shown: false,
             tip_next: 0,
             classic: false,
+            ndm_style: false,
+            scale_toolbar: 1.0,
+            scale_tree: 1.0,
+            scale_text: 1.0,
             tray_icon: 1,
             prog_view: 0,
             ask_queue_later: true,

@@ -902,10 +902,106 @@ fn dropped_links(text: &str) -> Vec<String> {
     text.split_whitespace().filter(|w| ["http://", "https://", "ftp://"].iter().any(|s| w.to_ascii_lowercase().starts_with(s))).map(str::to_string).collect()
 }
 
-/// The main window is winit's and takes dropped files only, so links go to the drop target.
-// ponytail: no link drops on the main window (winit's X11 drop handler accepts file:// only)
-pub fn accept_drops(_hwnd: isize, wake: impl Fn() + Send + Sync + 'static) {
+/// Links dropped on the main window. winit's X11 drop handler takes file:// only, so NDM gives the window an
+/// XdndProxy: drag sources talk to a window of NDM's own (on its own X connection) that takes links and text.
+/// `xid` 0 only sets the repaint (the drop target); on Wayland without XWayland there is no X window.
+pub fn accept_drops(xid: isize, wake: impl Fn() + Send + Sync + 'static) {
     let _ = WAKE.set(Box::new(wake));
+    if xid != 0 {
+        std::thread::spawn(move || {
+            if let Err(e) = xdnd_proxy(xid as u32) {
+                eprintln!("link drops on the main window: {e}");
+            }
+        });
+    }
+}
+
+/// The drop formats NDM takes, most useful first.
+const DROP_TYPES: [&str; 4] = ["text/uri-list", "text/x-moz-url", "UTF8_STRING", "text/plain"];
+
+/// Text from a drop in `kind` (text/x-moz-url is UTF-16: "url\ntitle").
+fn drop_text(kind: &str, data: &[u8]) -> String {
+    if kind == "text/x-moz-url" {
+        return String::from_utf16_lossy(&data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>());
+    }
+    String::from_utf8_lossy(data).into_owned()
+}
+
+/// XDND (version 5) target for the main window, run on its own thread.
+fn xdnd_proxy(main: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, WindowClass};
+    use x11rb::protocol::Event;
+    use x11rb::wrapper::ConnectionExt as _;
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let atom = |n: &str| -> Result<u32, Box<dyn std::error::Error>> { Ok(conn.intern_atom(false, n.as_bytes())?.reply()?.atom) };
+    let [aware, proxy, enter, position, status, leave, drop, finished, selection, copy, type_list, prop] =
+        ["XdndAware", "XdndProxy", "XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished", "XdndSelection", "XdndActionCopy", "XdndTypeList", "NDM_DROP"].map(atom);
+    let (aware, proxy, enter, position, status, leave, drop, finished, selection, copy, type_list, prop) = (aware?, proxy?, enter?, position?, status?, leave?, drop?, finished?, selection?, copy?, type_list?, prop?);
+    let kinds: Vec<(u32, &str)> = DROP_TYPES.iter().map(|t| atom(t).map(|a| (a, *t))).collect::<Result<_, _>>()?;
+    let me = conn.generate_id()?;
+    conn.create_window(0, me, root, -10, -10, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new())?;
+    conn.change_property32(PropMode::REPLACE, me, aware, AtomEnum::ATOM, &[5])?;
+    conn.change_property32(PropMode::REPLACE, me, proxy, AtomEnum::WINDOW, &[me])?;
+    conn.change_property32(PropMode::REPLACE, main, proxy, AtomEnum::WINDOW, &[me])?;
+    conn.flush()?;
+    let send = |to: u32, kind: u32, data: [u32; 5]| -> Result<(), Box<dyn std::error::Error>> {
+        conn.send_event(false, to, EventMask::NO_EVENT, ClientMessageEvent::new(32, to, kind, data))?;
+        conn.flush()?;
+        Ok(())
+    };
+    // the drag in progress: (its source, the format NDM asks for)
+    let mut drag: Option<(u32, Option<(u32, &str)>)> = None;
+    loop {
+        match conn.wait_for_event()? {
+            Event::ClientMessage(e) if e.format == 32 => {
+                let d = e.data.as_data32();
+                let source = d[0];
+                if e.type_ == enter {
+                    // up to three formats in the message, or all of them in XdndTypeList
+                    let offered: Vec<u32> = if d[1] & 1 == 1 {
+                        conn.get_property(false, source, type_list, AtomEnum::ATOM, 0, 1024)?.reply()?.value32().map(|v| v.collect()).unwrap_or_default()
+                    } else {
+                        d[2..5].iter().copied().filter(|a| *a != 0).collect()
+                    };
+                    drag = Some((source, kinds.iter().find(|(a, _)| offered.contains(a)).copied()));
+                } else if e.type_ == position {
+                    let ok = drag.as_ref().is_some_and(|(s, k)| *s == source && k.is_some());
+                    // accepted (bit 0), keep sending positions (bit 1); the target is the window the source sees
+                    send(source, status, [main, if ok { 3 } else { 2 }, 0, 0, if ok { copy } else { 0 }])?;
+                } else if e.type_ == leave {
+                    drag = None;
+                } else if e.type_ == drop {
+                    match drag.as_ref().and_then(|(s, k)| k.filter(|_| *s == source)) {
+                        Some((kind, _)) => {
+                            conn.convert_selection(me, selection, kind, prop, d[2])?;
+                            conn.flush()?;
+                        }
+                        None => {
+                            send(source, finished, [main, 0, 0, 0, 0])?;
+                            drag = None;
+                        }
+                    }
+                }
+            }
+            Event::SelectionNotify(e) if e.requestor == me => {
+                let Some((source, Some((_, kind)))) = drag.take() else { continue };
+                let mut got = false;
+                if e.property != u32::from(AtomEnum::NONE) {
+                    let r = conn.get_property(true, me, prop, AtomEnum::ANY, 0, 1 << 20)?.reply()?;
+                    let links = dropped_links(&drop_text(kind, &r.value));
+                    if !links.is_empty() {
+                        DROPS.lock().unwrap().extend(links);
+                        got = true;
+                        wake_ui(false);
+                    }
+                }
+                send(source, finished, [main, got as u32, if got { copy } else { 0 }, 0, 0])?;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Show or hide the drop target: a floating, always-on-top picture links can be dragged onto, bottom

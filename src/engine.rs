@@ -439,14 +439,24 @@ pub(crate) fn call(r: ureq::Request) -> Result<ureq::Response, String> {
 /// NTLM / Negotiate: Windows builds the tokens (SSPI), with the URL's login ("DOMAIN\user" allowed) or,
 /// without one, the signed-in Windows user. NTLM's legs must share the TCP connection: ureq's pool hands
 /// the same keep-alive connection back as long as each response is read to the end.
-/// Elsewhere NTLMv2 is done here (MS-NLMP), with the URL's login only: there is no signed-in Windows user.
-/// Negotiate gets the same NTLM tokens (SPNEGO servers accept raw NTLMSSP).
-// ponytail: no Kerberos; a Negotiate server that refuses NTLM fails
+/// Elsewhere Negotiate first tries Kerberos with the signed-in user's ticket (kinit, or the desktop's
+/// sign-in), through the system's GSSAPI library (`gss`); then, as for NTLM, NTLMv2 is done here (MS-NLMP)
+/// with the URL's login (SPNEGO servers accept raw NTLMSSP).
 #[cfg(not(windows))]
 fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, String> {
     let (login, pass) = (pct_decode(u.username()), pct_decode(u.password().unwrap_or("")));
+    let mut kerberos = None;
+    if pkg == "Negotiate" {
+        match gss::negotiate(r, u) {
+            Ok(resp) => return Ok(resp),
+            Err(e) => kerberos = Some(e),
+        }
+    }
     if login.is_empty() {
-        return Err(format!("{pkg} sign-in needs a user name and password in the address"));
+        return Err(match kerberos {
+            Some(e) => format!("Kerberos sign-in failed ({e}); for NTLM put a user name and password in the address"),
+            None => format!("{pkg} sign-in needs a user name and password in the address"),
+        });
     }
     let (domain, user) = login.split_once('\\').unwrap_or(("", &login));
     let send = |token: &[u8]| {
@@ -466,6 +476,150 @@ fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, St
             send(&auth).map_err(|e| e.map_or_else(|e| e, |_| "401 Unauthorized".into()))
         }
         Err(Err(e)) => Err(e),
+    }
+}
+
+/// Kerberos for Negotiate (SPNEGO, RFC 4559) through the system's GSSAPI library (MIT krb5 or Heimdal),
+/// opened at run time: NDM runs without it, and a system without Kerberos simply has no ticket.
+#[cfg(not(windows))]
+mod gss {
+    use super::{b64, err, strip_ci, unb64};
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct Buffer {
+        length: usize,
+        value: *mut c_void,
+    }
+    #[repr(C)]
+    struct Oid {
+        length: u32,
+        elements: *const c_void,
+    }
+    type ImportName = unsafe extern "C" fn(*mut u32, *const Buffer, *const Oid, *mut *mut c_void) -> u32;
+    type InitSecContext = unsafe extern "C" fn(*mut u32, *mut c_void, *mut *mut c_void, *mut c_void, *const Oid, u32, u32, *mut c_void, *const Buffer, *mut *const Oid, *mut Buffer, *mut u32, *mut u32) -> u32;
+    type ReleaseBuffer = unsafe extern "C" fn(*mut u32, *mut Buffer) -> u32;
+    type DeleteSecContext = unsafe extern "C" fn(*mut u32, *mut *mut c_void, *mut Buffer) -> u32;
+    type ReleaseName = unsafe extern "C" fn(*mut u32, *mut *mut c_void) -> u32;
+    struct Lib {
+        import_name: ImportName,
+        init: InitSecContext,
+        release_buffer: ReleaseBuffer,
+        delete: DeleteSecContext,
+        release_name: ReleaseName,
+    }
+
+    /// GSS_C_NT_HOSTBASED_SERVICE (1.2.840.113554.1.2.1.4) and SPNEGO (1.3.6.1.5.5.2)
+    const HOSTBASED: [u8; 10] = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x01, 0x04];
+    const SPNEGO: [u8; 6] = [0x2b, 0x06, 0x01, 0x05, 0x05, 0x02];
+    const MUTUAL: u32 = 2;
+    const CONTINUE_NEEDED: u32 = 1;
+
+    fn lib() -> Option<&'static Lib> {
+        static LIB: OnceLock<Option<Lib>> = OnceLock::new();
+        LIB.get_or_init(|| unsafe {
+            let h = ["libgssapi_krb5.so.2", "libgssapi.so.3"].iter().map(|n| libc::dlopen(format!("{n}\0").as_ptr().cast(), libc::RTLD_NOW)).find(|h| !h.is_null())?;
+            let sym = |n: &str| Some(libc::dlsym(h, format!("{n}\0").as_ptr().cast())).filter(|p| !p.is_null());
+            Some(Lib {
+                import_name: std::mem::transmute::<*mut c_void, ImportName>(sym("gss_import_name")?),
+                init: std::mem::transmute::<*mut c_void, InitSecContext>(sym("gss_init_sec_context")?),
+                release_buffer: std::mem::transmute::<*mut c_void, ReleaseBuffer>(sym("gss_release_buffer")?),
+                delete: std::mem::transmute::<*mut c_void, DeleteSecContext>(sym("gss_delete_sec_context")?),
+                release_name: std::mem::transmute::<*mut c_void, ReleaseName>(sym("gss_release_name")?),
+            })
+        })
+        .as_ref()
+    }
+
+    /// A security context for HTTP@host; each `step` turns the server's token into the next one to send.
+    struct Ctx {
+        lib: &'static Lib,
+        name: *mut c_void,
+        ctx: *mut c_void,
+    }
+
+    impl Ctx {
+        fn new(host: &str) -> Result<Ctx, String> {
+            let lib = lib().ok_or("no Kerberos (GSSAPI) library")?;
+            let service = format!("HTTP@{host}");
+            let buf = Buffer { length: service.len(), value: service.as_ptr() as *mut c_void };
+            let oid = Oid { length: HOSTBASED.len() as u32, elements: HOSTBASED.as_ptr().cast() };
+            let (mut minor, mut name) = (0, std::ptr::null_mut());
+            let major = unsafe { (lib.import_name)(&mut minor, &buf, &oid, &mut name) };
+            if major >> 16 != 0 {
+                return Err(format!("GSSAPI error {major:#x}"));
+            }
+            Ok(Ctx { lib, name, ctx: std::ptr::null_mut() })
+        }
+
+        /// The next token, and whether the server should answer with one more.
+        fn step(&mut self, input: &[u8]) -> Result<(Vec<u8>, bool), String> {
+            let mech = Oid { length: SPNEGO.len() as u32, elements: SPNEGO.as_ptr().cast() };
+            let inp = Buffer { length: input.len(), value: input.as_ptr() as *mut c_void };
+            let mut out = Buffer { length: 0, value: std::ptr::null_mut() };
+            let mut minor = 0;
+            let null = std::ptr::null_mut();
+            let major = unsafe { (self.lib.init)(&mut minor, null, &mut self.ctx, self.name, &mech, MUTUAL, 0, null, if input.is_empty() { std::ptr::null() } else { &inp }, std::ptr::null_mut(), &mut out, null.cast(), null.cast()) };
+            let token = if out.value.is_null() { vec![] } else { unsafe { std::slice::from_raw_parts(out.value as *const u8, out.length).to_vec() } };
+            unsafe { (self.lib.release_buffer)(&mut minor, &mut out) };
+            if major >> 16 != 0 {
+                // no ticket, an unknown service, an expired ticket...
+                return Err(format!("GSSAPI error {major:#x}, minor {minor}"));
+            }
+            Ok((token, major & CONTINUE_NEEDED != 0))
+        }
+    }
+
+    impl Drop for Ctx {
+        fn drop(&mut self) {
+            let mut minor = 0;
+            unsafe {
+                if !self.ctx.is_null() {
+                    (self.lib.delete)(&mut minor, &mut self.ctx, std::ptr::null_mut());
+                }
+                (self.lib.release_name)(&mut minor, &mut self.name);
+            }
+        }
+    }
+
+    /// The request again with "Authorization: Negotiate <token>", for as many legs as the server needs.
+    pub(super) fn negotiate(r: &ureq::Request, u: &url::Url) -> Result<ureq::Response, String> {
+        let host = u.host_str().ok_or("no host")?;
+        let mut ctx = Ctx::new(host)?;
+        let (mut token, _) = ctx.step(&[])?;
+        for _ in 0..4 {
+            match r.clone().set("Authorization", &format!("Negotiate {}", b64(&token))).call() {
+                Ok(resp) => return Ok(resp),
+                Err(ureq::Error::Status(401, resp)) => {
+                    let next = resp.all("WWW-Authenticate").iter().find_map(|c| strip_ci(c.trim(), "Negotiate ").map(str::to_string));
+                    let _ = resp.into_string();
+                    let Some(next) = next else { return Err("the server refused the Kerberos ticket".into()) };
+                    let (t, _) = ctx.step(&unb64(&next))?;
+                    token = t;
+                }
+                Err(e) => return Err(err(e)),
+            }
+        }
+        Err("Kerberos sign-in didn't finish".into())
+    }
+
+    /// Against a real Kerberos site: NDM_KERBEROS_URL=http://host/protected cargo test kerberos_site -- --ignored
+    /// (with a ticket from kinit)
+    #[test]
+    #[ignore]
+    fn kerberos_site() {
+        let url = std::env::var("NDM_KERBEROS_URL").expect("NDM_KERBEROS_URL");
+        let resp = super::call(ureq::agent().get(&url)).unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[test]
+    fn without_a_ticket_it_fails_cleanly() {
+        // CI has no Kerberos realm: either no library, or a context that can't get a ticket
+        if let Ok(mut c) = Ctx::new("ndm-test.invalid") {
+            assert!(c.step(&[]).is_err());
+        }
     }
 }
 
