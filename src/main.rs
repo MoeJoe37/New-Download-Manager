@@ -56,11 +56,43 @@ fn installed() -> bool {
     cfg!(windows) && std::env::current_exe().is_ok_and(|e| e.with_file_name("unins000.exe").exists())
 }
 
-/// The release file that replaces this program: the setup (or a loose ndm.exe) on Windows, the AppImage on Linux.
+/// How NDM was installed on Linux, which decides the release file "Update now" fetches and how it
+/// installs it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum LinuxInstall {
+    AppImage,
+    Deb,
+    Rpm,
+    /// The .tar.gz, unpacked where its user can write.
+    Folder,
+}
+
+fn linux_install() -> LinuxInstall {
+    static KIND: std::sync::OnceLock<LinuxInstall> = std::sync::OnceLock::new();
+    *KIND.get_or_init(|| {
+        if std::env::var_os("APPIMAGE").is_some() {
+            return LinuxInstall::AppImage;
+        }
+        let exe = std::env::current_exe().unwrap_or_default();
+        match win::package_owner(&exe) {
+            Some("deb") => LinuxInstall::Deb,
+            Some(_) => LinuxInstall::Rpm,
+            None => LinuxInstall::Folder,
+        }
+    })
+}
+
+/// The release file that replaces this program: the setup (or a loose ndm.exe) on Windows; on Linux the
+/// AppImage, the .deb, the .rpm or the .tar.gz, whichever this copy came as.
 fn update_asset(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     if !cfg!(windows) {
-        n.ends_with(".appimage") && n.contains("x86_64")
+        match linux_install() {
+            LinuxInstall::AppImage => n.ends_with(".appimage") && n.contains("x86_64"),
+            LinuxInstall::Deb => n.ends_with("_amd64.deb"),
+            LinuxInstall::Rpm => n.ends_with(".x86_64.rpm"),
+            LinuxInstall::Folder => n.starts_with("ndm-") && n.ends_with("-x86_64.tar.gz"),
+        }
     } else if installed() {
         n.starts_with("ndm-setup") && n.ends_with(".exe")
     } else {
@@ -112,9 +144,32 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
         data.extend_from_slice(&buf[..n]);
         got.store(data.len() as u64, Relaxed);
     }
-    let magic: &[u8] = if cfg!(windows) { b"MZ" } else { b"\x7fELF" };
+    let kind = if cfg!(windows) { None } else { Some(linux_install()) };
+    let magic: &[u8] = match kind {
+        None => b"MZ",
+        Some(LinuxInstall::AppImage) => b"\x7fELF",
+        Some(LinuxInstall::Deb) => b"!<arch>",
+        Some(LinuxInstall::Rpm) => b"\xed\xab\xee\xdb",
+        Some(LinuxInstall::Folder) => b"\x1f\x8b",
+    };
     if data.len() < 1024 || !data.starts_with(magic) {
-        return Err(String::new()); // not a program: just "cannot download the update file"
+        return Err(String::new()); // not the right file: just "cannot download the update file"
+    }
+    match kind {
+        Some(LinuxInstall::Deb | LinuxInstall::Rpm) => {
+            // the system's package manager installs it, after the desktop asks for the password
+            let file = std::env::temp_dir().join(if kind == Some(LinuxInstall::Deb) { "ndm-update.deb" } else { "ndm-update.rpm" });
+            std::fs::write(&file, &data).map_err(|e| e.to_string())?;
+            win::install_package(&file)?;
+            std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        Some(LinuxInstall::Folder) => {
+            update_folder(&data, exe.parent().ok_or("no folder")?)?;
+            std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        _ => {}
     }
     if installed() {
         // the setup waits for this copy to exit, installs over it and starts the new version
@@ -141,6 +196,37 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
     std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
+/// The .tar.gz's update: unpacked beside the old folder, then each file put in place (the running program
+/// by renaming over it, which Linux allows).
+fn update_folder(tgz: &[u8], dir: &Path) -> Result<(), String> {
+    let tmp = dir.with_file_name(format!(".ndm-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let file = tmp.join("ndm.tar.gz");
+    std::fs::write(&file, tgz).map_err(|e| e.to_string())?;
+    let ok = std::process::Command::new("tar").arg("-xzf").arg(&file).arg("-C").arg(&tmp).status().is_ok_and(|s| s.success());
+    let new = std::fs::read_dir(&tmp).ok().into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.join("ndm").is_file());
+    let result = match new.filter(|_| ok) {
+        None => Err("the update file is damaged".to_string()),
+        Some(new) => (|| -> std::io::Result<()> {
+            for e in std::fs::read_dir(&new)? {
+                let e = e?;
+                let target = dir.join(e.file_name());
+                if e.file_type()?.is_dir() {
+                    let _ = std::fs::remove_dir_all(&target);
+                    copy_dir(&e.path(), &target)?;
+                } else {
+                    std::fs::rename(e.path(), &target)?;
+                }
+            }
+            Ok(())
+        })()
+        .map_err(|e| e.to_string()),
+    };
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
 const DARK_DLG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
 const DARK_TREE: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
@@ -7222,6 +7308,29 @@ fn find_hit(flags: u32, needle: &str, r: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn folder_update_replaces_files() {
+        let base = std::env::temp_dir().join(format!("ndm-test-upd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (old, src) = (base.join("ndm-1.0"), base.join("src/ndm-1.1"));
+        for (d, v) in [(&old, "old"), (&src, "new")] {
+            std::fs::create_dir_all(d.join("help")).unwrap();
+            std::fs::write(d.join("ndm"), v).unwrap();
+            std::fs::write(d.join("help/index.htm"), v).unwrap();
+        }
+        std::fs::write(old.join("help/gone.htm"), "old").unwrap();
+        std::fs::write(old.join("state-like.json"), "kept").unwrap();
+        let tgz = base.join("u.tar.gz");
+        assert!(std::process::Command::new("tar").arg("-czf").arg(&tgz).arg("-C").arg(base.join("src")).arg("ndm-1.1").status().unwrap().success());
+        update_folder(&std::fs::read(&tgz).unwrap(), &old).unwrap();
+        let read = |p: &str| std::fs::read_to_string(old.join(p)).unwrap();
+        assert_eq!((read("ndm").as_str(), read("help/index.htm").as_str(), read("state-like.json").as_str()), ("new", "new", "kept"));
+        assert!(!old.join("help/gone.htm").exists(), "folders are replaced whole");
+        assert!(update_folder(b"\x1f\x8bnot really", &old).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn close_rules() {

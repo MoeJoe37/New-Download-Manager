@@ -33,7 +33,7 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y -qq build-essential pkg-config curl ca-certificates git file rsync patchelf \
-            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-common
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-common dpkg-dev rpm
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -41,15 +41,21 @@ jobs:
       - run: cargo test --release
       - name: AppImage
         run: bash tools/appimage.sh
+      - name: .deb, .rpm and .tar.gz
+        run: bash tools/linux-packages.sh target/release/ndm
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
           path: |
             installer/out/NDM-x86_64.AppImage
+            installer/out/ndm*.deb
+            installer/out/ndm*.rpm
+            installer/out/ndm*.tar.gz
             tools/smoke.sh
 
   smoke:
-    # does the AppImage start on each mainstream distribution?
+    # do the AppImage, the .deb / .rpm (installed with the distribution's package manager) and the
+    # .tar.gz start on each mainstream distribution?
     needs: linux
     runs-on: ubuntu-latest
     strategy:
@@ -66,4 +72,5 @@ jobs:
         shell: bash
         run: |
           chmod +x installer/out/NDM-x86_64.AppImage
-          bash tools/smoke.sh installer/out/NDM-x86_64.AppImage
+          # the AppImage first, before a package or the .tar.gz brings GTK in
+          bash tools/smoke.sh installer/out/NDM-x86_64.AppImage installer/out/*.deb installer/out/*.rpm installer/out/*.tar.gz

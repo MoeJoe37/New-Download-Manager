@@ -882,3 +882,12 @@ pub fn show_main() {}
 
 /// Linux takes the AppImage's settings out of a child's environment; nothing to do on Windows.
 pub fn clean_env(_c: &mut std::process::Command) {}
+
+/// Linux packages only (see linux.rs).
+pub fn package_owner(_exe: &Path) -> Option<&'static str> {
+    None
+}
+
+pub fn install_package(_file: &Path) -> Result<(), String> {
+    Err("not on Windows".into())
+}

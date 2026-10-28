@@ -1088,3 +1088,48 @@ fn default_routes() {
         fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001 wlp2s0\n";
     assert_eq!(default_route_devices(route, route6), ["wlp2s0", "enx0a1b2c3d4e5f"]);
 }
+
+// ---------- packages ----------
+
+/// The package format that installed `exe` ("deb" or "rpm"), None when no package owns it (the
+/// AppImage, the .tar.gz).
+pub fn package_owner(exe: &Path) -> Option<&'static str> {
+    let exe = exe.canonicalize().ok()?;
+    let owns = |p: &str, args: &[&str]| on_path(p) && cmd(p).args(args).arg(&exe).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if owns("dpkg-query", &["-S"]) {
+        Some("deb")
+    } else if owns("rpm", &["-qf"]) {
+        Some("rpm")
+    } else {
+        None
+    }
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
+}
+
+/// Installs a downloaded .deb or .rpm with the system's package manager, as root: pkexec has the
+/// desktop ask for the password. apt, dnf and zypper also bring in what it depends on.
+pub fn install_package(file: &Path) -> Result<(), String> {
+    let f = file.display().to_string();
+    let args: Vec<&str> = if f.ends_with(".deb") {
+        if on_path("apt-get") { vec!["apt-get", "install", "-y", "--allow-downgrades", &f] } else { vec!["dpkg", "-i", &f] }
+    } else if on_path("dnf") {
+        vec!["dnf", "install", "-y", &f]
+    } else if on_path("zypper") {
+        vec!["zypper", "-n", "--no-gpg-checks", "install", "--allow-unsigned-rpm", &f]
+    } else {
+        vec!["rpm", "-U", &f]
+    };
+    if !on_path("pkexec") {
+        return Err(format!("pkexec is missing: install the update by hand with {}", args.join(" ")));
+    }
+    let o = cmd("pkexec").args(&args).stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
+    match o.status.code() {
+        Some(0) => Ok(()),
+        // pkexec: the password dialog was closed, or the user may not install software
+        Some(126 | 127) => Err("The update wasn't installed: the password wasn't given.".into()),
+        _ => Err(String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("the package manager failed").to_string()),
+    }
+}

@@ -1,7 +1,7 @@
 # Push a tag vX.Y.Z (matching Cargo.toml's version), or run it by hand on a branch with a tag name, and
-# this builds ndm.exe, the Windows installer and the
-# Linux AppImage and attaches them to that tag's GitHub release (created if missing). NDM's "Check for
-# updates" picks ndm.exe / the AppImage from the latest release.
+# this builds ndm.exe, the Windows installer, and the
+# Linux AppImage, .deb, .rpm and .tar.gz, and attaches them to that tag's GitHub release (created if missing). NDM's "Check for
+# updates" picks the file this copy came as from the latest release.
 name: Release
 
 on:
@@ -53,14 +53,20 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y -qq build-essential pkg-config curl ca-certificates git file rsync patchelf \
-            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-common
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-common dpkg-dev rpm
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: bash tools/appimage.sh
+      - name: .deb, .rpm and .tar.gz
+        run: bash tools/linux-packages.sh "$HOME/.cache/ndm-build/src/target/release/ndm"
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: installer/out/NDM-x86_64.AppImage
+          path: |
+            installer/out/NDM-x86_64.AppImage
+            installer/out/ndm*.deb
+            installer/out/ndm*.rpm
+            installer/out/ndm*.tar.gz
 
   publish:
     needs: [windows, linux]

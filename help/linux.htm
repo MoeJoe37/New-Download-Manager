@@ -1,6 +1,15 @@
 <html><head><title>NDM on Linux</title></head><body>
 <h1>NDM on Linux</h1>
-<p class="lead">On Linux, NDM comes as one AppImage file that runs on current distributions without installing. This page covers what differs from Windows.</p>
+<p class="lead">On Linux, NDM comes as an AppImage that runs without installing, as packages for Debian and Fedora-type systems, and as a folder to run in place. This page covers what differs from Windows.</p>
+
+<h2 id="Install">Which file to download</h2>
+<ul>
+<li><kbd>ndm_&lt;version&gt;_amd64.deb</kbd> for Debian, Ubuntu and Mint. Open it with your software installer, or run <kbd>sudo apt install ./ndm_&lt;version&gt;_amd64.deb</kbd>.</li>
+<li><kbd>ndm-&lt;version&gt;-1.x86_64.rpm</kbd> for Fedora, RHEL, Alma, Rocky and openSUSE. Run <kbd>sudo dnf install ./ndm-&lt;version&gt;-1.x86_64.rpm</kbd> (on openSUSE, <kbd>sudo zypper install</kbd>).</li>
+<li><kbd>NDM-x86_64.AppImage</kbd> for any distribution, without installing (see below).</li>
+<li><kbd>ndm-&lt;version&gt;-x86_64.tar.gz</kbd> for any distribution with GTK 3: unpack it anywhere and run <kbd>./ndm</kbd> in its folder.</li>
+</ul>
+<p>The packages put NDM in <kbd>/usr/lib/ndm</kbd> with <kbd>ndm</kbd> on the command line and an entry in the applications menu.</p>
 
 <h2 id="AppImage">Running the AppImage</h2>
 <ol>
