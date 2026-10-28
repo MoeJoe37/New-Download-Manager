@@ -480,6 +480,7 @@ enum HelpKind {
     Code,
     Tip,
     Note,
+    Image,
 }
 
 /// A run of help text: bold, italic, key / code, link target.
@@ -492,12 +493,15 @@ struct HelpRun {
     link: Option<String>,
 }
 
-/// A help block: its kind, its id (the anchor links point at) and its runs.
+/// A help block: its kind, its id (the anchor links point at) and its runs. An <ol> item has its
+/// number; an image has its file (relative to help/) and its alt text, also its caption, as the runs.
 #[derive(Default)]
 struct HelpPara {
     kind: HelpKind,
     id: Option<String>,
     runs: Vec<HelpRun>,
+    num: Option<u32>,
+    src: Option<String>,
 }
 
 impl HelpPara {
@@ -506,8 +510,8 @@ impl HelpPara {
     }
 }
 
-/// The small HTML the help pages are written in (h1, h2, p, p class=lead/tip/note, ul/li, pre, b, i,
-/// kbd/code, a href) as blocks; returns the page's <title> too.
+/// The small HTML the help pages are written in (h1, h2, p, p class=lead/tip/note, ul/ol/li, pre, img,
+/// b, i, kbd/code, a href) as blocks; returns the page's <title> too.
 fn help_parse(html: &str) -> (String, Vec<HelpPara>) {
     let lower = html.to_ascii_lowercase();
     let title = lower.find("<title>").and_then(|a| lower[a..].find("</title>").map(|b| html[a + 7..a + b].trim().to_string())).unwrap_or_default();
@@ -516,8 +520,11 @@ fn help_parse(html: &str) -> (String, Vec<HelpPara>) {
         let l = tag.to_ascii_lowercase();
         let i = l.find(&format!("{name}="))? + name.len() + 1;
         let v = tag[i..].trim_start_matches('"');
-        Some(v[..v.find(['"', ' ', '>']).unwrap_or(v.len())].to_string())
+        let end = if tag[i..].starts_with('"') { v.find('"') } else { v.find([' ', '>']) };
+        Some(v[..end.unwrap_or(v.len())].to_string())
     };
+    // the item number of the list being read (None in a <ul>)
+    let mut ol: Option<u32> = None;
     let (mut paras, mut cur) = (vec![], HelpPara::default());
     let (mut bold, mut italic, mut code, mut link) = (0, 0, 0, None::<String>);
     let flush = |cur: &mut HelpPara, paras: &mut Vec<HelpPara>| {
@@ -525,7 +532,7 @@ fn help_parse(html: &str) -> (String, Vec<HelpPara>) {
         if !cur.text().is_empty() {
             paras.push(std::mem::take(cur));
         }
-        cur.kind = kind;
+        (cur.kind, cur.num) = (kind, None);
     };
     for chunk in body.split('<').skip(1) {
         let (tag, text) = chunk.split_once('>').unwrap_or((chunk, ""));
@@ -547,10 +554,24 @@ fn help_parse(html: &str) -> (String, Vec<HelpPara>) {
             _ if block.is_some() => {
                 flush(&mut cur, &mut paras);
                 (cur.kind, cur.id) = (block.unwrap(), attr(tag, "id"));
+                if name == "li" {
+                    ol = ol.map(|n| n + 1);
+                    cur.num = ol;
+                }
             }
-            "/h1" | "/h2" | "/h3" | "/li" | "/pre" | "/p" | "/div" | "ul" | "/ul" => {
+            "/h1" | "/h2" | "/h3" | "/li" | "/pre" | "/p" | "/div" | "ul" | "/ul" | "ol" | "/ol" => {
                 flush(&mut cur, &mut paras);
                 cur.kind = HelpKind::Text;
+                ol = match name.as_str() {
+                    "ol" => Some(0),
+                    "ul" | "/ul" | "/ol" => None,
+                    _ => ol,
+                };
+            }
+            "img" => {
+                flush(&mut cur, &mut paras);
+                let alt = attr(tag, "alt").unwrap_or_default().replace("&quot;", "\"").replace("&amp;", "&");
+                paras.push(HelpPara { kind: HelpKind::Image, id: attr(tag, "id"), runs: vec![HelpRun { text: alt, ..Default::default() }], num: None, src: attr(tag, "src") });
             }
             "br" => flush(&mut cur, &mut paras),
             "b" | "strong" => bold += 1,
@@ -579,6 +600,9 @@ fn help_parse(html: &str) -> (String, Vec<HelpPara>) {
 
 #[test]
 fn help_pages() {
+    let (_, p) = help_parse(r#"<body><h1>T</h1><ol><li>One</li><li>Two</li></ol><ul><li>Dot</li></ul><p><img src="images/a.png" alt="The main window"></p></body>"#);
+    assert_eq!(p.iter().map(|p| p.num).collect::<Vec<_>>(), [None, Some(1), Some(2), None, None]);
+    assert_eq!((p[4].kind, p[4].src.as_deref(), p[4].text().as_str()), (HelpKind::Image, Some("images/a.png"), "The main window"));
     let (title, p) = help_parse(r#"<html><head><title>T</title></head><body><h1>Head</h1><p class="lead">Lead</p><h2 id="x">Sec</h2><p><b>Bold</b> and <a href="b.htm#y">a link</a> -&gt; <kbd>Del</kbd></p><ul><li>One</li></ul><pre>a  b</pre><p class="tip">Tip</p></body></html>"#);
     assert_eq!(title, "T");
     let kinds: Vec<_> = p.iter().map(|p| p.kind).collect();
@@ -593,6 +617,15 @@ fn help_pages() {
     for f in std::fs::read_dir(&dir).unwrap().flatten().filter(|f| f.path().extension().is_some_and(|e| e == "htm")) {
         let (t, paras) = help_parse(&std::fs::read_to_string(f.path()).unwrap());
         assert!(!t.is_empty() && paras.first().is_some_and(|p| p.kind == Title), "{:?}", f.path());
+        // screenshots: there, readable, small enough, with a caption
+        for img in paras.iter().filter(|p| p.kind == Image) {
+            let src = img.src.as_deref().unwrap_or_default();
+            let file = dir.join(src);
+            let size = std::fs::metadata(&file).unwrap_or_else(|_| panic!("{src} in {:?}", f.path())).len();
+            let pic = image::open(&file).unwrap_or_else(|e| panic!("{src}: {e}"));
+            assert!(pic.width() <= 1400 && size <= 300 * 1024, "{src}: {} px, {size} bytes", pic.width());
+            assert!(!img.text().is_empty(), "{src} has no alt text");
+        }
         for l in paras.iter().flat_map(|p| &p.runs).filter_map(|r| r.link.as_deref()).filter(|l| !l.contains("://")) {
             let (file, anchor) = l.split_once('#').map_or((l, None), |(f, a)| (f, Some(a)));
             let (_, target) = help_parse(&std::fs::read_to_string(dir.join(file)).unwrap_or_else(|_| panic!("{l} in {:?}", f.path())));
@@ -601,33 +634,11 @@ fn help_pages() {
     }
 }
 
-/// The help window's icons: one glyph each (Segoe Fluent Icons / MDL2), drawn white and tinted when shown.
-/// A topic per page (file, glyph, colour), then the controls.
-const HELP_TOPICS: [(&str, u32, [u8; 3]); 10] = [
-    ("index.htm", 0xE80F, [84, 98, 120]),
-    ("starting.htm", 0xE896, [38, 120, 220]),
-    ("main.htm", 0xE7C4, [0, 150, 136]),
-    ("segmentation.htm", 0xE945, [239, 125, 0]),
-    ("streams.htm", 0xE714, [221, 55, 70]),
-    ("scheduler.htm", 0xE787, [118, 80, 230]),
-    ("grabber.htm", 0xE774, [22, 150, 90]),
-    ("options.htm", 0xE713, [96, 110, 130]),
-    ("customization.htm", 0xE790, [212, 40, 120]),
-    ("update.htm", 0xE895, [0, 125, 195]),
-];
-const HELP_SEARCH: usize = HELP_TOPICS.len();
-const HELP_BACK: usize = HELP_SEARCH + 1;
-const HELP_FWD: usize = HELP_SEARCH + 2;
-const HELP_TIP: usize = HELP_SEARCH + 3;
-const HELP_NOTE: usize = HELP_SEARCH + 4;
-const HELP_CONTROLS: [u32; 5] = [0xE721, 0xE72B, 0xE72A, 0xEA80, 0xE946];
-
-/// A help page's icon (index into the strip) and colour.
-fn help_topic_icon(file: &str) -> (usize, Color32) {
-    let i = HELP_TOPICS.iter().position(|t| t.0 == file).unwrap_or(0);
-    let [r, g, b] = HELP_TOPICS[i].2;
-    (i, Color32::from_rgb(r, g, b))
-}
+/// The help window's three icons (Segoe Fluent Icons / MDL2 glyphs, drawn white and tinted when shown).
+const HELP_SEARCH: usize = 0;
+const HELP_BACK: usize = 1;
+const HELP_FWD: usize = 2;
+const HELP_CONTROLS: [u32; 3] = [0xE721, 0xE72B, 0xE72A];
 
 /// A texture made once and kept in egui's memory.
 fn cached_texture(ctx: &egui::Context, name: &str, make: impl FnOnce() -> Option<win::Rgba>) -> Option<egui::TextureHandle> {
@@ -642,8 +653,16 @@ fn cached_texture(ctx: &egui::Context, name: &str, make: impl FnOnce() -> Option
 
 fn help_icons(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     cached_texture(ctx, "help_icons", || {
-        let cells: Vec<(u32, [u8; 3])> = HELP_TOPICS.iter().map(|t| t.1).chain(HELP_CONTROLS).map(|g| (g, [255; 3])).collect();
+        let cells: Vec<(u32, [u8; 3])> = HELP_CONTROLS.iter().map(|g| (*g, [255; 3])).collect();
         glyph_strip(&cells, 64, 64, 46.0)
+    })
+}
+
+/// A help page's screenshot (`src` relative to help/), loaded once.
+fn help_image(ctx: &egui::Context, dir: &Path, src: &str) -> Option<egui::TextureHandle> {
+    cached_texture(ctx, &format!("help:{src}"), || {
+        let i = image::open(dir.join(src)).ok()?.into_rgba8();
+        Some((i.width() as usize, i.height() as usize, i.into_raw()))
     })
 }
 
@@ -653,18 +672,18 @@ fn help_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
 
 /// Paints icon `i` of the help strip in `rect`, tinted `tint`.
 fn help_icon(ui: &egui::Ui, tex: &egui::TextureHandle, i: usize, rect: Rect, tint: Color32) {
-    let n = (HELP_TOPICS.len() + HELP_CONTROLS.len()) as f32;
+    let n = HELP_CONTROLS.len() as f32;
     let uv = Rect::from_min_max(egui::pos2(i as f32 / n, 0.0), egui::pos2((i + 1) as f32 / n, 1.0));
     egui::Image::new((tex.id(), rect.size())).uv(uv).tint(tint).paint_at(ui, rect);
 }
 
-/// A help paragraph's runs, wrapped: links in `accent` (a click sets `go`), keys as small chips.
-fn help_runs(ui: &mut egui::Ui, runs: &[HelpRun], size: f32, color: Color32, strong: Color32, accent: Color32, go: &mut Option<String>) -> egui::Response {
+/// A help paragraph's runs, wrapped: links in `link` (a click sets `go`), keys and code on `chip`.
+fn help_runs(ui: &mut egui::Ui, runs: &[HelpRun], size: f32, color: Color32, strong: Color32, (link, chip): (Color32, Color32), go: &mut Option<String>) -> egui::Response {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(0.0, 5.0);
         for r in runs {
             let mut t = if r.code {
-                RichText::new(format!("\u{2009}{}\u{2009}", r.text.trim())).monospace().size(size - 1.5).color(strong).background_color(accent.gamma_multiply(0.1))
+                RichText::new(format!("\u{2009}{}\u{2009}", r.text.trim())).monospace().size(size - 1.5).color(strong).background_color(chip)
             } else {
                 RichText::new(r.text.as_str()).size(size).color(if r.bold { strong } else { color })
             };
@@ -676,7 +695,7 @@ fn help_runs(ui: &mut egui::Ui, runs: &[HelpRun], size: f32, color: Color32, str
             }
             match &r.link {
                 Some(l) => {
-                    if ui.add(egui::Link::new(t.color(accent))).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    if ui.add(egui::Link::new(t.color(link))).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         *go = Some(l.clone());
                     }
                 }
@@ -696,7 +715,7 @@ fn help_search(
     read: &dyn Fn(&str) -> (String, Vec<HelpPara>),
     query: &str,
     shown: &str,
-    (text, strong, weak, accent): (Color32, Color32, Color32, Color32),
+    (text, strong, weak, link, row): (Color32, Color32, Color32, Color32, Color32),
     go: &mut Option<String>,
 ) {
     ui.label(RichText::new(i18n::trf("Results for \"%s\"", &[&shown])).size(22.0).strong().color(strong));
@@ -716,16 +735,16 @@ fn help_search(
                 continue;
             }
             found += 1;
-            let r = egui::Frame::new().corner_radius(8).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+            let r = egui::Frame::new().corner_radius(3).inner_margin(egui::Margin::symmetric(8, 7)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let at = if head.1.is_empty() { tr(name) } else { format!("{}  \u{203A}  {}", tr(name), tr(&head.1)) };
-                ui.label(RichText::new(at).size(14.0).strong().color(accent));
+                ui.label(RichText::new(at).size(14.0).color(link));
                 let snip = if t.chars().count() > 180 { t.chars().take(180).collect::<String>() + "\u{2026}" } else { t.clone() };
                 ui.label(RichText::new(snip).size(13.0).color(text));
             });
             let r = r.response.interact(Sense::click());
             if r.hovered() {
-                ui.painter().rect_filled(r.rect, 8.0, accent.gamma_multiply(0.07));
+                ui.painter().rect_filled(r.rect, 3.0, row.gamma_multiply(0.5));
             }
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 *go = Some(head.0.as_ref().map_or(f.clone(), |id| format!("{f}#{id}")));
@@ -1308,6 +1327,20 @@ fn style(ctx: &egui::Context, dark: bool) {
             fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
             fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, name.into());
             break;
+        }
+    }
+    // Linux: the desktop's own sans-serif, then DejaVu Sans for the symbols it may lack (arrows, ticks);
+    // egui's built-in font has neither
+    #[cfg(not(windows))]
+    {
+        let mut seen = vec![];
+        for (k, (name, face)) in [("sys", "sans-serif"), ("sys_fb", "DejaVu Sans")].into_iter().enumerate() {
+            let Some(f) = win::font_file(face).filter(|f| !seen.contains(f)) else { continue };
+            if let Ok(b) = std::fs::read(&f) {
+                fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
+                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(k.min(seen.len()), name.into());
+                seen.push(f);
+            }
         }
     }
     // Fallbacks for scripts Tahoma lacks: Segoe UI (Georgian...), Nirmala (Hindi), and the CJK font of the
@@ -3388,8 +3421,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             vb = vb.with_window_level(egui::WindowLevel::AlwaysOnTop); // pop over the browser
         }
         // NDM darkens only these (and message boxes); Options, Scheduler... stay light (0x407c90,
-        // 0x4409e0, 0x4a528e, 0x444cf0, 0x5569c0, 0x4c3170 use the dark palette)
-        let dark = self.dark && matches!(d, Dialog::AddUrl { .. } | Dialog::FileInfo { .. } | Dialog::Progress { .. } | Dialog::Complete { .. } | Dialog::Info { .. });
+        // 0x4409e0, 0x4a528e, 0x444cf0, 0x5569c0, 0x4c3170 use the dark palette); NDM's help follows the theme too
+        let dark = self.dark && matches!(d, Dialog::AddUrl { .. } | Dialog::FileInfo { .. } | Dialog::Progress { .. } | Dialog::Complete { .. } | Dialog::Info { .. } | Dialog::Help { .. });
         if self.dark && !dark {
             self.light_titles.push(i18n::tr_os(&title));
             ctx.set_theme(egui::ThemePreference::Light);
@@ -5239,65 +5272,67 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }))
                     .collect();
                 let file = page.split('#').next().unwrap_or("index.htm").to_string();
-                let (icons, logo) = (help_icons(ctx), help_logo(ctx));
+                let (_, paras) = read(&file);
+                let icons = help_icons(ctx);
                 let v = ui.visuals().clone();
-                let accent = if v.dark_mode { Color32::from_rgb(110, 170, 255) } else { BAR };
+                // blue is for links only; everything else is the text colours and greys
+                let link = if v.dark_mode { Color32::from_rgb(120, 175, 255) } else { Color32::from_rgb(0, 95, 184) };
                 let (text, strong, weak) = (v.text_color(), v.strong_text_color(), v.weak_text_color());
-                let (side, paper, line) = if v.dark_mode {
-                    (Color32::from_gray(30), Color32::from_gray(22), Color32::from_gray(55))
+                let (side, paper, line, row, chip) = if v.dark_mode {
+                    (Color32::from_gray(30), Color32::from_gray(22), Color32::from_gray(55), Color32::from_gray(48), Color32::from_gray(55))
                 } else {
-                    (Color32::from_rgb(244, 246, 249), Color32::WHITE, Color32::from_rgb(226, 230, 236))
+                    (Color32::from_gray(246), Color32::WHITE, Color32::from_gray(222), Color32::from_gray(230), Color32::from_gray(236))
                 };
                 let hand = egui::CursorIcon::PointingHand;
+                let searching = !search.trim().is_empty();
 
-                // sidebar: logo, search, contents
-                egui::SidePanel::left("help_nav").resizable(false).exact_width(236.0).show_separator_line(false)
-                    .frame(egui::Frame::new().fill(side).inner_margin(egui::Margin::symmetric(12, 16)))
+                // sidebar: search, then the contents, the current topic's sections under it
+                egui::SidePanel::left("help_nav").resizable(false).exact_width(228.0).show_separator_line(true)
+                    .frame(egui::Frame::new().fill(side).inner_margin(egui::Margin::symmetric(12, 14)))
                     .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(t) = &logo {
-                                ui.add(egui::Image::new((t.id(), Vec2::splat(36.0))));
-                            }
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                ui.label(RichText::new(tr("NDM Help")).size(17.0).strong().color(strong));
-                                ui.label(RichText::new(tr("New Download Manager")).size(11.5).color(weak));
-                            });
-                        });
-                        ui.add_space(14.0);
-                        egui::Frame::new().fill(paper).stroke(egui::Stroke::new(1.0_f32, line)).corner_radius(8).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                        egui::Frame::new().fill(paper).stroke(egui::Stroke::new(1.0_f32, line)).corner_radius(4).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 if let Some(t) = &icons {
-                                    let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                                    let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
                                     help_icon(ui, t, HELP_SEARCH, r, weak);
                                 }
                                 ui.add(egui::TextEdit::singleline(search).hint_text(tr("Search help")).frame(false).desired_width(f32::INFINITY));
                             });
                         });
-                        ui.add_space(16.0);
-                        ui.label(RichText::new(tr("CONTENTS")).size(10.5).color(weak));
+                        ui.add_space(14.0);
+                        ui.label(RichText::new(tr("Contents")).size(13.0).strong().color(strong));
                         ui.add_space(4.0);
-                        for (f, name, _) in &topics {
-                            let on = search.trim().is_empty() && *f == file;
-                            let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
-                            let p = ui.painter();
-                            if on {
-                                p.rect_filled(rect, 6.0, accent.gamma_multiply(0.13));
-                                p.rect_filled(Rect::from_min_size(rect.left_top() + Vec2::new(0.0, 8.0), Vec2::new(3.0, rect.height() - 16.0)), 2.0, accent);
-                            } else if r.hovered() {
-                                p.rect_filled(rect, 6.0, if v.dark_mode { Color32::from_white_alpha(12) } else { Color32::from_black_alpha(10) });
+                        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                            for (f, name, _) in &topics {
+                                let on = !searching && *f == file;
+                                let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                                if on {
+                                    ui.painter().rect_filled(rect, 3.0, row);
+                                } else if r.hovered() {
+                                    ui.painter().rect_filled(rect, 3.0, row.gamma_multiply(0.5));
+                                }
+                                ui.painter().text(rect.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, tr(name), FontId::proportional(13.5), if on { strong } else { text });
+                                if on {
+                                    // no bold face is loaded: a second pass a hair to the right makes it bold
+                                    ui.painter().text(rect.left_center() + Vec2::new(8.5, 0.0), Align2::LEFT_CENTER, tr(name), FontId::proportional(13.5), strong);
+                                }
+                                if r.on_hover_cursor(hand).clicked() {
+                                    go = Some(f.clone());
+                                }
+                                if on {
+                                    for h in paras.iter().filter(|p| p.kind == HelpKind::Heading && p.id.is_some()) {
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(20.0);
+                                            if ui.add(egui::Link::new(RichText::new(tr(&h.text())).size(12.5).color(link))).on_hover_cursor(hand).clicked() {
+                                                *anchor = h.id.clone();
+                                            }
+                                        });
+                                    }
+                                    ui.add_space(4.0);
+                                }
                             }
-                            if let Some(t) = &icons {
-                                let (i, c) = help_topic_icon(f);
-                                help_icon(ui, t, i, Rect::from_center_size(rect.left_center() + Vec2::new(22.0, 0.0), Vec2::splat(18.0)), c);
-                            }
-                            p.text(rect.left_center() + Vec2::new(42.0, 0.0), Align2::LEFT_CENTER, tr(name), FontId::proportional(13.5), if on { strong } else { text });
-                            if r.on_hover_cursor(hand).clicked() {
-                                go = Some(f.clone());
-                            }
-                        }
-                        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                            if ui.link(RichText::new(format!("{} \u{2197}", tr("NDM on GitHub"))).size(12.5).color(accent)).clicked() {
+                            ui.add_space(12.0);
+                            if ui.link(RichText::new(format!("{} \u{2197}", tr("NDM on GitHub"))).size(12.5).color(link)).clicked() {
                                 go = Some(format!("https://github.com/{UPDATE_REPO}"));
                             }
                         });
@@ -5305,19 +5340,18 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
                 // top bar: back, forward, where you are
                 let pos = topics.iter().position(|t| t.0 == file);
-                let searching = !search.trim().is_empty();
-                egui::TopBottomPanel::top("help_bar").show_separator_line(false)
-                    .frame(egui::Frame::new().fill(paper).inner_margin(egui::Margin::symmetric(16, 10)))
+                egui::TopBottomPanel::top("help_bar").show_separator_line(true)
+                    .frame(egui::Frame::new().fill(paper).inner_margin(egui::Margin::symmetric(14, 8)))
                     .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
                             for (i, is_back) in [(HELP_BACK, true), (HELP_FWD, false)] {
                                 let on = if is_back { !back.is_empty() } else { !fwd.is_empty() };
-                                let (rect, r) = ui.allocate_exact_size(Vec2::splat(30.0), if on { Sense::click() } else { Sense::hover() });
+                                let (rect, r) = ui.allocate_exact_size(Vec2::splat(28.0), if on { Sense::click() } else { Sense::hover() });
                                 if on && r.hovered() {
-                                    ui.painter().circle_filled(rect.center(), 15.0, accent.gamma_multiply(0.12));
+                                    ui.painter().rect_filled(rect, 3.0, row);
                                 }
                                 if let Some(t) = &icons {
-                                    help_icon(ui, t, i, Rect::from_center_size(rect.center(), Vec2::splat(15.0)), if on { strong } else { weak.gamma_multiply(0.5) });
+                                    help_icon(ui, t, i, Rect::from_center_size(rect.center(), Vec2::splat(14.0)), if on { strong } else { weak.gamma_multiply(0.5) });
                                 }
                                 if on && r.on_hover_text(tr(if is_back { "Back" } else { "Forward" })).clicked() {
                                     let (from, to) = if is_back { (&mut *back, &mut *fwd) } else { (&mut *fwd, &mut *back) };
@@ -5328,164 +5362,97 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                     }
                                 }
                             }
-                            ui.add_space(10.0);
-                            if ui.link(RichText::new(tr("Help")).size(13.0).color(weak)).clicked() {
+                            ui.add_space(8.0);
+                            if ui.link(RichText::new(tr("Help")).size(13.0).color(link)).clicked() {
                                 go = Some("index.htm".into());
                             }
                             if file != "index.htm" || searching {
                                 let here = if searching { tr("Search") } else { pos.map_or(String::new(), |i| tr(&topics[i].1)) };
-                                ui.label(RichText::new("\u{203A}").size(14.0).color(weak));
-                                ui.label(RichText::new(here).size(13.0).color(strong));
+                                ui.label(RichText::new("\u{203A}").size(13.0).color(weak));
+                                ui.label(RichText::new(here).size(13.0).color(text));
                             }
                         });
                     });
 
-                // the page, in a centred reading column
+                // the page, in a reading column of about 65 characters
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(paper)).show_inside(ui, |ui| {
                     let query = search.trim().to_lowercase();
                     egui::ScrollArea::vertical().auto_shrink(false).id_salt(("help", file.clone(), query.is_empty())).show(ui, |ui| {
-                        let width = (ui.available_width() - 64.0).clamp(300.0, 720.0);
+                        let width = (ui.available_width() - 64.0).clamp(300.0, 600.0);
                         let pad = ((ui.available_width() - width) / 2.0).max(24.0);
                         ui.horizontal(|ui| {
                             ui.add_space(pad);
                             ui.vertical(|ui| {
                                 ui.set_width(width);
-                                ui.add_space(18.0);
+                                ui.add_space(22.0);
                                 if !query.is_empty() {
-                                    help_search(ui, &topics, &read, &query, search.trim(), (text, strong, weak, accent), &mut go);
+                                    help_search(ui, &topics, &read, &query, search.trim(), (text, strong, weak, link, row), &mut go);
                                     return;
                                 }
-                                let (_, paras) = read(&file);
-                                let home = file == "index.htm";
-                                for (k, p) in paras.iter().enumerate() {
+                                for p in &paras {
                                     let resp = match p.kind {
-                                        HelpKind::Title if home => {
-                                            // the welcome banner, then a card per topic, two to a row
-                                            let lead = paras.get(k + 1).filter(|p| p.kind == HelpKind::Lead).map(HelpPara::text).unwrap_or_default();
-                                            egui::Frame::new().fill(accent.gamma_multiply(0.08)).corner_radius(14).inner_margin(egui::Margin::same(22)).show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.horizontal(|ui| {
-                                                    if let Some(t) = &logo {
-                                                        ui.add(egui::Image::new((t.id(), Vec2::splat(64.0))));
-                                                    }
-                                                    ui.add_space(10.0);
-                                                    ui.vertical(|ui| {
-                                                        ui.label(RichText::new(tr(&p.text())).size(25.0).strong().color(strong));
-                                                        ui.add_space(4.0);
-                                                        ui.label(RichText::new(tr(&lead)).size(14.0).color(text));
-                                                    });
-                                                });
-                                            });
-                                            ui.add_space(22.0);
-                                            ui.label(RichText::new(tr("BROWSE TOPICS")).size(10.5).color(weak));
-                                            ui.add_space(6.0);
-                                            let gap = 12.0;
-                                            let cw = (ui.available_width() - gap) / 2.0;
-                                            for pair in topics[1..].chunks(2) {
-                                                ui.horizontal(|ui| {
-                                                    ui.spacing_mut().item_spacing.x = gap;
-                                                    for (f, name, about) in pair {
-                                                        let (rect, r) = ui.allocate_exact_size(Vec2::new(cw, 84.0), Sense::click());
-                                                        let hot = r.hovered();
-                                                        let pnt = ui.painter();
-                                                        pnt.rect(rect, 10.0, if hot { accent.gamma_multiply(0.05) } else { paper }, egui::Stroke::new(1.0_f32, if hot { accent.gamma_multiply(0.6) } else { line }), egui::StrokeKind::Inside);
-                                                        let (i, c) = help_topic_icon(f);
-                                                        let ic = Rect::from_min_size(rect.left_top() + Vec2::new(14.0, 14.0), Vec2::splat(38.0));
-                                                        pnt.rect_filled(ic, 9.0, c.gamma_multiply(0.14));
-                                                        if let Some(t) = &icons {
-                                                            help_icon(ui, t, i, ic.shrink(9.0), c);
-                                                        }
-                                                        let x = ic.right() + 12.0;
-                                                        pnt.text(egui::pos2(x, rect.top() + 14.0), Align2::LEFT_TOP, tr(name), FontId::proportional(14.5), strong);
-                                                        let g = pnt.layout(tr(about), FontId::proportional(12.0), weak, rect.right() - x - 12.0);
-                                                        pnt.galley(egui::pos2(x, rect.top() + 36.0), g, weak);
-                                                        if r.on_hover_cursor(hand).clicked() {
-                                                            go = Some(f.clone());
-                                                        }
-                                                    }
-                                                });
-                                                ui.add_space(gap - ui.spacing().item_spacing.y);
-                                            }
-                                            ui.add_space(8.0);
-                                            continue;
-                                        }
-                                        HelpKind::Lead | HelpKind::Item if home => continue,
-                                        HelpKind::Title => ui.label(RichText::new(tr(&p.text())).size(28.0).strong().color(strong)),
-                                        HelpKind::Lead => {
-                                            ui.add_space(2.0);
-                                            let r = help_runs(ui, &p.runs, 15.5, weak, strong, accent, &mut go);
-                                            // "On this page": a chip per section
-                                            let heads: Vec<&HelpPara> = paras.iter().filter(|p| p.kind == HelpKind::Heading && p.id.is_some()).collect();
-                                            if heads.len() > 1 {
-                                                ui.add_space(16.0);
-                                                ui.label(RichText::new(tr("ON THIS PAGE")).size(10.5).color(weak));
-                                                ui.add_space(2.0);
-                                                ui.horizontal_wrapped(|ui| {
-                                                    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-                                                    for h in heads {
-                                                        let b = egui::Button::new(RichText::new(tr(&h.text())).size(12.5).color(accent)).fill(accent.gamma_multiply(0.09)).stroke(egui::Stroke::NONE).corner_radius(14);
-                                                        if ui.add(b).on_hover_cursor(hand).clicked() {
-                                                            *anchor = h.id.clone();
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                            ui.add_space(16.0);
-                                            ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0_f32, line));
+                                        HelpKind::Title => {
+                                            let r = ui.label(RichText::new(tr(&p.text())).size(26.0).strong().color(strong));
+                                            ui.add_space(4.0);
                                             r
                                         }
+                                        HelpKind::Lead => {
+                                            ui.add_space(4.0);
+                                            help_runs(ui, &p.runs, 15.0, text, strong, (link, chip), &mut go)
+                                        }
                                         HelpKind::Heading => {
-                                            ui.add_space(24.0);
-                                            let r = ui.label(RichText::new(tr(&p.text())).size(19.0).strong().color(strong));
-                                            let bar = Rect::from_min_size(egui::pos2(r.rect.left() - 14.0, r.rect.top() + 3.0), Vec2::new(4.0, r.rect.height() - 6.0));
-                                            ui.painter().rect_filled(bar, 2.0, accent);
+                                            ui.add_space(22.0);
+                                            let r = ui.label(RichText::new(tr(&p.text())).size(18.0).strong().color(strong));
                                             ui.add_space(2.0);
                                             r
                                         }
                                         HelpKind::Text => {
-                                            ui.add_space(6.0);
-                                            help_runs(ui, &p.runs, 14.5, text, strong, accent, &mut go)
+                                            ui.add_space(7.0);
+                                            help_runs(ui, &p.runs, 14.0, text, strong, (link, chip), &mut go)
+                                        }
+                                        HelpKind::Tip | HelpKind::Note => {
+                                            // an ordinary paragraph that starts with a bold "Tip:" / "Note:"
+                                            ui.add_space(7.0);
+                                            let label = tr(if p.kind == HelpKind::Tip { "Tip:" } else { "Note:" });
+                                            let runs: Vec<HelpRun> = std::iter::once(HelpRun { text: format!("{label} "), bold: true, ..Default::default() }).chain(p.runs.iter().cloned()).collect();
+                                            help_runs(ui, &runs, 14.0, text, strong, (link, chip), &mut go)
                                         }
                                         HelpKind::Item => {
-                                            ui.add_space(4.0);
+                                            ui.add_space(3.0);
                                             ui.horizontal(|ui| {
-                                                let (dot, _) = ui.allocate_exact_size(Vec2::new(16.0, 20.0), Sense::hover());
-                                                ui.painter().circle_filled(dot.center() - Vec2::new(3.0, 0.0), 3.0, accent);
-                                                ui.vertical(|ui| help_runs(ui, &p.runs, 14.5, text, strong, accent, &mut go)).inner
+                                                let mark = p.num.map_or("\u{2022}".to_string(), |n| format!("{n}."));
+                                                let (r, _) = ui.allocate_exact_size(Vec2::new(22.0, 19.0), Sense::hover());
+                                                ui.painter().text(egui::pos2(r.right() - 7.0, r.top() + 1.0), Align2::RIGHT_TOP, mark, FontId::proportional(14.0), text);
+                                                ui.vertical(|ui| help_runs(ui, &p.runs, 14.0, text, strong, (link, chip), &mut go)).inner
                                             })
                                             .inner
                                         }
                                         HelpKind::Code => {
                                             ui.add_space(8.0);
-                                            let code_bg = if v.dark_mode { Color32::from_gray(38) } else { Color32::from_rgb(245, 247, 250) };
-                                            let r = egui::Frame::new().fill(code_bg).stroke(egui::Stroke::new(1.0_f32, line)).corner_radius(8).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+                                            let r = egui::Frame::new().fill(chip).corner_radius(3).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
                                                 ui.set_width(ui.available_width());
                                                 ui.label(RichText::new(p.text()).monospace().size(13.0).color(strong));
                                             });
-                                            ui.add_space(2.0);
                                             r.response
                                         }
-                                        HelpKind::Tip | HelpKind::Note => {
+                                        HelpKind::Image => {
+                                            // scaled to the column, never above its own size; a thin border and the caption below
                                             ui.add_space(12.0);
-                                            let tip = p.kind == HelpKind::Tip;
-                                            let c = if tip { accent } else { Color32::from_rgb(214, 140, 0) };
-                                            let r = egui::Frame::new().fill(c.gamma_multiply(0.08)).corner_radius(8).inner_margin(egui::Margin { left: 16, right: 14, top: 10, bottom: 10 }).show(ui, |ui| {
-                                                ui.set_width(ui.available_width());
-                                                ui.horizontal(|ui| {
-                                                    if let Some(t) = &icons {
-                                                        let (ir, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
-                                                        help_icon(ui, t, if tip { HELP_TIP } else { HELP_NOTE }, ir, c);
-                                                    }
-                                                    ui.vertical(|ui| {
-                                                        ui.label(RichText::new(tr(if tip { "Tip" } else { "Note" })).size(13.0).strong().color(c));
-                                                        help_runs(ui, &p.runs, 14.0, text, strong, accent, &mut go);
-                                                    });
-                                                });
-                                            });
-                                            let rr = r.response.rect;
-                                            ui.painter().rect_filled(Rect::from_min_size(rr.left_top(), Vec2::new(4.0, rr.height())), egui::CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }, c);
+                                            let tex = p.src.as_deref().and_then(|src| help_image(ctx, &dir, src));
+                                            let r = match &tex {
+                                                Some(t) => {
+                                                    let natural = t.size_vec2() / ctx.pixels_per_point();
+                                                    let size = natural * (ui.available_width() / natural.x).min(1.0);
+                                                    let r = ui.add(egui::Image::new((t.id(), size)));
+                                                    ui.painter().rect_stroke(r.rect, 0.0, egui::Stroke::new(1.0_f32, line), egui::StrokeKind::Outside);
+                                                    r
+                                                }
+                                                None => ui.label(RichText::new(format!("[{}]", p.text())).size(12.5).color(weak)),
+                                            };
                                             ui.add_space(4.0);
-                                            r.response
+                                            ui.label(RichText::new(tr(&p.text())).size(12.5).color(weak));
+                                            ui.add_space(14.0);
+                                            r
                                         }
                                     };
                                     if p.id.is_some() && p.id == *anchor {
@@ -5493,27 +5460,23 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                         *anchor = None;
                                     }
                                 }
-                                // previous / next topic
-                                if let Some(i) = pos.filter(|_| !home) {
-                                    ui.add_space(30.0);
+                                // previous / next topic: one line under a rule
+                                if let Some(i) = pos {
+                                    ui.add_space(28.0);
                                     ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0_f32, line));
-                                    ui.add_space(16.0);
-                                    let cw = (ui.available_width() - 12.0) / 2.0;
+                                    ui.add_space(12.0);
                                     ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 12.0;
-                                        for (j, label, right) in [(i.checked_sub(1), "Previous", false), (Some(i + 1).filter(|j| *j < topics.len()), "Next", true)] {
-                                            let (rect, r) = ui.allocate_exact_size(Vec2::new(cw, 58.0), if j.is_some() { Sense::click() } else { Sense::hover() });
-                                            let Some(j) = j else { continue };
-                                            let hot = r.hovered();
-                                            let pnt = ui.painter();
-                                            pnt.rect(rect, 10.0, if hot { accent.gamma_multiply(0.05) } else { paper }, egui::Stroke::new(1.0_f32, if hot { accent.gamma_multiply(0.6) } else { line }), egui::StrokeKind::Inside);
-                                            let (align, x) = if right { (Align2::RIGHT_TOP, rect.right() - 16.0) } else { (Align2::LEFT_TOP, rect.left() + 16.0) };
-                                            let arrow = if right { format!("{} \u{2192}", tr(label)) } else { format!("\u{2190} {}", tr(label)) };
-                                            pnt.text(egui::pos2(x, rect.top() + 11.0), align, arrow, FontId::proportional(11.5), weak);
-                                            pnt.text(egui::pos2(x, rect.top() + 29.0), align, tr(&topics[j].1), FontId::proportional(14.5), accent);
-                                            if r.on_hover_cursor(hand).clicked() {
+                                        if let Some(j) = i.checked_sub(1) {
+                                            if ui.add(egui::Link::new(RichText::new(format!("\u{2039} {}", tr(&topics[j].1))).size(13.5).color(link))).on_hover_cursor(hand).clicked() {
                                                 go = Some(topics[j].0.clone());
                                             }
+                                        }
+                                        if let Some(j) = Some(i + 1).filter(|j| *j < topics.len()) {
+                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                if ui.add(egui::Link::new(RichText::new(format!("{} \u{203A}", tr(&topics[j].1))).size(13.5).color(link))).on_hover_cursor(hand).clicked() {
+                                                    go = Some(topics[j].0.clone());
+                                                }
+                                            });
                                         }
                                     });
                                 }
