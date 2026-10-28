@@ -4658,8 +4658,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if d.at(13.0, 199.0, 42.0, 10.0, |ui| ui.add_enabled(on, egui::RadioButton::new(!adv.socks5, tr("Socks 4")))).clicked() {
                     adv.socks5 = false;
                 }
-                // ureq always hands the host name to the socks proxy (remote DNS, socks4a/5), so it stays ticked
-                d.at(69.0, 186.0, 50.0, 10.0, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut true, tr("Proxy DNS"))));
+                let mut dns = !adv.local_dns;
+                d.at(69.0, 186.0, 50.0, 10.0, |ui| ui.add_enabled(on && adv.socks5, egui::Checkbox::new(&mut dns, tr("Proxy DNS"))));
+                adv.local_dns = !dns;
                 d.text(14.0, 213.0, 237.0, 19.0, "Note: New Download Manager will use socks only for the protocols that are NOT checked above");
                 if d.button(13.0, 240.0, 63.0, 14.0, "Get system", true) {
                     // Internet Options' per-protocol proxies ("https=h:p;ftp=h:p;socks=h:p")

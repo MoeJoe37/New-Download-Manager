@@ -291,6 +291,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_proxy_maps() {
+        assert_eq!(agent_proxy("socks5h://u:p@sx:1080"), "socks5://u:p@sx:1080");
+        let local = agent_proxy("socks5://sx:1080");
+        assert!(local.starts_with("socks5://") && local.contains("@127.0.0.1:"), "{local}");
+        assert_eq!(agent_proxy("socks5://sx:1080"), local, "one server per route");
+        assert_eq!(agent_proxy("ftp://fx:21"), "");
+        assert_eq!(agent_proxy("http://px:3128"), "http://px:3128");
+        assert_eq!(agent_proxy(""), "");
+    }
+
+    #[test]
     fn local_proxy_relays_http() {
         let url = format!("http://localhost:{}/", hello());
         assert_eq!(crate::engine::agent(&local_proxy(""), "").get(&url).call().unwrap().into_string().unwrap(), "hello");

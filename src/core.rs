@@ -406,6 +406,9 @@ pub struct AdvProxy {
     pub socks_pass: String,
     /// Socks 5 (else 4).
     pub socks5: bool,
+    /// "Proxy DNS" unticked: NDM looks names up itself and gives the SOCKS 5 server the address.
+    /// Missing in older state files, which keeps their behaviour (the proxy looks names up).
+    pub local_dns: bool,
     /// FTP proxy (logs in as user@host).
     pub ftp_on: bool,
     pub ftp_host: String,
@@ -591,7 +594,7 @@ impl Settings {
                 if !server.contains('=') {
                     return proxy_url("http", server.trim(), "", "", "");
                 }
-                pick(scheme).map(|hp| proxy_url("http", &hp, "", "", "")).or_else(|| pick("socks").map(|hp| proxy_url("socks5", &hp, "", "", ""))).unwrap_or_default()
+                pick(scheme).map(|hp| proxy_url("http", &hp, "", "", "")).or_else(|| pick("socks").map(|hp| proxy_url("socks5h", &hp, "", "", ""))).unwrap_or_default()
             }
             3 => {
                 if self.proxy_bypass_on && bypassed(&self.proxy_bypass, host) {
@@ -606,7 +609,8 @@ impl Settings {
                     return proxy_url("http", &self.proxy_host, &self.proxy_port, &self.proxy_user, &self.proxy_pass);
                 }
                 if a.socks_on && !a.socks_host.trim().is_empty() {
-                    return proxy_url(if a.socks5 { "socks5" } else { "socks4" }, &a.socks_host, &a.socks_port, &a.socks_user, &a.socks_pass);
+                    let scheme = if !a.socks5 { "socks4" } else if a.local_dns { "socks5" } else { "socks5h" };
+                    return proxy_url(scheme, &a.socks_host, &a.socks_port, &a.socks_user, &a.socks_pass);
                 }
                 String::new()
             }
@@ -881,6 +885,7 @@ impl Core {
             let s = self.settings();
             (s.proxy_for(url), s.user_agent.clone())
         };
+        let proxy = crate::net::agent_proxy(&proxy);
         self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone()
     }
 
@@ -1840,13 +1845,27 @@ mod tests {
     }
 
     #[test]
+    fn old_state_keeps_behaviour() {
+        // what 1.0.4 saved: none of 1.1's fields
+        let s: Settings = serde_json::from_str(r#"{"proxy_mode":3,"proxy_host":"px","proxy_port":"3128","proxy_https":false,
+            "adv":{"socks_on":true,"socks_host":"sx","socks_port":"1080","socks5":true}}"#).unwrap();
+        assert_eq!(s.proxy_for("http://a.com/f"), "http://px:3128");
+        assert_eq!(s.proxy_for("https://a.com/f"), "socks5h://sx:1080");
+    }
+
+    #[test]
     fn proxies() {
         let mut s = Settings { proxy_mode: 3, proxy_host: "px".into(), proxy_port: "3128".into(), proxy_user: "u@x".into(), proxy_pass: "p".into(), ..Default::default() };
         assert_eq!(s.proxy_for("http://a.com/f"), "http://u%40x:p@px:3128");
         s.proxy_https = false;
         assert_eq!(s.proxy_for("https://a.com/f"), "");
         s.adv = AdvProxy { socks_on: true, socks_host: "sx".into(), socks_port: "1080".into(), socks5: true, ..Default::default() };
-        assert_eq!(s.proxy_for("https://a.com/f"), "socks5://sx:1080"); // socks for the unticked protocol
+        assert_eq!(s.proxy_for("https://a.com/f"), "socks5h://sx:1080"); // socks for the unticked protocol
+        s.adv.local_dns = true;
+        assert_eq!(s.proxy_for("https://a.com/f"), "socks5://sx:1080");
+        s.adv.socks5 = false;
+        assert_eq!(s.proxy_for("https://a.com/f"), "socks4://sx:1080");
+        (s.adv.socks5, s.adv.local_dns) = (true, false);
         s.adv.https_on = true;
         s.adv.https_host = "hx:8443".into();
         assert_eq!(s.proxy_for("https://a.com/f"), "http://hx:8443");
