@@ -15,22 +15,22 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// "socks5h://[u:p@]h:p"   SOCKS 5, the proxy looks the name up
 /// "socks5://[u:p@]h:p"    SOCKS 5, NDM looks the name up and sends the address
 /// "socks4://h:p"          SOCKS 4 (always an address)
-/// "nic://<name>"          bound to that network
+/// "nic://<name>"          bound to that network (name percent-encoded)
 /// Connect timeout 20 s, like the engine's agents.
 pub fn connect(route: &str, host: &str, port: u16) -> io::Result<TcpStream> {
     let route = route.trim();
     if route.is_empty() {
         return connect_any(lookup(host, port)?, |a| TcpStream::connect_timeout(&a, CONNECT_TIMEOUT));
     }
-    let bad = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
-    let u = url::Url::parse(route).map_err(|e| bad(format!("bad route {route}: {e}")))?;
     let dec = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned();
-    if u.scheme() == "nic" {
-        let name = dec(u.host_str().unwrap_or_default());
+    if let Some(name) = route.strip_prefix("nic://") {
+        let name = dec(name);
         let nic = crate::win::nics().into_iter().find(|n| n.name == name).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("network {name} is gone")))?;
         let addrs: Vec<SocketAddr> = lookup(host, port)?.into_iter().filter(|a| nic.ips.iter().any(|ip| ip.is_ipv4() == a.is_ipv4())).collect();
         return connect_any(addrs, |a| connect_on(&nic, a));
     }
+    let bad = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
+    let u = url::Url::parse(route).map_err(|e| bad(format!("bad route {route}: {e}")))?;
     let proxy = (u.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string(), u.port().unwrap_or(1080));
     let (user, pass) = (dec(u.username()), dec(u.password().unwrap_or_default()));
     let five = |target: socks::TargetAddr| {

@@ -44,6 +44,9 @@ pub struct Seg {
     /// A connection is working on this segment.
     #[serde(skip)]
     pub owned: bool,
+    /// The network of this segment's connection ("" = the default one).
+    #[serde(skip)]
+    pub net: String,
 }
 
 impl Seg {
@@ -164,6 +167,9 @@ pub struct Job {
     pub ignore_date: AtomicBool,
     /// Failed runs in a row; the queue retries up to its "Number of retries" (template 306).
     pub fails: AtomicU32,
+    /// "Download over several network connections at once": (network, its agent), set by the core
+    /// before each start. Connection c goes over lanes[c % n]; empty = the job's agent.
+    pub lanes: Mutex<Vec<(String, ureq::Agent)>>,
 }
 
 type Body = Box<dyn Read + Send + Sync>;
@@ -799,6 +805,7 @@ impl Job {
             set_date: AtomicBool::new(false),
             ignore_date: AtomicBool::new(false),
             fails: AtomicU32::new(0),
+            lanes: Mutex::new(vec![]),
         })
     }
 
@@ -888,6 +895,9 @@ impl Job {
         if crate::stream::is_manifest(&url) || self.info().stream {
             return crate::stream::run(self, agent, global);
         }
+        // streams above stay on one network; here connection c goes over lane c % n
+        let lanes = self.lanes.lock().unwrap().clone();
+        let lane = |c: usize| lanes.get(c % lanes.len().max(1)).map_or((agent, ""), |(n, a)| (a, n.as_str()));
         let mut first = None;
         // "Look up files in IE cache before downloading": a cached copy is offered to the
         // server as If-Modified-Since; on 304 Not Modified (0x7573) the cached file is copied into place.
@@ -898,11 +908,15 @@ impl Job {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
                 (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), stream: false }, r)
             } else {
-                let mut req = request(agent, &url, &referrer, &cookies).set("Range", "bytes=0-");
-                if let Some((_, since)) = &cached {
-                    req = req.set("If-Modified-Since", since);
-                }
-                let r = call(req)?;
+                let first_req = |agent: &ureq::Agent| {
+                    let mut req = request(agent, &url, &referrer, &cookies).set("Range", "bytes=0-");
+                    if let Some((_, since)) = &cached {
+                        req = req.set("If-Modified-Since", since);
+                    }
+                    call(req)
+                };
+                // a first network that doesn't answer leaves the download to the default one
+                let r = first_req(lane(0).0).or_else(|e| if lanes.is_empty() { Err(e) } else { first_req(agent) })?;
                 if let (304, Some((file, _))) = (r.status(), &cached) {
                     drop(r);
                     let mut i = self.info();
@@ -970,6 +984,7 @@ impl Job {
             let mut hs = Vec::new();
             let mut last = Instant::now();
             let mut started = false;
+            let mut conn = 0;
             loop {
                 let (done, live): (Vec<_>, Vec<_>) = hs.into_iter().partition(|h: &thread::ScopedJoinHandle<_>| h.is_finished());
                 errors.extend(done.into_iter().filter_map(|h| h.join().unwrap_or(Some("worker panicked".into()))));
@@ -988,7 +1003,9 @@ impl Job {
                     match self.claim() {
                         Some(k) => {
                             let pre = first.take();
-                            hs.push(sc.spawn(move || self.worker(k, part, agent, global, pre)));
+                            let (agent, net) = lane(conn);
+                            conn += 1;
+                            hs.push(sc.spawn(move || self.worker(k, part, (agent, net), global, pre)));
                             started = true;
                         }
                         None => break,
@@ -1037,13 +1054,17 @@ impl Job {
         }
     }
 
-    fn worker(&self, mut k: usize, part: &Path, agent: &ureq::Agent, global: &Limiter, mut pre: Option<Body>) -> Option<String> {
+    fn worker(&self, mut k: usize, part: &Path, (agent, net): (&ureq::Agent, &str), global: &Limiter, mut pre: Option<Body>) -> Option<String> {
         let mut fails = 0;
         loop {
             if self.stopping() {
                 return None;
             }
-            let before = self.info().segs[k].next;
+            let before = {
+                let mut i = self.info();
+                i.segs[k].net = net.to_string();
+                i.segs[k].next
+            };
             match self.fetch(k, part, agent, global, pre.take()) {
                 Ok(()) if self.stopping() => return None,
                 Err(e) if e == CHANGED => {
@@ -1056,14 +1077,22 @@ impl Job {
                 },
                 Err(e) => {
                     fails = if self.info().segs[k].next > before { 1 } else { fails + 1 };
-                    self.info().segs[k].info = format!("Error: {e}, retrying...");
+                    {
+                        // released before the wait, so the other connections (other networks) can take it
+                        let mut i = self.info();
+                        i.segs[k].info = format!("Error: {e}, retrying...");
+                        i.segs[k].owned = false;
+                    }
                     if fails > RETRIES {
-                        self.info().segs[k].owned = false;
                         return Some(e);
                     }
                     let until = Instant::now() + Duration::from_secs(2u64.pow(fails).min(30));
                     while !self.stopping() && Instant::now() < until {
                         thread::sleep(Duration::from_millis(100));
+                    }
+                    match self.claim() {
+                        Some(n) => k = n,
+                        None => return None,
                     }
                 }
             }
@@ -1192,7 +1221,7 @@ impl Job {
         let mid = best.next + best.left() / 2;
         let stop = best.stop;
         i.segs[k].stop = Some(mid);
-        i.segs.push(Seg { start: mid, next: mid, stop, info: String::new(), owned: true });
+        i.segs.push(Seg { start: mid, next: mid, stop, owned: true, ..Default::default() });
         Some(i.segs.len() - 1)
     }
 }
@@ -1440,6 +1469,77 @@ mod tests {
             }
         });
         url
+    }
+
+    /// Range-aware HTTP server trickling ~1.3 MB/s per connection; logs each request's User-Agent.
+    fn serve_ua(data: Arc<Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/f.bin", l.local_addr().unwrap());
+        let log = Arc::new(Mutex::new(vec![]));
+        let log2 = log.clone();
+        thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let (data, log) = (data.clone(), log2.clone());
+                thread::spawn(move || {
+                    let mut r = BufReader::new(&s);
+                    let (mut range, mut line) = ((0, data.len() - 1), String::new());
+                    while r.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                        if let Some(v) = strip_ci(&line, "user-agent: ") {
+                            log.lock().unwrap().push(v.trim().to_string());
+                        } else if let Some(v) = strip_ci(&line, "range: bytes=") {
+                            let (a, b) = v.trim().split_once('-').unwrap();
+                            range = (a.parse().unwrap(), b.parse().unwrap_or(data.len() - 1).min(data.len() - 1));
+                        }
+                        line.clear();
+                    }
+                    let (a, b) = range;
+                    let mut w = &s;
+                    let _ = w.write_all(format!("HTTP/1.1 206 Partial\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\n\r\n", data.len(), b + 1 - a).as_bytes());
+                    for c in data[a..=b].chunks(64 * 1024) {
+                        if w.write_all(c).is_err() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                });
+            }
+        });
+        (url, log)
+    }
+
+    fn lanes_run(lanes: Vec<(String, ureq::Agent)>, tag: &str) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+        let data: Arc<Vec<u8>> = Arc::new((0..4 * 1024 * 1024 + 3).map(|i: u32| (i * 17 % 249) as u8).collect());
+        let (url, log) = serve_ua(data.clone());
+        let dir = std::env::temp_dir().join(format!("ndm-test-lanes-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let j = Job::new(Info { conns: 4, ..info(url, &dir) });
+        *j.lanes.lock().unwrap() = lanes;
+        j.start(agent("", "main"), Arc::new(Limiter::default()));
+        let until = Instant::now() + Duration::from_secs(60);
+        while j.running() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(20));
+        }
+        (j, data, log, dir)
+    }
+
+    #[test]
+    fn segments_use_every_lane() {
+        let (j, data, log, dir) = lanes_run(vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))], "every");
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        let uas = log.lock().unwrap();
+        assert!(uas.iter().any(|u| u == "lane-a") && uas.iter().any(|u| u == "lane-b") && !uas.iter().any(|u| u == "main"), "{uas:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dead_lane_doesnt_fail_download() {
+        // port 9 refuses: every connection on the "dead" network fails at once
+        let (j, data, _, dir) = lanes_run(vec![("ok".into(), agent("", "")), ("dead".into(), agent("socks5://127.0.0.1:9", ""))], "dead");
+        assert!(!j.running(), "finished within 60 s");
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// `FTP` is global and tests run in parallel: every FTP test holds this.

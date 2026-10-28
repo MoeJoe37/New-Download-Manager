@@ -204,6 +204,10 @@ pub struct Settings {
     pub proxy_https: bool,
     /// "ftp": ftp:// addresses go through the manual HTTP proxy (which does the FTP).
     pub proxy_ftp: bool,
+    /// Connection page: "Download over several network connections at once", and the networks the
+    /// user unticked in the Networks dialog.
+    pub multi_net: bool,
+    pub nets_off: Vec<String>,
     /// Proxy / Socks page: "Use proxy/socks from a browser's request if there are download errors for the
     /// downloads intercepted from the browser" (`Info::browser_proxy`, `Core::start_now`).
     pub proxy_browser: bool,
@@ -493,6 +497,8 @@ impl Default for Settings {
             proxy_http: true,
             proxy_https: true,
             proxy_ftp: false,
+            multi_net: false,
+            nets_off: vec![],
             proxy_browser: false,
             proxy_bypass_on: false,
             proxy_bypass: String::new(),
@@ -622,6 +628,11 @@ impl Settings {
             }
             _ => String::new(),
         }
+    }
+
+    /// Several networks for this download: only http(s) that goes direct, since a proxy has one way out.
+    pub fn use_lanes(&self, url: &str) -> bool {
+        self.multi_net && !url.trim().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("ftp://")) && self.proxy_for(url).is_empty()
     }
 
     /// Adds the saved site login to a URL that has none. A site matches its host and subdomains.
@@ -893,6 +904,30 @@ impl Core {
         self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone()
     }
 
+    /// The networks `url` is downloaded over, each with its agent: none unless the setting is on, the
+    /// address goes direct, NDM can choose the network and at least two ticked networks are up.
+    pub fn lanes(&self, url: &str) -> Vec<(String, ureq::Agent)> {
+        let (on, off, ua) = {
+            let s = self.settings();
+            (s.use_lanes(url), s.nets_off.clone(), s.user_agent.clone())
+        };
+        if !on || !crate::net::nic_supported() {
+            return vec![];
+        }
+        let nets: Vec<String> = crate::win::nics().into_iter().map(|n| n.name).filter(|n| !off.contains(n)).collect();
+        if nets.len() < 2 {
+            return vec![];
+        }
+        let mut agents = self.agents.lock().unwrap();
+        nets.into_iter()
+            .map(|n| {
+                let proxy = crate::net::local_proxy(&format!("nic://{}", percent_encoding::utf8_percent_encode(&n, percent_encoding::NON_ALPHANUMERIC)));
+                let a = agents.entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone();
+                (n, a)
+            })
+            .collect()
+    }
+
     pub fn new_info(&self, url: &str) -> Info {
         let s = self.settings();
         Info {
@@ -1026,7 +1061,9 @@ impl Core {
             None => bp,
         };
         // ponytail: used from the next start (Resume, queue retries), not by restarting the failed one at once
-        let agent = if on && !bp.is_empty() && job.fails.load(Relaxed) > 0 { engine::agent(&bp, &ua) } else { self.agent(&url) };
+        let browser = on && !bp.is_empty() && job.fails.load(Relaxed) > 0;
+        let agent = if browser { engine::agent(&bp, &ua) } else { self.agent(&url) };
+        *job.lanes.lock().unwrap() = if browser { vec![] } else { self.lanes(&url) };
         job.start(agent, self.limiter.clone());
     }
 
@@ -1857,7 +1894,18 @@ mod tests {
         assert_eq!(s.proxy_for("https://a.com/f"), "socks5h://sx:1080");
         // ftp not ticked goes by SOCKS, as the Advanced dialog's note says
         assert_eq!(s.proxy_for("ftp://a.com/f"), "socks5h://sx:1080");
-        assert!(!s.proxy_ftp);
+        assert!(!s.proxy_ftp && !s.multi_net);
+    }
+
+    #[test]
+    fn lanes_only_for_direct() {
+        let mut s = Settings { multi_net: true, ..Default::default() };
+        assert!(s.use_lanes("http://a.com/f") && !s.use_lanes("ftp://a.com/f"));
+        (s.proxy_mode, s.proxy_host) = (3, "px".into());
+        assert!(!s.use_lanes("http://a.com/f"));
+        s.multi_net = false;
+        (s.proxy_mode, s.proxy_host) = (0, String::new());
+        assert!(!s.use_lanes("http://a.com/f"));
     }
 
     #[test]

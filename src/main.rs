@@ -1151,6 +1151,8 @@ enum Dialog {
     AdvProxy { adv: core::AdvProxy },
     /// A plain message box.
     Info { title: String, text: String },
+    /// Connection page's "Networks...": the networks a download is spread over; `off` = unticked.
+    Networks { nics: Vec<net::Nic>, off: Vec<String> },
     /// Download limits exceeded! (template 194).
     QuotaHit { text: String },
     /// "Enter queue name" (template 310). `files` are moved into the new queue.
@@ -3339,6 +3341,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Columns { .. } => ("Columns".into(), tpl(236.0, 177.0)),
             Dialog::Find { .. } => ("Find file".into(), tpl(230.0, 148.0)),
             Dialog::ServerConn { .. } => ("Max. connections number for a server".into(), tpl(221.0, 89.0)),
+            Dialog::Networks { nics, .. } => ("Networks".into(), tpl(240.0, 66.0 + 12.0 * nics.len().max(1) as f32)),
             Dialog::QueueName { .. } => ("Enter queue name".into(), tpl(186.0, 74.0)),
             Dialog::QuotaHit { .. } => ("Download limits exceeded!".into(), tpl(339.0, 93.0)),
             Dialog::Info { title, .. } => (title.clone(), tpl(260.0, 70.0)),
@@ -3704,7 +3707,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 let got = sg.map_or(0, |s| s.next - s.start);
                                 let info = match sg {
                                     Some(s) if s.done() => tr("Disconnect."),
-                                    Some(s) => tr(&s.info),
+                                    Some(s) if s.net.is_empty() => tr(&s.info),
+                                    Some(s) => format!("{} ({})", tr(&s.info), s.net),
                                     None => String::new(),
                                 };
                                 let mut x = row.left();
@@ -4050,6 +4054,17 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             d2.check(18.0, 202.0, 209.0, 10.0, &mut s.quota_warn, "Show warning before stopping downloads");
                         } else {
                             d2.check_off(18.0, 202.0, 209.0, 10.0, "Show warning before stopping downloads");
+                        }
+                        if net::nic_supported() {
+                            d2.check(11.0, 224.0, 190.0, 10.0, &mut s.multi_net, "Download over several network connections at once");
+                            d2.label(23.0, 237.0, 178.0, 10.0, "Each network needs its own internet connection");
+                        } else {
+                            s.multi_net = false;
+                            d2.check_off(11.0, 224.0, 190.0, 10.0, "Download over several network connections at once");
+                            d2.label(23.0, 237.0, 178.0, 10.0, "Not available: Linux 5.7 or later is needed to choose the network");
+                        }
+                        if d2.button(205.0, 222.0, 50.0, 14.0, "Networks...", s.multi_net) {
+                            self.open(Dialog::Networks { nics: win::nics(), off: s.nets_off.clone() });
                         }
                     }
                     6 => {
@@ -4989,6 +5004,30 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.opt_patch.push(Box::new(move |s: &mut Settings| s.panel_skip = t));
                 }
                 !(ok || d.button(136.0, 102.0, 50.0, 14.0, "Cancel", true))
+            }
+            Dialog::Networks { nics, off } => {
+                let mut d = dlu::D::new(ui);
+                d.text(7.0, 5.0, 226.0, 26.0, "NDM spreads each download's connections over the ticked networks. Two networks on the same router add no speed.");
+                if nics.is_empty() {
+                    d.label(15.0, 34.0, 210.0, 10.0, "No network with an internet connection was found");
+                }
+                for (k, n) in nics.iter().enumerate() {
+                    let mut on = !off.contains(&n.name);
+                    let ips = n.ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>().join(", ");
+                    d.at(15.0, 34.0 + 12.0 * k as f32, 210.0, 10.0, |ui| ui.checkbox(&mut on, format!("{}   {ips}", n.name)));
+                    if on {
+                        off.retain(|o| *o != n.name);
+                    } else if !off.contains(&n.name) {
+                        off.push(n.name.clone());
+                    }
+                }
+                let y = 44.0 + 12.0 * nics.len().max(1) as f32;
+                let ok = d.button(64.0, y, 50.0, 14.0, "OK", true);
+                if ok {
+                    let off = off.clone();
+                    self.opt_patch.push(Box::new(move |s: &mut Settings| s.nets_off = off));
+                }
+                !(ok || d.button(126.0, y, 50.0, 14.0, "Cancel", true))
             }
             Dialog::ServerConn { orig, server, n } => {
                 let mut d = dlu::D::new(ui);
