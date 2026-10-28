@@ -32,7 +32,7 @@ case $pm in
     dnf) install xorg-x11-server-Xvfb mesa-libGL mesa-libEGL mesa-dri-drivers libX11 libXcursor libXrandr libXi libxkbcommon \
             libxkbcommon-x11 fontconfig fribidi harfbuzz dejavu-sans-fonts dbus-libs ;;
     zypper) install xorg-x11-server-Xvfb Mesa-libGL1 Mesa-libEGL1 Mesa-dri libX11-6 libXcursor1 libXrandr2 libXi6 libxkbcommon0 \
-            libxkbcommon-x11-0 fontconfig libfribidi0 libharfbuzz0 dejavu-fonts libdbus-1-3 ;;
+            libxkbcommon-x11-0 fontconfig libfribidi0 libharfbuzz0 dejavu-fonts libdbus-1-3 tar gzip ;;
     pacman) pacman -Syu --noconfirm --needed -q xorg-server-xvfb mesa libx11 libxcursor libxrandr libxi libxkbcommon \
             libxkbcommon-x11 fontconfig fribidi harfbuzz ttf-dejavu dbus >/dev/null ;;
 esac

@@ -24,12 +24,17 @@ xdo="$(ldd "$bin" | awk '/libxdo\.so/{print $3; exit}')"
 [ -f "$xdo" ] || { echo "libxdo not found (install libxdo-dev)"; exit 1; }
 
 # NDM's folder: the program, its help, languages and browser extension beside it, libxdo in lib/
-app() { # dir
-    mkdir -p "$1/lib"
-    install -m 755 "$bin" "$1/ndm"
-    cp -r help Languages extension LICENSE "$1/"
-    install -m 644 "$xdo" "$1/lib/"
-    patchelf --set-rpath '$ORIGIN/lib' "$1/ndm"
+# (executable, as rpm only reads the libraries an executable needs). The .tar.gz, which has no
+# package manager to bring them, also carries the two X libraries libxdo needs beyond GTK's.
+app() { # dir [extra libraries...]
+    local dir="$1"
+    shift
+    mkdir -p "$dir/lib"
+    install -m 755 "$bin" "$dir/ndm"
+    cp -r help Languages extension LICENSE "$dir/"
+    install -m 755 "$xdo" "$@" "$dir/lib/"
+    patchelf --set-rpath '$ORIGIN/lib' "$dir/ndm"
+    patchelf --set-rpath '$ORIGIN' "$dir/lib/$(basename "$xdo")"
 }
 desktop() { # Exec
     cat <<EOF
@@ -57,7 +62,7 @@ install -m 644 LICENSE "$root/usr/share/doc/ndm/copyright"
 # .deb: dependencies from the libraries ndm links (libxdo is bundled, the tray library is opened at run time)
 mkdir -p "$work/shlibs/debian"
 printf 'Source: ndm\n\nPackage: ndm\nArchitecture: amd64\n' > "$work/shlibs/debian/control"
-depends="$(cd "$work/shlibs" && dpkg-shlibdeps -O -l"$root/usr/lib/ndm/lib" -xlibxdo3 --ignore-missing-info "$root/usr/lib/ndm/ndm" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"
+depends="$(cd "$work/shlibs" && dpkg-shlibdeps -O -l"$root/usr/lib/ndm/lib" -xlibxdo3 --ignore-missing-info "$root/usr/lib/ndm/ndm" "$root/usr/lib/ndm/lib/$(basename "$xdo")" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"
 [ -n "$depends" ] || { echo "dpkg-shlibdeps found no dependencies"; exit 1; }
 # newer Debian and Ubuntu renamed libgdk-pixbuf2.0-0
 depends="$(echo "$depends" | sed 's/libgdk-pixbuf2\.0-0\( ([^)]*)\)\?/libgdk-pixbuf-2.0-0 | &/')"
@@ -119,7 +124,11 @@ cp "$rpmtop"/RPMS/x86_64/ndm-"$version"-1.x86_64.rpm "$out/"
 
 # .tar.gz: the same folder to run in place, with its menu entry and icon to copy if wanted
 tdir="$work/ndm-$version"
-app "$tdir"
+xlibs=()
+for l in libXtst.so.6 libXinerama.so.1; do
+    xlibs+=("$(ldd "$xdo" | awk -v l="$l" '$1 == l {print $3; exit}')")
+done
+app "$tdir" "${xlibs[@]}"
 desktop ndm > "$tdir/ndm.desktop"
 install -m 644 assets/ndm.png "$tdir/ndm.png"
 tar -C "$work" -czf "$out/ndm-$version-x86_64.tar.gz" "ndm-$version"
