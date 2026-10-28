@@ -1,41 +1,61 @@
 <html><head><title>Starting downloads</title></head><body>
 <h1>Starting downloads</h1>
-<p class="lead">There are several ways to hand a file to NDM. Most of the time you won't think about it at all: click a link in your browser and NDM asks where to save it.</p>
+<p class="lead">You can hand a file to NDM from the browser, by typing or copying its address, by dragging a link, as a numbered series, from a list or from the command line. Each way ends in the Download File Info window, unless you turned it off.</p>
 
 <h2 id="Browser">From your browser</h2>
-<p>The NDM extension works in Chrome, Edge, Brave, Opera, Vivaldi and Firefox. When you click a download link, the extension passes it to NDM instead of letting the browser save it, and NDM opens its <b>Download File Info</b> window. If NDM isn't running yet, the extension starts it quietly in the notification area.</p>
+<p>NDM's extension works in Chrome, Edge, Brave, Opera, Vivaldi and Firefox. When you click a link to a file of a listed type, the extension passes it to NDM and the browser doesn't download it. If NDM isn't running, the extension starts it in the notification area.</p>
+<p>To install the extension:</p>
+<ol>
+<li>Open the browser's extensions page (<kbd>chrome://extensions</kbd>, <kbd>edge://extensions</kbd> or <kbd>about:debugging</kbd> in Firefox).</li>
+<li>Turn on developer mode.</li>
+<li>Click <b>Load unpacked</b> and choose the <b>extension</b> folder in NDM's folder. In Firefox, click <b>Load Temporary Add-on</b> and choose manifest.json in that folder. On Linux, see <a href="linux.htm#Extension">The browser extension</a>.</li>
+</ol>
 <ul>
-<li>Only the file types listed in <a href="options.htm#FileTypes">Options → File types</a> are taken over. Sites and addresses on the exception lists stay with the browser.</li>
-<li>Hold <kbd>Del</kbd> while clicking to let the browser download a file, or <kbd>Ins</kbd> to make NDM take it whatever its type. You can change these keys in Options → General → Keys.</li>
-<li>Right-click a link and choose <i>Download with New Download Manager</i>, or right-click a page and choose <i>Download all links with New Download Manager</i> to pick files from every link on it.</li>
-<li>Video and audio players get a small download panel listing the streams the page plays. See <a href="streams.htm">Video and audio streams</a>.</li>
+<li>Only the file types in <a href="options.htm#FileTypes">Options → File types</a> are taken over. Sites and addresses on the exception lists stay with the browser.</li>
+<li>Hold <kbd>Del</kbd> while clicking a link to let the browser download it, or <kbd>Ins</kbd> to give it to NDM whatever its type. <b>Keys...</b> on the General page of Options changes these keys.</li>
+<li>Right-click a link and choose <i>Download with New Download Manager</i>. Right-click a page and choose <i>Download all links with New Download Manager</i> to pick files from every link on it.</li>
+<li>Pages that play video or audio get a small download panel over the player. See <a href="streams.htm">Video and audio streams</a>.</li>
 </ul>
 
 <h2 id="AddURL">Add URL</h2>
-<p>Click <b>Add URL</b> on the toolbar and paste an address: http, https, ftp, or an mms, rtmp or rtsp stream. Tick <i>Use authorization</i> if the server needs a user name and password.</p>
+<p>Click <b>Add URL</b> on the toolbar (or <b>Tasks → Add new download</b>) and enter an address. NDM takes http, https and ftp addresses, and mms, rtmp and rtsp streams. Tick <b>Use authorization</b> when the server asks for a user name and password.</p>
+<p><img src="images/add-url.png" alt="The Enter new address to download window"></p>
 
 <h2 id="Clipboard">Copied addresses</h2>
-<p>With <i>Automatically start downloading of URLs placed to clipboard</i> ticked in Options → General, copying the address of a file of a listed type offers to download it straight away.</p>
+<p>With <b>Automatically start downloading of URLs placed to clipboard</b> ticked on the General page of Options, copying the address of a file of a listed type opens Add URL with that address. Text that was already on the clipboard when you ticked the option is left alone.</p>
 
 <h2 id="Drop">Drag and drop</h2>
-<p>Drag a link from any browser onto the main window, or onto the floating drop target (<b>Tasks → Show drop target</b>), which stays on top of other windows.</p>
+<p>On Windows, drag a link from the browser onto the main window. On both systems you can drag it onto the drop target, a small window that stays on top of other windows: turn it on with <b>Tasks → Show drop target</b>.</p>
 
 <h2 id="Batch">Batch downloads</h2>
-<p><b>Tasks → Add batch download</b> fetches a series of files whose addresses differ only by a number or a letter. Put a <kbd>*</kbd> where the address changes and choose the range:</p>
-<pre>http://www.example.com/photos/img*.jpg   (from 001 to 120)</pre>
+<p><b>Tasks → Add batch download</b> adds a series of files whose addresses differ only by a number or a letter.</p>
+<ol>
+<li>Enter the address with a <kbd>*</kbd> where it changes.</li>
+<li>Choose <b>Numbers</b> or <b>Letters</b> and the range. <b>Wildcard size</b> pads numbers with zeros: 3 gives 001, 002 and so on.</li>
+<li>Check the first and last address shown below, then click <b>OK</b>.</li>
+</ol>
+<p><img src="images/batch.png" alt="Batch download: img001.jpg to img120.jpg"></p>
+<p><b>Tasks → Add batch download from clipboard</b> takes every address on the clipboard instead.</p>
 
 <h2 id="Import">Importing a list</h2>
-<p><b>Tasks → Import</b> adds every address from a text file, or from an export file (.ef2) saved by NDM or another download manager. <b>Tasks → Export</b> saves your own list the same way.</p>
+<p><b>Tasks → Import</b> adds the addresses from a text file (<b>From text file</b>) or from an export file (<b>From NDM export file</b>, .ef2). <b>Tasks → Export</b> writes your list in the same two formats.</p>
 
 <h2 id="CommandLine">Command line</h2>
 <pre>ndm.exe [/d URL] [/p folder] [/f file name] [/n] [/a] [/q] [/s]</pre>
 <ul>
-<li><kbd>/d URL</kbd> downloads the address; <kbd>/p</kbd> saves it in this folder and <kbd>/f</kbd> under this name.</li>
-<li><kbd>/n</kbd> starts without asking any questions; <kbd>/a</kbd> only adds the file to the main queue.</li>
-<li><kbd>/q</kbd> closes NDM once the download is done; <kbd>/s</kbd> starts the main queue.</li>
+<li><kbd>/d URL</kbd> downloads the address. <kbd>/p</kbd> saves it in that folder and <kbd>/f</kbd> under that name.</li>
+<li><kbd>/n</kbd> starts the download without asking. <kbd>/a</kbd> only adds it to the main queue.</li>
+<li><kbd>/q</kbd> closes NDM when the download is done. <kbd>/s</kbd> starts the main queue.</li>
 </ul>
-<p class="tip">If NDM is already running, the running copy takes the command, so scripts can call ndm.exe as often as they like.</p>
+<p>On Linux, give the same switches to the AppImage. When NDM is already running, the running copy takes the command.</p>
 
 <h2 id="FileInfo">The Download File Info window</h2>
-<p>Before a download starts, NDM shows its address, the category it picked and where the file will be saved. Change the category or the path if you like, then click <b>Start Download</b>, or <b>Download Later</b> to put it in a queue for the <a href="scheduler.htm">scheduler</a>.</p>
+<p>Before a download starts, NDM shows its address, the category it picked from the file type, the full path it will save to and the size when the server reports it.</p>
+<p><img src="images/file-info.png" alt="Download File Info for an Ubuntu disk image"></p>
+<ul>
+<li>Change the category or the path, and tick <b>Remember this path</b> to save there next time.</li>
+<li><b>Start Download</b> starts it now and opens its progress window.</li>
+<li><b>Download Later</b> puts it in a queue for the <a href="scheduler.htm">scheduler</a>.</li>
+</ul>
+<p class="note">Options → Downloads → <b>Show start download dialog</b> turns this window off; downloads then start with the category's folder.</p>
 </body></html>

@@ -41,6 +41,7 @@ Name: "autostart"; Description: "Start New Download Manager with Windows"; Group
 Source: "..\target\release\ndm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Languages\*.lng"; DestDir: "{app}\Languages"; Flags: ignoreversion
 Source: "..\help\*.htm"; DestDir: "{app}\help"; Flags: ignoreversion
+Source: "..\help\images\*"; DestDir: "{app}\help\images"; Flags: ignoreversion
 Source: "..\extension\*"; DestDir: "{app}\extension"; Flags: ignoreversion recursesubdirs
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 

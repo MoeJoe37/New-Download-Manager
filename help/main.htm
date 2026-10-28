@@ -1,30 +1,32 @@
 <html><head><title>The main window</title></head><body>
 <h1>The main window</h1>
-<p class="lead">Everything NDM is doing, at a glance: a toolbar for the common actions, categories on the left and your downloads on the right.</p>
+<p class="lead">The toolbar holds the common commands, the category tree on the left sorts your downloads, and the list on the right shows each download's state.</p>
+<p><img src="images/main-window.png" alt="The main window"></p>
 
 <h2 id="Toolbar">Toolbar</h2>
 <ul>
-<li><b>Add URL</b> starts a new download from an address.</li>
-<li><b>Resume</b>, <b>Stop</b> and <b>Stop All</b> control the selected downloads, or all of them.</li>
-<li><b>Delete</b> removes the selected downloads from the list (and, if you choose, their files); <b>Delete Completed</b> clears the finished ones.</li>
-<li><b>Options</b> opens the settings and <b>Scheduler</b> the queues. <b>Start Queue</b> and <b>Stop Queue</b> run or stop a queue; the small arrow picks which one.</li>
+<li><b>Add URL</b> starts a download from an address.</li>
+<li><b>Resume</b> and <b>Stop</b> act on the selected downloads, <b>Stop All</b> on every running one.</li>
+<li><b>Delete</b> removes the selected downloads from the list, and their files if you choose. <b>Delete Completed</b> removes the finished ones.</li>
+<li><b>Options</b> opens the settings and <b>Scheduler</b> the queues. <b>Start Queue</b> and <b>Stop Queue</b> run or stop a queue; the small arrow beside each picks the queue.</li>
 <li><b>Grabber</b> opens the <a href="grabber.htm">Site Grabber</a>.</li>
 </ul>
-<p class="tip">Right-click the toolbar to switch between large and small buttons, pick the Modern or Classic style, or choose which buttons are shown and in what order.</p>
+<p>Right-click the toolbar to choose large or small buttons, the Modern or Classic style, and which buttons are shown.</p>
 
 <h2 id="Categories">Categories</h2>
-<p>The pane on the left sorts your downloads by kind (Compressed, Documents, Music, Programs and Video) under <i>All Downloads</i>, <i>Unfinished</i> and <i>Finished</i>. Each category has its own file extensions and its own folder, so every new download lands in the right place by itself.</p>
-<p>Right-click a category to add, edit or delete categories. <i>Grabber projects</i> lists your saved Site Grabber projects and <i>Queues</i> your download queues.</p>
+<p>The tree on the left shows <i>All Downloads</i>, <i>Unfinished</i> and <i>Finished</i>, each split into Compressed, Documents, Music, Programs and Video. A category has its own file extensions and its own folder, so a new download goes to the folder of its type.</p>
+<p>Right-click a category to add, edit or delete one. <i>Grabber projects</i> lists your saved Site Grabber projects and <i>Queues</i> your queues. <b>View → Hide categories</b> hides the tree.</p>
 
 <h2 id="List">Download list</h2>
 <p>Each row shows the file name, its queue (the <b>Q</b> column), size, status, time left, transfer rate, last try date and description.</p>
 <ul>
-<li>Double-click a row to open the file, or its progress window while it is downloading.</li>
-<li>Right-click for more: open the folder, move or rename the file, refresh an expired download address, add it to a queue or see its properties.</li>
-<li>Right-click the column headers to choose which columns are shown.</li>
+<li>Double-click a finished download to open the file, or an unfinished one to open its progress window.</li>
+<li>Right-click a download to open its folder, move or rename the file, refresh an expired address, add it to a queue or see its properties.</li>
+<li>Right-click the column headers to choose the columns. <kbd>Ctrl</kbd>+<kbd>F</kbd> finds a download by name, description or address.</li>
 </ul>
 
 <h2 id="Tray">Notification area</h2>
-<p>Closing the main window keeps NDM running in the notification area, where it keeps downloading and taking downloads from your browser. Click its icon to bring the window back, or right-click it to start or stop the queue, switch the speed limiter or exit.</p>
-<p class="note">To quit NDM completely, use <b>Tasks → Exit</b>.</p>
+<p>Closing the main window leaves NDM running in the notification area, where it goes on downloading and taking downloads from your browser. Click the icon to bring the window back. Right-click it to open NDM, start or stop the main queue, turn the speed limiter on or off, or exit.</p>
+<p>On Linux the icon appears only on desktops that show tray icons. Without one, see <a href="linux.htm#Tray">The tray icon</a>.</p>
+<p class="note">To quit NDM, use <b>Tasks → Exit</b> or <b>Exit</b> on the icon's menu.</p>
 </body></html>

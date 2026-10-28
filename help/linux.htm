@@ -1,0 +1,52 @@
+<html><head><title>NDM on Linux</title></head><body>
+<h1>NDM on Linux</h1>
+<p class="lead">On Linux, NDM comes as one AppImage file that runs on current distributions without installing. This page covers what differs from Windows.</p>
+
+<h2 id="AppImage">Running the AppImage</h2>
+<ol>
+<li>Download <kbd>NDM-x86_64.AppImage</kbd> from the release page.</li>
+<li>Make it executable: in the file manager, open its properties and tick <b>Allow executing file as program</b>, or run <kbd>chmod +x NDM-x86_64.AppImage</kbd>.</li>
+<li>Double-click it, or run <kbd>./NDM-x86_64.AppImage</kbd>.</li>
+</ol>
+<p>NDM then adds itself to your applications menu, with its icon, so you can start it from there next time. If you move the AppImage, start it once from its new place to update the menu entry.</p>
+<p class="note">Systems without FUSE can't mount the AppImage. Start it with <kbd>./NDM-x86_64.AppImage --appimage-extract-and-run</kbd> instead.</p>
+
+<h2 id="Tray">The tray icon</h2>
+<p>KDE Plasma, Xfce, Cinnamon, MATE and Ubuntu's desktop show NDM's tray icon. Stock GNOME shows it once the AppIndicator extension is installed (gnome-shell-extension-appindicator on most distributions).</p>
+<p>With a tray icon, closing the window keeps NDM running there, as on Windows. Without one:</p>
+<ul>
+<li>closing the window while something is downloading or a queue is running minimizes it, and the downloads go on;</li>
+<li>closing it with nothing running quits NDM;</li>
+<li>starting NDM again from the menu brings the window back.</li>
+</ul>
+
+<h2 id="Wayland">Wayland and X11</h2>
+<p>On Wayland desktops NDM runs through XWayland when it is available, so it can hide its window and keep the drop target on top. Without XWayland it runs on Wayland directly, where hiding to the tray minimizes the window instead.</p>
+
+<h2 id="Extension">The browser extension</h2>
+<p>NDM keeps a copy of its browser extension in <kbd>~/.config/NewDownloadManager/extension</kbd>. Load that folder (see <a href="starting.htm#Browser">From your browser</a>): it stays in place when the AppImage is updated or moved, so the browser keeps finding it.</p>
+<ul>
+<li>NDM registers itself with Chrome, Chromium, Edge, Brave, Vivaldi, Opera and Firefox, including Firefox from Snap.</li>
+<li>Browsers installed as Flatpak, and Chromium from Snap, keep programs outside their sandbox from starting, so they can't hand downloads to NDM.</li>
+</ul>
+
+<h2 id="Files">Where NDM keeps its files</h2>
+<p>Settings and the download list are in <kbd>~/.config/NewDownloadManager</kbd> (or under <kbd>$XDG_CONFIG_HOME</kbd> when it is set). Downloads go to the folders on the Save to page of Options.</p>
+
+<h2 id="Proxy">System proxy</h2>
+<p><b>Use system settings</b> on the Proxy / Socks page reads GNOME's proxy settings (also used by Cinnamon, MATE and Budgie), KDE's, or else the <kbd>http_proxy</kbd>, <kbd>https_proxy</kbd>, <kbd>ftp_proxy</kbd> and <kbd>no_proxy</kbd> environment variables. Advanced browser integration writes GNOME's or KDE's settings.</p>
+
+<h2 id="DialUp">Dial Up / VPN</h2>
+<p>The Dial Up / VPN page lists NetworkManager's VPN, WireGuard, PPPoE and mobile connections. NDM connects one with <kbd>nmcli</kbd> before downloading and can hang it up when a queue is done.</p>
+
+<h2 id="Sounds">Sounds and shutting down</h2>
+<p>Sounds play through <kbd>paplay</kbd>, <kbd>pw-play</kbd> or <kbd>aplay</kbd>, whichever is installed. <b>Turn off computer when done</b> shuts down one minute later (<kbd>shutdown -c</kbd> cancels it), or sleeps or hibernates through systemd.</p>
+
+<h2 id="Limits">Limits on Linux</h2>
+<ul>
+<li>Links can be dropped on the drop target, not on the main window.</li>
+<li>Choosing the network for <a href="segmentation.htm#Networks">several networks at once</a> needs Linux 5.7 or later.</li>
+<li>Sign-in to proxies and sites with NTLM uses the name and password in the address; Kerberos isn't supported.</li>
+<li>"Look up files in browser cache" reads Firefox's cache only.</li>
+</ul>
+</body></html>

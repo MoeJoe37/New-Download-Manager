@@ -1,15 +1,39 @@
 <html><head><title>How NDM downloads a file</title></head><body>
 <h1>How NDM downloads a file</h1>
-<p class="lead">NDM is fast because it never waits on a single connection. Here is what happens between clicking a link and finding the finished file.</p>
+<p class="lead">NDM splits a file into parts and downloads them over several connections at the same time. This page explains how the parts are made, how a download resumes, and how to limit or spread the traffic.</p>
 
-<h2 id="Parts">Parallel parts</h2>
-<p>NDM's first request downloads the file itself. When the server allows fetching parts of a file, NDM opens more connections, one at a time, each fetching a different part. When a connection finishes its part early, it picks up some of the work still left, so every connection stays busy until the very end.</p>
-<p>The progress window shows every connection as a row, and the strip under the progress bar shows which parts have arrived.</p>
+<h2 id="Parts">Connections and parts</h2>
+<p>The first request already downloads the file. When the server accepts requests for parts of a file, NDM adds connections while the download runs:</p>
+<ul>
+<li>at most once a second, doubling the count each time (1, 2, 4, 8…) up to the maximum for the download;</li>
+<li>only while every open connection is receiving data and the speed limits leave room.</li>
+</ul>
+<p>Each new connection takes the second half of the largest part still left. A part is only split when at least 512 KB of it remains, so no part is smaller than 256 KB. When a connection finishes its part, it takes another, so all connections stay busy until the end.</p>
+<p><img src="images/progress.png" alt="The progress window, one row per connection"></p>
+<p>The progress window lists every connection with the amount it has downloaded, and the strip under the progress bar shows which parts have arrived. A connection that fails is retried after 2, 4, 8, 16 and 30 seconds; after 5 failed retries in a row it gives up and the other connections take over its part.</p>
 
 <h2 id="Resume">Resuming</h2>
-<p>A stopped or broken download keeps its parts. Before resuming, NDM checks a few of the bytes it already has against the server's copy; if the file on the server has changed, NDM tells you instead of joining two different files.</p>
-<p class="note">Servers that don't allow parts can only start again from the beginning.</p>
+<p>A stopped or interrupted download keeps its parts. When it resumes, NDM downloads the last 64 bytes of each part again and compares them with what it already has. If they differ, or the server reports a different date for the file, NDM tells you the file has changed instead of joining two different files.</p>
+<p class="note">A server that doesn't accept requests for parts can't resume: the download starts again from the beginning, over one connection.</p>
 
-<h2 id="Connection">Connections and speed</h2>
-<p>The number of connections per download is set in <a href="options.htm#Connection">Options → Connection</a>, where you can also give single servers a lower limit. The speed limiter (right-click the notification area icon) caps the total speed of all downloads, so the rest of your network stays usable.</p>
+<h2 id="Connection">Number of connections and speed</h2>
+<p>The default number of connections is set in <a href="options.htm#Connection">Options → Connection</a>: 1, 2, 4, 8, 16, 24 or 32. The same page sets a lower number for single servers.</p>
+<p><b>Downloads → Speed Limiter</b> limits how fast each file downloads, so the rest of your network stays usable. The icon in the notification area turns it on and off too.</p>
+
+<h2 id="Networks">Several networks at once</h2>
+<p>With two internet connections, for example Wi-Fi and a phone connected by USB, NDM can spread each download's connections over both.</p>
+<ol>
+<li>Open <b>Downloads → Options</b> and go to the <b>Connection</b> page.</li>
+<li>Tick <b>Download over several network connections at once</b>.</li>
+<li>Click <b>Networks...</b> and untick any network you don't want to use.</li>
+</ol>
+<p><img src="images/options-connection.png" alt="Options, Connection page"></p>
+<p><img src="images/networks.png" alt="The Networks window with Wi-Fi and a phone connection"></p>
+<p>NDM opens the connections of a download in turn on each ticked network. If one network stops working, its connections give their parts back and the download finishes over the others.</p>
+<ul>
+<li>Two networks connected to the same router share that router's internet connection, so they add no speed.</li>
+<li>NDM uses one network whenever a proxy, a configuration script or the system proxy applies to the address, for ftp:// addresses, and for video streams.</li>
+<li>Windows may turn Wi-Fi off while a cable is plugged in. To keep both, set the Group Policy <i>Minimize the number of simultaneous connections to the Internet or a Windows Domain</i> to Disabled.</li>
+<li>On Linux, choosing the network needs Linux 5.7 or later. On older systems the option is greyed out.</li>
+</ul>
 </body></html>

@@ -1329,16 +1329,16 @@ fn style(ctx: &egui::Context, dark: bool) {
             break;
         }
     }
-    // Linux: the desktop's own sans-serif, then DejaVu Sans for the symbols it may lack (arrows, ticks);
-    // egui's built-in font has neither
+    // Linux: egui's built-in font stays first (the dialogs are laid out for its widths); the desktop's
+    // sans-serif and DejaVu Sans fill in the symbols it lacks (arrows, ticks) and other scripts
     #[cfg(not(windows))]
     {
         let mut seen = vec![];
-        for (k, (name, face)) in [("sys", "sans-serif"), ("sys_fb", "DejaVu Sans")].into_iter().enumerate() {
+        for (name, face) in [("sys", "sans-serif"), ("sys_fb", "DejaVu Sans")] {
             let Some(f) = win::font_file(face).filter(|f| !seen.contains(f)) else { continue };
             if let Ok(b) = std::fs::read(&f) {
                 fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
-                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(k.min(seen.len()), name.into());
+                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push(name.into());
                 seen.push(f);
             }
         }
@@ -4223,7 +4223,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let (x, y) = e(0.0, 0.0);
                         let mut d2 = dlu::D::new_offset(d.ui, x, y).with_dx(PAGE_DX);
                         d2.page_header(res.5, 36.0, "Proxy / socks configuration");
-                        if d2.button(197.0, 8.0, 63.0, 14.0, "Get System", true) {
+                        // below the page, off the header (whose title ends at 255 DLU)
+                        if d2.button(197.0, 241.0, 63.0, 14.0, "Get System", true) {
                             // Internet Options' proxy into the manual fields ("h:p" or "http=h:p;https=h:p;...")
                             let (_, server, bypass) = win::system_proxy();
                             let hp = server.split(';').find_map(|p| p.strip_prefix("http=")).or_else(|| Some(server.as_str()).filter(|x| !x.contains('='))).unwrap_or("");
@@ -4271,7 +4272,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.edit(22.0, 208.0, 234.0, 17.0, &mut s.proxy_bypass, m && s.proxy_bypass_on);
                         d2.label(20.0, 227.0, 228.0, 10.0, "Separate names by spaces");
                         d2.hline(7.0, 241.0, 254.0);
-                        d2.check(11.0, 244.0, 219.0, 10.0, &mut s.ftp_pasv, "Use FTP in PASV mode");
+                        d2.check(11.0, 244.0, 180.0, 10.0, &mut s.ftp_pasv, "Use FTP in PASV mode");
                     }
                 }
                 if let Some(mut adv) = adv {

@@ -1,26 +1,29 @@
 <html><head><title>Scheduler and queues</title></head><body>
 <h1>Scheduler and queues</h1>
-<p class="lead">Queues download their files a few at a time, in order, whenever you tell them to: overnight, on certain days, or as soon as NDM starts.</p>
+<p class="lead">A queue downloads its files a few at a time, in order. The scheduler starts and stops each queue at the times you choose, or when NDM starts.</p>
+<p><img src="images/scheduler.png" alt="The Scheduler, set to start the main queue at 11 PM every day"></p>
 
 <h2 id="Queues">Queues</h2>
-<p><b>Download Later</b> puts a file in a queue; right-click downloads to move them between queues. The <i>Main Download Queue</i> always exists, and you can create more with <b>New queue</b> in the Scheduler.</p>
+<p><b>Download Later</b> in the Download File Info window puts a file in a queue. Right-click downloads in the list to move them to another queue. The <i>Main download queue</i> and the <i>Synchronization queue</i> always exist; <b>New queue</b> in the Scheduler adds more.</p>
+<p>Open the Scheduler with the toolbar button or <b>Downloads → Scheduler</b>. The <b>Files in the queue</b> tab shows a queue's files, their order and how many download at once.</p>
 
-<h2 id="Schedule">Schedule</h2>
-<p>For each queue, choose:</p>
-<ul>
-<li>when it starts: once, or every day or on chosen days at a set time;</li>
-<li>when it stops;</li>
-<li>how many files it downloads at once and how often a failed file is retried.</li>
-</ul>
-<p>A queue can also start whenever NDM starts.</p>
+<h2 id="Schedule">Start and stop times</h2>
+<p>To download overnight:</p>
+<ol>
+<li>Choose the queue on the left.</li>
+<li>Tick <b>Start download at</b> and enter the time.</li>
+<li>Choose <b>Once at</b> for one time only, or <b>Daily</b> and tick the days.</li>
+<li>Tick <b>Stop download at</b> to stop the queue in the morning.</li>
+<li>Click <b>Apply</b>.</li>
+</ol>
+<p><b>Start download on New Download Manager startup</b> starts the queue whenever NDM starts. <b>Number of retries for each file if downloading failed</b> sets how often a failed file is tried again.</p>
 
 <h2 id="Done">When a queue is done</h2>
-<p>Once a queue has finished, NDM can open a file, hang up a dial-up or VPN connection, exit, or shut down, sleep or hibernate the computer.</p>
+<p>When a queue has finished, NDM can open a file, hang up a dial-up or VPN connection, exit, or shut down, sleep or hibernate the computer. On Windows, <b>Force processes to terminate</b> closes programs that would hold up the shutdown.</p>
 
 <h2 id="Sync">Synchronization queue</h2>
-<p>Files in a synchronization queue stay in it after they finish. Each time the queue runs, NDM asks the server whether each file has changed and downloads only the changed ones. Set <i>Start again every</i> to check them regularly.</p>
+<p>Files in a queue set to <b>Periodic synchronization</b> stay in it after they finish. Each time the queue runs, NDM asks the server whether each file has changed and downloads only the changed ones. Set <b>Start again every</b> to check them at regular intervals.</p>
 
 <h2 id="Limits">Download limits</h2>
-<p>Limit how much NDM may download in a period, for example 200 MB every 5 hours. Downloading pauses when the limit is reached and carries on in the next period.</p>
-<p class="tip">Download limits are handy on metered connections and mobile hotspots.</p>
+<p><i>Download limits</i> sets how much NDM may download in a period, for example 200 MB every 5 hours. Downloading stops when the limit is reached and continues in the next period. This is useful on metered connections and mobile hotspots.</p>
 </body></html>

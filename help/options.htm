@@ -1,37 +1,55 @@
 <html><head><title>Options</title></head><body>
 <h1>Options</h1>
-<p class="lead">Tasks → Options holds every setting, grouped in pages. Here is what each page is for.</p>
+<p class="lead"><b>Downloads → Options</b> (or <b>Options</b> on the toolbar) opens the settings, grouped in pages. This page describes each one.</p>
 
 <h2 id="General">General</h2>
-<p>Start NDM with Windows, watch the clipboard for download addresses, and choose the browsers NDM takes downloads from.</p>
+<p><b>Launch New Download Manager on startup</b> starts NDM when you sign in. <b>Automatically start downloading of URLs placed to clipboard</b> watches the clipboard for download addresses. The browser list chooses which browsers NDM takes downloads from.</p>
 <ul>
-<li><b>Keys</b> sets the keys that force or prevent a download with NDM.</li>
-<li><b>Customize menu items</b> chooses the entries in the browser's right-click menu.</li>
-<li><b>Edit</b> sets up the download panel shown over web players.</li>
+<li><b>Keys...</b> sets the keys that prevent or force a download with NDM.</li>
+<li><b>Edit...</b> chooses the entries in the browser's right-click menu.</li>
+<li>The button next to <b>Customize download panels in browsers</b> sets up the panel shown over web players.</li>
 </ul>
-<p><i>Use advanced browser integration</i> also catches downloads from other programs: while it is ticked, Windows sends plain http traffic through NDM, which takes the files it would take from a browser. Secure (https) traffic isn't affected, and your own proxy setting is put back when you untick it or exit NDM.</p>
+<p><b>Use advanced browser integration</b> also takes downloads from other programs. While it is on, the system proxy for plain http points at NDM, which takes the files a browser would hand it and passes everything else on. Secure (https) traffic isn't affected, and your own proxy setting comes back when you turn it off or exit NDM.</p>
 
 <h2 id="FileTypes">File types</h2>
 <p>The file extensions NDM takes over from browsers, and the sites and addresses it never takes downloads from.</p>
 
 <h2 id="SaveTo">Save to</h2>
-<p>The folder of each category, the temporary folder for unfinished parts, and whether a file gets the date the server gives it.</p>
+<p>The folder of each category, the temporary folder for unfinished downloads, and whether a finished file gets the date the server reports.</p>
 
 <h2 id="Downloads">Downloads</h2>
-<p>Which windows appear when a download starts and completes, what to do with a link that is already in the list, which virus checker runs on finished files, and how the progress window looks.</p>
+<p>Which windows open when a download starts and finishes, what happens when an address is already in the list, which virus checker runs on finished files, and the User-Agent sent for downloads you add yourself.</p>
 
 <h2 id="Connection">Connection</h2>
-<p>The number of connections per download, lower limits for single servers, and download limits.</p>
+<p><img src="images/options-connection.png" alt="Options, Connection page"></p>
+<ul>
+<li><b>Default max. conn. number</b> is the number of connections per download (1 to 32).</li>
+<li><b>Exceptions</b> gives single servers their own number.</li>
+<li><b>Download limits</b> caps how much NDM downloads in a period (see <a href="scheduler.htm#Limits">Download limits</a>).</li>
+<li><b>Download over several network connections at once</b> spreads downloads over two or more internet connections (see <a href="segmentation.htm#Networks">Several networks at once</a>).</li>
+</ul>
 
 <h2 id="Proxy">Proxy / Socks</h2>
-<p>No proxy, Windows' proxy settings, an automatic configuration script, or your own HTTP, HTTPS, FTP and SOCKS 4/5 proxies (<b>Advanced</b>), plus the addresses that skip the proxy. <i>Use proxy/socks from a browser's request</i> retries a failed browser download through the browser's own proxy.</p>
+<p><img src="images/options-proxy.png" alt="Options, Proxy / Socks page with a manual proxy"></p>
+<p>Choose one of:</p>
+<ul>
+<li><b>No proxy/socks</b>.</li>
+<li><b>Use system settings</b>: the proxy set in Windows, or on Linux in GNOME or KDE settings or the environment.</li>
+<li><b>Use automatic configuration script</b>: the address of a PAC file.</li>
+<li><b>Manual proxy/socks configuration</b>: an HTTP proxy, and the protocols it is used for.</li>
+</ul>
+<p>Under the manual proxy, <b>http</b>, <b>https</b> and <b>ftp</b> choose which addresses go through it. With <b>ftp</b> ticked, the proxy downloads ftp:// files for NDM. A proxy that can't send parts of a file downloads it over one connection, and that download can't resume.</p>
+<p><b>Advanced...</b> sets separate HTTPS and FTP proxies and a SOCKS proxy. SOCKS is used for the protocols not ticked on the page, ftp included. For ftp:// addresses the FTP proxy comes first, then the manual proxy if <b>ftp</b> is ticked, then SOCKS.</p>
+<p><img src="images/advanced-proxy.png" alt="Advanced proxy settings with a SOCKS 5 proxy"></p>
+<p>With <b>Socks 5</b>, <b>Proxy DNS</b> decides who looks up the server names. Ticked, the SOCKS proxy does, which also works for names only the proxy's network knows. Unticked, NDM looks names up itself and sends the proxy an address; untick it when the proxy can't look up names your own network uses. Socks 4 always sends an address.</p>
+<p><b>Do not use proxy server for addresses beginning with</b> lists hosts that go direct. <b>Use proxy/socks from a browser's request</b> retries a failed browser download through the browser's own proxy. <b>Get System</b> copies the system proxy into the manual fields.</p>
 
-<h2 id="Logins">Site logins</h2>
+<h2 id="Logins">Sites Logins</h2>
 <p>User names and passwords NDM sends to sites that ask for them.</p>
 
 <h2 id="DialUp">Dial Up / VPN</h2>
-<p>Choose a dial-up or VPN connection (Windows' connections, or NetworkManager's on Linux) that NDM connects before downloading when you are offline, with its user name, password and how often to redial.</p>
+<p>A dial-up or VPN connection that NDM connects before downloading when the computer is offline, with its user name, password and how often to redial. On Windows these are Windows' own connections; on Linux, NetworkManager's VPN, WireGuard, PPPoE and mobile connections.</p>
 
 <h2 id="Sounds">Sounds</h2>
-<p>Sounds for completed and failed downloads, and for queues starting and stopping.</p>
+<p>Sounds for a finished or failed download and for a queue starting and stopping.</p>
 </body></html>

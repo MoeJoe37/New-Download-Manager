@@ -211,7 +211,13 @@ impl<'a> D<'a> {
     }
 
     pub fn check(&mut self, x: f32, y: f32, w: f32, h: f32, v: &mut bool, t: &str) -> Response {
-        self.at(x, y, w, h, |ui| ui.checkbox(v, tr(t)))
+        self.at(x, y, w, h, |ui| {
+            // a box two lines high wraps its text, as the dialog was laid out for
+            if h >= 17.0 {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            }
+            ui.checkbox(v, tr(t))
+        })
     }
 
     /// A checkbox for an option this app doesn't implement: drawn, disabled.

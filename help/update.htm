@@ -1,8 +1,16 @@
 <html><head><title>Updates</title></head><body>
 <h1>Updates</h1>
-<p class="lead">NDM keeps itself current with a single click.</p>
+<p class="lead">NDM checks GitHub for a newer release every two weeks, and whenever you ask it to.</p>
 
 <h2 id="Check">Checking for updates</h2>
-<p><b>Help → Check for updates</b> asks NDM's GitHub page for the latest release. If there is a newer version, <b>Update now</b> downloads it, replaces ndm.exe and restarts NDM. Your download list and settings are kept.</p>
-<p class="tip">NDM also checks by itself every two weeks, so you rarely need to.</p>
+<ol>
+<li>Choose <b>Help → Check for updates...</b>.</li>
+<li>When a newer version exists, NDM shows its number and what changed.</li>
+<li>Click <b>Update now</b>. NDM downloads the new version, installs it and starts again. <b>Download page</b> opens the release on GitHub instead.</li>
+</ol>
+<p><img src="images/update.png" alt="The window announcing a new version"></p>
+<p>Your downloads and settings are kept. On Windows, an installed NDM runs the new setup; a copy run from a folder replaces its own ndm.exe. On Linux, the AppImage replaces itself.</p>
+
+<h2 id="Problems">If an update fails</h2>
+<p>The Windows setup writes its log to <kbd>%TEMP%\NDM-Setup.log</kbd>. You can always download the latest version from the release page and install it over the old one.</p>
 </body></html>
