@@ -820,3 +820,59 @@ pub fn power_off(kind: u8, force: bool) {
     }
     let _ = c.spawn();
 }
+
+/// The networks a download can be spread over: up, not loopback, with a default gateway.
+pub fn nics() -> Vec<crate::net::Nic> {
+    use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS};
+    use windows_sys::Win32::NetworkManagement::IpHelper::*;
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6};
+    let flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    // u64s keep the buffer aligned for the structs written into it
+    let mut buf = vec![0u64; 16 * 1024 / 8];
+    let mut out = vec![];
+    // SAFETY: the list lives in `buf`, which outlives every pointer read from it; addresses are cast by their family
+    unsafe {
+        loop {
+            let mut len = (buf.len() * 8) as u32;
+            match GetAdaptersAddresses(AF_UNSPEC as u32, flags, std::ptr::null(), buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH, &mut len) {
+                ERROR_SUCCESS => break,
+                ERROR_BUFFER_OVERFLOW => buf = vec![0u64; len as usize / 8 + 1],
+                _ => return out,
+            }
+        }
+        let mut a = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        while !a.is_null() {
+            let ad = &*a;
+            a = ad.Next;
+            if ad.OperStatus != IfOperStatusUp || ad.IfType == 24 || ad.FirstGatewayAddress.is_null() {
+                continue;
+            }
+            let mut ips = vec![];
+            let mut u = ad.FirstUnicastAddress;
+            while !u.is_null() {
+                let sa = (*u).Address.lpSockaddr;
+                u = (*u).Next;
+                if sa.is_null() {
+                    continue;
+                }
+                match (*sa).sa_family {
+                    AF_INET => ips.push(std::net::Ipv4Addr::from(u32::from_be((*(sa as *const SOCKADDR_IN)).sin_addr.S_un.S_addr)).into()),
+                    AF_INET6 => {
+                        let v6 = std::net::Ipv6Addr::from((*(sa as *const SOCKADDR_IN6)).sin6_addr.u.Byte);
+                        if v6.segments()[0] & 0xffc0 != 0xfe80 {
+                            ips.push(v6.into());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let p = ad.FriendlyName;
+            let name = if p.is_null() { String::new() } else { String::from_utf16_lossy(std::slice::from_raw_parts(p, (0..).take_while(|&i| *p.add(i) != 0).count())) };
+            if !name.is_empty() && !ips.is_empty() {
+                out.push(crate::net::Nic { name, ips });
+            }
+        }
+    }
+    out
+}

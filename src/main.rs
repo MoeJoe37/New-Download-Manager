@@ -4,6 +4,7 @@ mod dlu;
 mod engine;
 mod grabber;
 mod i18n;
+mod net;
 mod remux;
 mod stream;
 use i18n::tr;

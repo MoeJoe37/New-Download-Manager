@@ -829,3 +829,84 @@ pub fn power_off(kind: u8, _force: bool) {
         _ => Command::new("shutdown").args(["-h", "+1", "Downloads complete. The computer will shut down in a minute."]).spawn(),
     };
 }
+
+/// The networks a download can be spread over: up, not loopback, with an address and a default route.
+pub fn nics() -> Vec<crate::net::Nic> {
+    let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+    let route6 = std::fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default();
+    let routed = default_route_devices(&route, &route6);
+    let mut out: Vec<crate::net::Nic> = vec![];
+    // SAFETY: getifaddrs' list is only read before freeifaddrs; each ifa_addr is checked for null and its family before the cast
+    unsafe {
+        let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut list) != 0 {
+            return out;
+        }
+        let mut p = list;
+        while !p.is_null() {
+            let a = &*p;
+            p = a.ifa_next;
+            let flags = a.ifa_flags as i32;
+            if a.ifa_addr.is_null() || flags & libc::IFF_UP == 0 || flags & libc::IFF_RUNNING == 0 || flags & libc::IFF_LOOPBACK != 0 {
+                continue;
+            }
+            let ip: std::net::IpAddr = match (*a.ifa_addr).sa_family as i32 {
+                libc::AF_INET => std::net::Ipv4Addr::from(u32::from_be((*(a.ifa_addr as *const libc::sockaddr_in)).sin_addr.s_addr)).into(),
+                libc::AF_INET6 => {
+                    let v6 = std::net::Ipv6Addr::from((*(a.ifa_addr as *const libc::sockaddr_in6)).sin6_addr.s6_addr);
+                    if v6.segments()[0] & 0xffc0 == 0xfe80 {
+                        continue; // link-local
+                    }
+                    v6.into()
+                }
+                _ => continue,
+            };
+            let name = std::ffi::CStr::from_ptr(a.ifa_name).to_string_lossy().into_owned();
+            if !routed.contains(&name) {
+                continue;
+            }
+            match out.iter_mut().find(|n| n.name == name) {
+                Some(n) => n.ips.push(ip),
+                None => out.push(crate::net::Nic { name, ips: vec![ip] }),
+            }
+        }
+        libc::freeifaddrs(list);
+    }
+    out
+}
+
+/// The devices with a default route in /proc/net/route (Destination and Mask 00000000) and
+/// /proc/net/ipv6_route (all-zero destination with prefix length 00).
+fn default_route_devices(route: &str, route6: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut add = |d: &str| {
+        if d != "lo" && !out.iter().any(|o| o == d) {
+            out.push(d.to_string());
+        }
+    };
+    for l in route.lines().skip(1) {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() > 7 && f[1] == "00000000" && f[7] == "00000000" {
+            add(f[0]);
+        }
+    }
+    for l in route6.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() == 10 && f[0].bytes().all(|b| b == b'0') && f[1] == "00" {
+            add(f[9]);
+        }
+    }
+    out
+}
+
+#[test]
+fn default_routes() {
+    let route = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+        wlp2s0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n\
+        wlp2s0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n\
+        docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
+    let route6 = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000064 00000001 00000000 00000003 enx0a1b2c3d4e5f\n\
+        00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200 lo\n\
+        fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001 wlp2s0\n";
+    assert_eq!(default_route_devices(route, route6), ["wlp2s0", "enx0a1b2c3d4e5f"]);
+}

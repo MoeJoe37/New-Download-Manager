@@ -20,10 +20,12 @@ raw-window-handle = "0.6"
 ar-reshaper = "1.5"
 unicode-bidi = "0.3"
 roxmltree = "0.21.2"
+socks = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp", "ico"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_Networking_WinSock"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 
 # AES-128 (HLS) and MD5 (digest login), which Windows' CNG does on Windows
 [target.'cfg(not(windows))'.dependencies]
@@ -36,6 +38,8 @@ gtk = "0.18"
 md4 = "0.10"
 # PAC scripts (Windows runs them in WinHTTP)
 rquickjs = "0.9"
+# getifaddrs (the networks to download over)
+libc = "0.2"
 
 [profile.release]
 opt-level = 3
