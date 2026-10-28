@@ -1268,7 +1268,7 @@ struct App {
     browser_add: Vec<core::Browser>,
     /// Automatically taken over addresses the user cancelled, and how often (template 302 after the second).
     cancels: HashMap<String, u8>,
-    clip_seq: u32,
+    clip_seq: Option<u32>,
     /// Expanded tree nodes ("all", "unf", "fin", "q").
     expanded: HashSet<String>,
     toolbar: Option<Toolbar>,
@@ -1552,7 +1552,7 @@ impl App {
             panel_site: None,
             panel_min: None,
             cancels: HashMap::new(),
-            clip_seq: win::clip_seq(),
+            clip_seq: None,
             sel: HashSet::new(),
             anchor: None,
             sort: (Col::Added, true),
@@ -1961,13 +1961,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
     /// NDM's clipboard monitor: a copied address (first line, http/https) of a file type from
     /// Options -> File types opens "Enter new address" retitled (0x407900 reads it, 0x407c90 asks).
+    /// The clipboard is only read while watching is on; the text already there when it starts isn't taken.
     fn watch_clipboard(&mut self) {
-        let seq = win::clip_seq();
-        if seq == self.clip_seq || !self.core.settings().clip_watch {
-            self.clip_seq = seq;
+        if !self.core.settings().clip_watch {
+            self.clip_seq = None;
             return;
         }
-        self.clip_seq = seq;
+        let seq = win::clip_seq();
+        if self.clip_seq.replace(seq).is_none_or(|old| old == seq) {
+            return;
+        }
         let text = clipboard();
         let url = text.lines().next().unwrap_or("").trim().to_string();
         // NDM also takes mms:// and rtmp://; the engine speaks http(s) and ftp only
@@ -6820,6 +6823,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        no_zoom(ctx);
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if self.hwnd.load(Relaxed) == 0 {
             if let Ok(RawWindowHandle::Win32(h)) = frame.window_handle().map(|h| h.as_raw()) {
@@ -7049,8 +7053,15 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         win::exit_splash(&i18n::tr_os("Exit NDM"), &i18n::tr_os("Saving settings..."));
-        self.core.apply_integration(false);
         self.core.shutdown();
+    }
+}
+
+/// NDM's windows are laid out in dialog units and break when zoomed, so the UI never zooms.
+fn no_zoom(ctx: &egui::Context) {
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
+    if ctx.zoom_factor() != 1.0 {
+        ctx.set_zoom_factor(1.0);
     }
 }
 
@@ -7080,6 +7091,18 @@ fn find_hit(flags: u32, needle: &str, r: &Row) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_never_zooms() {
+        let ctx = egui::Context::default();
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        let wheel = egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, 5.0), modifiers: egui::Modifiers::COMMAND };
+        let input = egui::RawInput { modifiers: egui::Modifiers::COMMAND, events: vec![key(Key::Plus), key(Key::Equals), wheel, egui::Event::Zoom(1.5)], ..Default::default() };
+        for _ in 0..3 {
+            let _ = ctx.run(input.clone(), no_zoom);
+        }
+        assert_eq!(ctx.zoom_factor(), 1.0);
+    }
 
     #[test]
     fn sched_times() {

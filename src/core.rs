@@ -1440,7 +1440,6 @@ impl Core {
         }
     }
 
-    /// Stop everything (so segment progress is final), then save.
     /// "Use advanced browser integration" (`on`), done without NDM's network driver: Windows' proxy for
     /// plain http is set to NDM's (`proxy_conn`) and the user's own proxy kept for the other protocols;
     /// off puts the old setting back. Run at start (on), on Options OK and at exit (off, so http works
@@ -1468,7 +1467,9 @@ impl Core {
         }
     }
 
+    /// Puts the user's proxy back (every exit path comes here), stops the downloads and saves.
     pub fn shutdown(&self) {
+        self.apply_integration(false);
         let jobs = self.jobs();
         jobs.iter().for_each(|j| j.stop());
         let until = Instant::now() + Duration::from_secs(5);
@@ -1702,7 +1703,7 @@ mod tests {
         assert!(on && server.starts_with(&format!("http=127.0.0.1:{PROXY_PORT}")), "{server}");
         let p = core.settings().proxy_for("http://x.com/a");
         assert_eq!(p, if before.0 { core.settings().proxy_for("http://x.com/a") } else { String::new() }, "NDM's own downloads skip its proxy");
-        core.apply_integration(false);
+        core.shutdown();
         assert_eq!(crate::win::system_proxy(), before);
     }
 
