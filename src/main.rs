@@ -5266,8 +5266,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let res = done.lock().unwrap().take();
                         match res {
                             Some(Ok(())) => {
+                                // the setup (or the new copy) waits for this process to end: close the main
+                                // window, not this dialog's, and exit anyway should that not happen
                                 self.quitting = true;
-                                ctx.send_viewport_cmd(ViewportCommand::Close);
+                                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+                                let core = self.core.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(Duration::from_secs(10));
+                                    core.shutdown();
+                                    std::process::exit(0);
+                                });
                                 keep = false;
                             }
                             Some(Err(e)) => {
