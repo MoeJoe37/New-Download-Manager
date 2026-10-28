@@ -13,6 +13,7 @@
   <a href="https://github.com/MoeJoe37/New-Download-Manager/releases"><b>Download</b></a> ·
   <a href="#features">Features</a> ·
   <a href="#custom-toolbars">Custom toolbars</a> ·
+  <a href="#custom-category-icons">Category icons</a> ·
   <a href="#building-from-source">Build</a> ·
   <a href="#translating">Translate</a> ·
   <a href="LICENSE">License (AGPL-3.0)</a>
@@ -58,7 +59,7 @@
 **And**
 - Dark mode and three looks: Modern, Classic and **NDM Style**, NDM's own modern design for every window
 - Custom scale for the toolbar, the categories pane and the text (View → Custom scale...)
-- Customizable toolbar and columns, and [custom toolbars](#custom-toolbars) with your own pictures
+- Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
 - Clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
 - Import and export of download lists, built-in help, automatic update check
 
@@ -160,6 +161,67 @@ the pictures, choose another toolbar and then yours again to reload them.
 
 To share a toolbar, zip its folder; whoever gets it unzips it into their toolbars folder. You can post toolbars
 for others in [Issues](https://github.com/MoeJoe37/New-Download-Manager/issues).
+
+**Help → Look for new toolbars** opens this guide.
+
+## Custom category icons
+
+A category icon set replaces the pictures in the categories pane (All Downloads, Unfinished, Finished, the
+categories, Grabber projects and Queues) with your own. Like a toolbar, it is a folder of PNG files; NDM lists
+every such folder under **View → Category icons**. It works in all three styles (Modern, Classic and NDM Style).
+
+**1. Find the category icons folder.** Choose **View → Category icons → Open category icons folder**. NDM creates
+and opens it:
+
+| System | Folder |
+|---|---|
+| Windows | `%APPDATA%\NewDownloadManager\category-icons` |
+| Linux | `~/.config/NewDownloadManager/category-icons` (or `$XDG_CONFIG_HOME/NewDownloadManager/category-icons`) |
+
+**2. Make a folder for your set** inside it. The folder's name is the set's name in the menu, for example
+`category-icons/Candy`.
+
+**3. Add one PNG per item**, named after it:
+
+| Item | File |
+|---|---|
+| All Downloads | `all-downloads.png` |
+| Unfinished | `unfinished.png` |
+| Finished | `finished.png` |
+| Compressed | `compressed.png` |
+| Documents | `documents.png` |
+| Music | `music.png` |
+| Programs | `programs.png` |
+| Video | `video.png` |
+| General | `general.png` |
+| Any other category | its name in lower case, spaces as `-` (a category "Mobile Apps" is `mobile-apps.png`) |
+| Every category without its own file | `category.png` |
+| Grabber projects | `grabber-projects.png` |
+| A grabber project | `grabber-project.png` (otherwise `grabber-projects.png`) |
+| Queues | `queues.png` |
+| A queue | `queue.png` |
+| A queue that is running | `queue-running.png` (otherwise `queue.png`) |
+
+Pictures should be square with a transparent background, 64 × 64 pixels or larger so they stay sharp at higher
+**View → Custom scale** sizes; NDM fits each one into the row. An item without a picture keeps NDM's own icon, so a
+set can change just a few.
+
+```
+category-icons/
+└── Candy/
+    ├── all-downloads.png
+    ├── finished.png
+    ├── video.png
+    ├── category.png
+    └── queue-running.png
+```
+
+**4. Choose it:** **View → Category icons → Candy**. **Built-in icons** goes back to NDM's own. Choosing a set again
+reloads its pictures after you change them.
+
+To share a set, zip its folder; whoever gets it unzips it into their category icons folder. You can post sets for
+others in [Issues](https://github.com/MoeJoe37/New-Download-Manager/issues). **Help → Look for new category icons**
+opens this guide.
 
 ## Building from source
 

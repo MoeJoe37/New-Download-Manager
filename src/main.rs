@@ -1152,6 +1152,40 @@ fn toolbar_sets() -> Vec<String> {
     sets
 }
 
+/// Where custom category icons live: one folder per set, next to NDM's settings.
+fn cat_icons_dir() -> PathBuf {
+    core::store_path().with_file_name("category-icons")
+}
+
+/// The category icon sets installed: folders with at least one PNG, sorted.
+fn cat_icon_sets() -> Vec<String> {
+    let mut sets: Vec<String> = std::fs::read_dir(cat_icons_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten().any(|f| f.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("png"))))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    sets.sort_by_key(|s| s.to_lowercase());
+    sets
+}
+
+/// A category icon set's file names for a tree item, most specific first (README, Custom category icons).
+fn cat_icon_files(v: &Cat, running: bool) -> Vec<String> {
+    let slug = |c: &str| c.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join("-");
+    match v {
+        Cat::Files(Which::All, None) => vec!["all-downloads".into()],
+        Cat::Files(Which::Unfinished, None) => vec!["unfinished".into()],
+        Cat::Files(Which::Finished, None) => vec!["finished".into()],
+        Cat::Files(_, Some(c)) => vec![slug(c), "category".into()],
+        Cat::Grabber(None) => vec!["grabber-projects".into()],
+        Cat::Grabber(Some(_)) => vec!["grabber-project".into(), "grabber-projects".into()],
+        Cat::Queue(None) => vec!["queues".into()],
+        Cat::Queue(Some(_)) if running => vec!["queue-running".into(), "queue".into()],
+        Cat::Queue(Some(_)) => vec!["queue".into()],
+    }
+}
+
 /// A picture file fitted into a `cw` x `ch` cell, centred, its proportions kept.
 fn tb_picture(file: &Path, cw: usize, ch: usize) -> Option<win::Rgba> {
     let img = image::open(file).ok()?.into_rgba8();
@@ -1530,6 +1564,8 @@ struct App {
     grab_saved_as: Option<String>,
     /// Grabber Thumbnails View: decoded pictures (None = not a picture).
     thumbs: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    /// Custom category icons loaded so far: (set, file name) -> picture (None: the set has no such file).
+    cat_pics: HashMap<(String, String), Option<egui::TextureHandle>>,
     /// The grabber's "Add Filter" popup text.
     grab_filter_buf: String,
     /// Explorer's type names by extension (grabber "File Type" column).
@@ -1880,6 +1916,7 @@ impl App {
             grab_load: None,
             grab_saved_as: None,
             thumbs: HashMap::new(),
+            cat_pics: HashMap::new(),
             grab_filter_buf: String::new(),
             type_names: HashMap::new(),
             drop_shown: false,
@@ -2732,6 +2769,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 });
                 ui.menu_button(tr("Toolbar"), |ui| self.toolbar_menu(ui));
+                ui.menu_button(tr("Category icons"), |ui| self.cat_icons_menu(ui));
                 ui.menu_button(tr("NDM tray icon"), |ui| {
                     // 0x45ada0: delete the icon, then add it back with the new picture unless "Don't show"
                     let cur = self.core.settings().tray_icon;
@@ -2828,6 +2866,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let text = self.next_tip();
                     self.open(Dialog::Tip { text });
                     ui.close_menu();
+                }
+                ui.separator();
+                // how to make and install them (README)
+                for (t, anchor) in [("Look for new toolbars", "custom-toolbars"), ("Look for new category icons", "custom-category-icons")] {
+                    if ui.button(tr(t)).clicked() {
+                        open_url(&format!("https://github.com/{UPDATE_REPO}#{anchor}"));
+                        ui.close_menu();
+                    }
                 }
                 ui.separator();
                 // NDM's home is where its releases are published (UPDATE_REPO)
@@ -3142,6 +3188,51 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         clicked
     }
 
+    /// A tree item's picture from the chosen category icon set, if the set has one for it.
+    fn cat_pic(&mut self, ctx: &egui::Context, v: &Cat) -> Option<egui::TextureId> {
+        let set = self.core.settings().cat_icons.clone();
+        if set.is_empty() {
+            return None;
+        }
+        let running = matches!(v, Cat::Queue(Some(q)) if self.core.queue_running(*q));
+        let dir = cat_icons_dir().join(&set);
+        cat_icon_files(v, running).into_iter().find_map(|name| {
+            self.cat_pics
+                .entry((set.clone(), name.clone()))
+                .or_insert_with(|| tb_picture(&dir.join(format!("{name}.png")), 64, 64).map(|px| texture(ctx, &format!("cat_{set}_{name}"), &px)))
+                .as_ref()
+                .map(|t| t.id())
+        })
+    }
+
+    /// View -> Category icons: NDM's own, or a set from the category icons folder.
+    fn cat_icons_menu(&mut self, ui: &mut egui::Ui) {
+        let cur = self.core.settings().cat_icons.clone();
+        let sets = cat_icon_sets();
+        let mut pick = None;
+        if ui.radio(cur.is_empty() || !sets.contains(&cur), tr("Built-in icons")).clicked() {
+            pick = Some(String::new());
+        }
+        for name in sets {
+            if ui.radio(cur == name, name.as_str()).clicked() {
+                pick = Some(name);
+            }
+        }
+        if let Some(name) = pick {
+            self.core.settings().cat_icons = name;
+            self.core.save();
+            self.cat_pics.clear(); // changed pictures load again
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button(tr("Open category icons folder")).clicked() {
+            let dir = cat_icons_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            explore(dir);
+            ui.close_menu();
+        }
+    }
+
     /// NDM's toolbar menu (0x4613c0, also View -> Toolbar): Customize..., Large/Small Buttons, Look for new
     /// toolbars, then Modern / Classic style.
     fn toolbar_menu(&mut self, ui: &mut egui::Ui) {
@@ -3182,11 +3273,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let dir = toolbars_dir();
             let _ = std::fs::create_dir_all(&dir);
             explore(dir);
-            ui.close_menu();
-        }
-        if ui.button(tr("Look for new toolbars")).clicked() {
-            // how to make and install a toolbar
-            open_url(&format!("https://github.com/{UPDATE_REPO}#custom-toolbars"));
             ui.close_menu();
         }
         ui.separator();
@@ -3291,6 +3377,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }));
         }
 
+        let ctx = ui.ctx().clone();
+        let custom: Vec<Option<egui::TextureId>> = nodes.iter().map(|n| self.cat_pic(&ctx, &n.5)).collect();
         let mut queue_dlg = None;
         let mut grab_cmd: Option<(usize, String)> = None;
         let mut new_queue = false;
@@ -3363,7 +3451,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let isz = 16.0 * sc;
                     let ir = egui::Rect::from_min_size(egui::pos2(if rtl { ix - isz } else { ix }, my - isz / 2.0), Vec2::splat(isz));
                     let ink = if sel { t.accent } else if *depth == 0 { t.text } else { t.muted };
-                    if let Some(tex) = glyph(side_glyph(value)) {
+                    if let Some(tex) = custom[k] {
+                        ui.painter().image(tex, ir, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                    } else if let Some(tex) = glyph(side_glyph(value)) {
                         ui.painter().image(tex, ir, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), if sel { t.accent } else { t.muted });
                     }
                     let font = FontId::new(10.4 * sc, egui::FontFamily::Name("segoe".into()));
@@ -3423,7 +3513,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let sel = self.cat == *value;
                     // x: the icon's edge nearest the line; in RTL the icon and label run leftwards from it
                     let mut x = cx(*depth) + 9.0 * sc * dir;
-                    if let Some(t) = if open || sel { open_icon.or(*icon) } else { *icon } {
+                    if let Some(t) = custom[k] {
+                        let left = if rtl { x - 15.0 * sc } else { x + 1.0 * sc };
+                        p.image(t, egui::Rect::from_min_size(egui::pos2(left, my - 7.0 * sc), Vec2::splat(14.0 * sc)), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                    } else if let Some(t) = if open || sel { open_icon.or(*icon) } else { *icon } {
                         let left = if rtl { x - 16.0 * sc } else { x };
                         p.image(t, egui::Rect::from_min_size(egui::pos2(left, my - 6.5 * sc), Vec2::new(16.0, 13.0) * sc), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                     }

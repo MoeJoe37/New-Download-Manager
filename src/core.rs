@@ -348,6 +348,8 @@ pub struct Settings {
     pub tb_skin: String,
     /// Toolbar buttons in order, -1 = separator.
     pub tb_layout: Vec<i8>,
+    /// View -> Category icons: "" for NDM's own, or the name of a folder in `<config>/category-icons` (README).
+    pub cat_icons: String,
     /// Find file: 1 match case, 2 whole
     /// string, 4 file name, 8 description, 0x10 site/link/page/referer.
     pub search: String,
@@ -588,6 +590,7 @@ impl Default for Settings {
             prog_tab_btns: true,
             prog_details: true,
             tb_skin: "Neon".into(),
+            cat_icons: String::new(),
             tb_layout: (0..12).collect(),
             search: String::new(),
             search_flags: 4,
