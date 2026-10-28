@@ -18,6 +18,14 @@ use std::time::{Duration, Instant};
 pub const CHUNK: usize = 64 * 1024;
 pub const MIN_SEG: u64 = 256 * 1024; // a segment is only split if at least 2x this is left
 pub(crate) const RETRIES: u32 = 5;
+/// A connection's network left the download (`fetch`).
+const LANE_GONE: &str = "network left the download";
+/// A network whose connections all gave up is tried again after this long (it may come back).
+const LANE_COOLDOWN: Duration = Duration::from_secs(30);
+/// A split hands over at least this much...
+const MIN_STEAL: u64 = 64 * 1024;
+/// ...and only if it saves more than twice what a new request costs before its first byte (seconds).
+const STEAL_STARTUP: f64 = 1.0;
 /// Bytes before a resume point that are fetched again and compared with the file.
 const VERIFY: u64 = 64;
 pub const CHANGED: &str = "the file on the server has changed";
@@ -47,6 +55,12 @@ pub struct Seg {
     /// The network of this segment's connection ("" = the default one).
     #[serde(skip)]
     pub net: String,
+    /// Its connection's speed (bytes/s, smoothed), 0 until measured.
+    #[serde(skip)]
+    pub rate: f64,
+    /// The network its last failed connection was on: another one gets it first.
+    #[serde(skip)]
+    pub failed_on: String,
 }
 
 impl Seg {
@@ -170,6 +184,10 @@ pub struct Job {
     /// "Download over several network connections at once": (network, its agent), set by the core
     /// before each start. Connection c goes over lanes[c % n]; empty = the job's agent.
     pub lanes: Mutex<Vec<(String, ureq::Agent)>>,
+    /// Bytes received over each network this run (the progress window's per-network line).
+    pub net_bytes: Mutex<std::collections::HashMap<String, u64>>,
+    /// The core may spread this run over networks as they come and go (not through the browser's proxy).
+    pub multi_ok: AtomicBool,
 }
 
 type Body = Box<dyn Read + Send + Sync>;
@@ -806,6 +824,8 @@ impl Job {
             ignore_date: AtomicBool::new(false),
             fails: AtomicU32::new(0),
             lanes: Mutex::new(vec![]),
+            net_bytes: Mutex::default(),
+            multi_ok: AtomicBool::new(false),
         })
     }
 
@@ -842,6 +862,7 @@ impl Job {
             return;
         }
         self.stop.store(false, Relaxed);
+        self.net_bytes.lock().unwrap().clear();
         self.info().status = Status::Connecting;
         let job = self.clone();
         thread::spawn(move || {
@@ -895,9 +916,9 @@ impl Job {
         if crate::stream::is_manifest(&url) || self.info().stream {
             return crate::stream::run(self, agent, global);
         }
-        // streams above stay on one network; here connection c goes over lane c % n
-        let lanes = self.lanes.lock().unwrap().clone();
-        let lane = |c: usize| lanes.get(c % lanes.len().max(1)).map_or((agent, ""), |(n, a)| (a, n.as_str()));
+        // streams above stay on one network; here every network in `lanes` runs its own connections
+        let lanes = self.lanes();
+        let mut first_net = lanes.first().map(|l| l.0.clone()).unwrap_or_default();
         let mut first = None;
         // "Look up files in IE cache before downloading": a cached copy is offered to the
         // server as If-Modified-Since; on 304 Not Modified (0x7573) the cached file is copied into place.
@@ -916,7 +937,13 @@ impl Job {
                     call(req)
                 };
                 // a first network that doesn't answer leaves the download to the default one
-                let r = first_req(lane(0).0).or_else(|e| if lanes.is_empty() { Err(e) } else { first_req(agent) })?;
+                let r = match lanes.first() {
+                    Some((_, a)) => first_req(a).or_else(|_| {
+                        first_net.clear();
+                        first_req(agent)
+                    })?,
+                    None => first_req(agent)?,
+                };
                 if let (304, Some((file, _))) = (r.status(), &cached) {
                     drop(r);
                     let mut i = self.info();
@@ -980,40 +1007,62 @@ impl Job {
         let part = part.as_path();
         let max = self.info().conns.max(1);
         let mut errors: Vec<String> = Vec::new();
+        // Each network ("" = the default one) runs up to `max` connections of its own, as one network
+        // alone would: it starts with one, and doubles at most once a second while every one of them is
+        // receiving and the speed limits leave room. The networks are looked at on every round, so one
+        // that joins gets connections and one that leaves loses them (see `worker`). A network whose
+        // last connection gave up waits LANE_COOLDOWN before it is tried again.
         thread::scope(|sc| {
-            let mut hs = Vec::new();
-            let mut last = Instant::now();
+            let mut hs: Vec<(thread::ScopedJoinHandle<Option<String>>, String)> = Vec::new();
+            let mut grown: std::collections::HashMap<String, Instant> = Default::default();
+            let mut gave_up: std::collections::HashMap<String, Instant> = Default::default();
             let mut started = false;
-            let mut conn = 0;
             loop {
-                let (done, live): (Vec<_>, Vec<_>) = hs.into_iter().partition(|h: &thread::ScopedJoinHandle<_>| h.is_finished());
-                errors.extend(done.into_iter().filter_map(|h| h.join().unwrap_or(Some("worker panicked".into()))));
-                hs = live;
-                if hs.is_empty() && started {
-                    break; // every connection finished, failed or was stopped
-                }
-                let want = if !started {
-                    1
-                } else if !self.stopping() && hs.len() < max && last.elapsed() >= Duration::from_secs(1) && self.ramp_ok(global) {
-                    (hs.len() * 2).min(max) - hs.len()
-                } else {
-                    0
-                };
-                for _ in 0..want {
-                    match self.claim() {
-                        Some(k) => {
-                            let pre = first.take();
-                            let (agent, net) = lane(conn);
-                            conn += 1;
-                            hs.push(sc.spawn(move || self.worker(k, part, (agent, net), global, pre)));
-                            started = true;
-                        }
-                        None => break,
+                let (done, live): (Vec<_>, Vec<_>) = hs.into_iter().partition(|(h, _)| h.is_finished());
+                for (h, net) in done {
+                    if let Some(e) = h.join().unwrap_or(Some("worker panicked".into())) {
+                        gave_up.insert(net, Instant::now());
+                        errors.push(e);
                     }
-                    last = Instant::now();
                 }
-                if hs.is_empty() {
-                    break; // nothing left to claim
+                hs = live;
+                if self.stopping() {
+                    if hs.is_empty() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                let lanes = self.lanes_or(agent);
+                for (net, lane_agent) in &lanes {
+                    let n = hs.iter().filter(|(_, l)| l == net).count();
+                    let want = if n == 0 {
+                        // its first connection, unless it gave up a moment ago
+                        usize::from(gave_up.get(net).is_none_or(|t| t.elapsed() >= LANE_COOLDOWN))
+                    } else if n < max && grown.get(net).is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) && self.ramp_ok(global, net) {
+                        (n * 2).min(max) - n
+                    } else {
+                        0
+                    };
+                    for _ in 0..want {
+                        let Some(k) = self.claim(net) else { break };
+                        // the first request's body becomes the first connection on its network
+                        let pre = if *net == first_net { first.take() } else { None };
+                        let (a, l) = (lane_agent.clone(), net.clone());
+                        hs.push((sc.spawn(move || self.worker(k, part, (a, l), global, pre)), net.clone()));
+                        grown.insert(net.clone(), Instant::now());
+                        started = true;
+                    }
+                }
+                if first.is_some() && !lanes.iter().any(|(n, _)| *n == first_net) {
+                    first = None; // its network left before it was taken: the others start from scratch
+                }
+                if hs.is_empty() && (started || first.is_none()) {
+                    // nothing left to claim, or every network has given up for now
+                    let waiting = lanes.iter().any(|(net, _)| gave_up.get(net).is_some_and(|t| t.elapsed() < LANE_COOLDOWN));
+                    if !waiting || self.info().segs.iter().all(Seg::done) || lanes.iter().all(|(net, _)| gave_up.contains_key(net)) {
+                        break;
+                    }
                 }
                 thread::sleep(Duration::from_millis(100));
             }
@@ -1054,43 +1103,58 @@ impl Job {
         }
     }
 
-    fn worker(&self, mut k: usize, part: &Path, (agent, net): (&ureq::Agent, &str), global: &Limiter, mut pre: Option<Body>) -> Option<String> {
+    fn worker(&self, mut k: usize, part: &Path, (agent, net): (ureq::Agent, String), global: &Limiter, mut pre: Option<Body>) -> Option<String> {
         let mut fails = 0;
         loop {
-            if self.stopping() {
+            // a network that is gone (unplugged, unticked) hands its part back to the others
+            if self.stopping() || !self.lane_present(&net) {
+                self.info().segs[k].owned = false;
                 return None;
             }
             let before = {
                 let mut i = self.info();
-                i.segs[k].net = net.to_string();
+                i.segs[k].net = net.clone();
                 i.segs[k].next
             };
-            match self.fetch(k, part, agent, global, pre.take()) {
+            match self.fetch(k, part, &agent, global, pre.take()) {
                 Ok(()) if self.stopping() => return None,
                 Err(e) if e == CHANGED => {
                     self.stop();
                     return Some(e);
                 }
-                Ok(()) => match self.claim() {
+                Err(e) if e == LANE_GONE => {
+                    self.info().segs[k].owned = false;
+                    return None;
+                }
+                Ok(()) => match self.claim(&net) {
                     Some(n) => (k, fails) = (n, 0),
                     None => return None,
                 },
                 Err(e) => {
                     fails = if self.info().segs[k].next > before { 1 } else { fails + 1 };
                     {
-                        // released before the wait, so the other connections (other networks) can take it
+                        // released before the wait, so the other connections can take it; another
+                        // network gets the first go at it
                         let mut i = self.info();
-                        i.segs[k].info = format!("Error: {e}, retrying...");
-                        i.segs[k].owned = false;
+                        let s = &mut i.segs[k];
+                        s.info = format!("Error: {e}, retrying...");
+                        s.owned = false;
+                        s.rate = 0.0;
+                        if !net.is_empty() {
+                            s.failed_on = net.clone();
+                        }
                     }
                     if fails > RETRIES {
                         return Some(e);
                     }
                     let until = Instant::now() + Duration::from_secs(2u64.pow(fails).min(30));
-                    while !self.stopping() && Instant::now() < until {
+                    while !self.stopping() && Instant::now() < until && self.lane_present(&net) {
                         thread::sleep(Duration::from_millis(100));
                     }
-                    match self.claim() {
+                    if !self.lane_present(&net) {
+                        return None;
+                    }
+                    match self.claim(&net) {
                         Some(n) => k = n,
                         None => return None,
                     }
@@ -1149,7 +1213,13 @@ impl Job {
         }
         f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
         let mut buf = vec![0; CHUNK];
-        self.info().segs[k].info = "Receiving data...".into();
+        let net = {
+            let mut i = self.info();
+            i.segs[k].info = "Receiving data...".into();
+            i.segs[k].net.clone()
+        };
+        // the connection's speed, measured over half-second windows
+        let (mut window, mut got) = (Instant::now(), 0u64);
         loop {
             if self.stopping() {
                 return Ok(());
@@ -1173,7 +1243,23 @@ impl Job {
                 return Ok(());
             }
             f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            self.info().segs[k].next += n as u64;
+            if !net.is_empty() && !self.lane_present(&net) {
+                self.info().segs[k].next += n as u64;
+                return Err(LANE_GONE.into()); // unticked or gone: the part goes back to the others
+            }
+            got += n as u64;
+            {
+                let mut i = self.info();
+                let s = &mut i.segs[k];
+                s.next += n as u64;
+                let dt = window.elapsed().as_secs_f64();
+                if dt >= 0.5 {
+                    let r = got as f64 / dt;
+                    s.rate = if s.rate > 0.0 { (s.rate + r) / 2.0 } else { r };
+                    (window, got) = (Instant::now(), 0);
+                }
+            }
+            *self.net_bytes.lock().unwrap().entry(net.clone()).or_default() += n as u64;
             self.throttle(global, n);
         }
     }
@@ -1185,9 +1271,9 @@ impl Job {
         self.limiter.take(n, &self.stop);
     }
 
-    /// Every open connection is receiving data and the speed limits leave room.
-    fn ramp_ok(&self, global: &Limiter) -> bool {
-        let busy = self.info().segs.iter().filter(|s| s.owned).all(|s| s.info.starts_with("Receiving"));
+    /// Every open connection on `net` is receiving data and the speed limits leave room.
+    fn ramp_ok(&self, global: &Limiter, net: &str) -> bool {
+        let busy = self.info().segs.iter().filter(|s| s.owned && s.net == net).all(|s| s.info.starts_with("Receiving"));
         let speed = self.speed();
         let full = |l: &Limiter| {
             let r = l.rate.load(Relaxed);
@@ -1196,30 +1282,77 @@ impl Job {
         busy && !full(global) && !full(&self.limiter)
     }
 
-    /// Next segment for a connection: an unfinished one nobody owns (resume), else a split.
-    fn claim(&self) -> Option<usize> {
+    /// The networks the core set for this download (`lanes`).
+    fn lanes(&self) -> Vec<(String, ureq::Agent)> {
+        self.lanes.lock().unwrap().clone()
+    }
+
+    /// `lanes`, or the default network alone when there are none.
+    fn lanes_or(&self, agent: &ureq::Agent) -> Vec<(String, ureq::Agent)> {
+        let l = self.lanes();
+        if l.is_empty() { vec![(String::new(), agent.clone())] } else { l }
+    }
+
+    /// Is `net` still one of this download's networks? The default one ("") is while there are no others.
+    fn lane_present(&self, net: &str) -> bool {
+        let l = self.lanes.lock().unwrap();
+        if net.is_empty() { l.is_empty() } else { l.iter().any(|(n, _)| n == net) }
+    }
+
+    /// Next segment for a connection on `net`: an unfinished one nobody owns (resume, or handed back),
+    /// else a split. A part that failed on `net` is left to another network while there is one.
+    fn claim(&self, net: &str) -> Option<usize> {
+        let others = !net.is_empty() && self.lanes.lock().unwrap().iter().any(|(n, _)| n != net);
         let mut i = self.info();
-        if let Some(k) = i.segs.iter().position(|s| !s.owned && !s.done()) {
+        let free = |s: &Seg| !s.owned && !s.done();
+        let k = i.segs.iter().position(|s| free(s) && !(others && s.failed_on == net)).or_else(|| (!others).then(|| i.segs.iter().position(free)).flatten());
+        if let Some(k) = k {
             i.segs[k].owned = true;
             return Some(k);
         }
         drop(i);
-        self.steal()
+        self.steal(net)
     }
 
-    /// Dynamic segmentation: split the biggest remaining segment and hand back its second half.
-    /// mid is >= MIN_SEG past `next`, so the owner's in-flight chunk (<= CHUNK) never crosses it.
-    fn steal(&self) -> Option<usize> {
+    /// Dynamic segmentation: split the segment that will take longest and hand back its end. Split in
+    /// proportion to the two connections' speeds, so both finish together: a slow network no longer
+    /// holds up the end of the download, as a part that would take it much longer goes mostly to the
+    /// faster one, down to the last MIN_STEAL. Without speeds yet, the biggest segment is halved
+    /// (at least MIN_SEG each).
+    /// The split is always >= CHUNK past `next`, so the owner's in-flight chunk never crosses it.
+    fn steal(&self, net: &str) -> Option<usize> {
         let mut i = self.info();
         if !i.ranges {
             return None;
         }
-        let (k, best) = i.segs.iter().enumerate().max_by_key(|(_, s)| s.left())?;
-        if best.left() < 2 * MIN_SEG {
-            return None;
-        }
-        let mid = best.next + best.left() / 2;
-        let stop = best.stop;
+        // this network's speed per connection: its fastest segment now, else none known
+        let mine = i.segs.iter().filter(|s| s.net == net && s.rate > 0.0).map(|s| s.rate).fold(0.0, f64::max);
+        let eta = |s: &Seg| if s.rate > 0.0 { s.left() as f64 / s.rate } else { 0.0 };
+        let timed = mine > 0.0 && i.segs.iter().filter(|s| s.owned && s.left() > 0).all(|s| s.rate > 0.0);
+        let (k, best) = if timed {
+            i.segs.iter().enumerate().filter(|(_, s)| s.left() > 0).max_by(|a, b| eta(a.1).total_cmp(&eta(b.1)))?
+        } else {
+            i.segs.iter().enumerate().max_by_key(|(_, s)| s.left())?
+        };
+        let (next, left, stop) = (best.next, best.left(), best.stop);
+        let mid = if timed && best.rate > 0.0 {
+            // where both would finish together; worth a new connection only if it saves real time
+            let keep = (left as f64 * best.rate / (best.rate + mine)) as u64;
+            let mid = next + keep.max(CHUNK as u64);
+            let taken = (next + left).saturating_sub(mid);
+            // a big part splits as always; a small one at the end only when the new connection would
+            // clearly finish it first (it saves more than twice what a new request costs)
+            let alone = left as f64 / best.rate;
+            if taken < MIN_STEAL || (left < 2 * MIN_SEG && alone < 2.0 * (STEAL_STARTUP + taken as f64 / mine)) {
+                return None;
+            }
+            mid
+        } else {
+            if left < 2 * MIN_SEG {
+                return None;
+            }
+            next + left / 2
+        };
         i.segs[k].stop = Some(mid);
         i.segs.push(Seg { start: mid, next: mid, stop, owned: true, ..Default::default() });
         Some(i.segs.len() - 1)
@@ -1471,7 +1604,8 @@ mod tests {
         url
     }
 
-    /// Range-aware HTTP server trickling ~1.3 MB/s per connection; logs each request's User-Agent.
+    /// Range-aware HTTP server trickling ~1.3 MB/s per connection (User-Agent "slow": ~130 KB/s); logs
+    /// each request's User-Agent.
     fn serve_ua(data: Arc<Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/f.bin", l.local_addr().unwrap());
@@ -1482,9 +1616,12 @@ mod tests {
                 let (data, log) = (data.clone(), log2.clone());
                 thread::spawn(move || {
                     let mut r = BufReader::new(&s);
-                    let (mut range, mut line) = ((0, data.len() - 1), String::new());
+                    let (mut range, mut line, mut pause) = ((0, data.len() - 1), String::new(), 50);
                     while r.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
                         if let Some(v) = strip_ci(&line, "user-agent: ") {
+                            if v.trim() == "slow" {
+                                pause = 500; // a network a tenth as fast
+                            }
                             log.lock().unwrap().push(v.trim().to_string());
                         } else if let Some(v) = strip_ci(&line, "range: bytes=") {
                             let (a, b) = v.trim().split_once('-').unwrap();
@@ -1499,7 +1636,7 @@ mod tests {
                         if w.write_all(c).is_err() {
                             break;
                         }
-                        thread::sleep(Duration::from_millis(50));
+                        thread::sleep(Duration::from_millis(pause));
                     }
                 });
             }
@@ -1508,6 +1645,12 @@ mod tests {
     }
 
     fn lanes_run(lanes: Vec<(String, ureq::Agent)>, tag: &str) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+        lanes_run_then(lanes, tag, None)
+    }
+
+    /// As `lanes_run`; after a second the download's networks become `later`, as the core sets them
+    /// when a network comes or goes.
+    fn lanes_run_then(lanes: Vec<(String, ureq::Agent)>, tag: &str, later: Option<Vec<(String, ureq::Agent)>>) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
         let data: Arc<Vec<u8>> = Arc::new((0..4 * 1024 * 1024 + 3).map(|i: u32| (i * 17 % 249) as u8).collect());
         let (url, log) = serve_ua(data.clone());
         let dir = std::env::temp_dir().join(format!("ndm-test-lanes-{tag}-{}", std::process::id()));
@@ -1515,8 +1658,14 @@ mod tests {
         let j = Job::new(Info { conns: 4, ..info(url, &dir) });
         *j.lanes.lock().unwrap() = lanes;
         j.start(agent("", "main"), Arc::new(Limiter::default()));
-        let until = Instant::now() + Duration::from_secs(60);
+        let (start, until) = (Instant::now(), Instant::now() + Duration::from_secs(60));
+        let mut later = later;
         while j.running() && Instant::now() < until {
+            if start.elapsed() >= Duration::from_secs(1) {
+                if let Some(l) = later.take() {
+                    *j.lanes.lock().unwrap() = l;
+                }
+            }
             thread::sleep(Duration::from_millis(20));
         }
         (j, data, log, dir)
@@ -1529,6 +1678,40 @@ mod tests {
         assert_eq!(fs::read(j.info().path()).unwrap(), *data);
         let uas = log.lock().unwrap();
         assert!(uas.iter().any(|u| u == "lane-a") && uas.iter().any(|u| u == "lane-b") && !uas.iter().any(|u| u == "main"), "{uas:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lane_joins_mid_download() {
+        let (j, data, log, dir) = lanes_run_then(vec![("a".into(), agent("", "lane-a"))], "join", Some(vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))]));
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        assert!(log.lock().unwrap().iter().any(|u| u == "lane-b"), "the network that joined got connections");
+        assert!(j.net_bytes.lock().unwrap().get("b").is_some_and(|n| *n > 0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lane_leaves_mid_download() {
+        // "b" is unplugged after a second: its parts go to "a", and the download completes without an error
+        let both = vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))];
+        let (j, data, _, dir) = lanes_run_then(both, "leave", Some(vec![("a".into(), agent("", "lane-a"))]));
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slow_lane_doesnt_hold_up_the_end() {
+        // a network a tenth as fast would take ~8 s for its quarter alone; the fast one takes most of it
+        let t = Instant::now();
+        let (j, data, _, dir) = lanes_run(vec![("fast".into(), agent("", "lane-a")), ("slow".into(), agent("", "slow"))], "slow");
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        let bytes = j.net_bytes.lock().unwrap().clone();
+        let (fast, slow) = (bytes.get("fast").copied().unwrap_or(0), bytes.get("slow").copied().unwrap_or(0));
+        assert!(slow > 0 && fast > 4 * slow, "fast {fast}, slow {slow}");
+        assert!(t.elapsed() < Duration::from_secs(8), "took {:?}", t.elapsed());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1698,7 +1881,7 @@ mod tests {
     #[test]
     fn steal_keeps_segments_contiguous() {
         let j = Job::new(Info { ranges: true, segs: vec![Seg { stop: Some(10 * MIN_SEG), owned: true, ..Default::default() }], ..Default::default() });
-        let k = j.steal().unwrap();
+        let k = j.steal("").unwrap();
         let i = j.info();
         assert_eq!(i.segs[0].stop, Some(i.segs[k].start));
         assert_eq!(i.segs[k].stop, Some(10 * MIN_SEG));

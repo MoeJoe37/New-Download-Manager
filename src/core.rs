@@ -910,6 +910,11 @@ impl Core {
     /// The networks `url` is downloaded over, each with its agent: none unless the setting is on, the
     /// address goes direct, NDM can choose the network and at least two ticked networks are up.
     pub fn lanes(&self, url: &str) -> Vec<(String, ureq::Agent)> {
+        self.lanes_from(url, 2)
+    }
+
+    /// `lanes` once a download is spread: one network left is enough to keep its connections.
+    fn lanes_from(&self, url: &str, least: usize) -> Vec<(String, ureq::Agent)> {
         let (on, off, ua) = {
             let s = self.settings();
             (s.use_lanes(url), s.nets_off.clone(), s.user_agent.clone())
@@ -918,7 +923,7 @@ impl Core {
             return vec![];
         }
         let nets: Vec<String> = crate::win::nics().into_iter().map(|n| n.name).filter(|n| !off.contains(n)).collect();
-        if nets.len() < 2 {
+        if nets.len() < least {
             return vec![];
         }
         let mut agents = self.agents.lock().unwrap();
@@ -929,6 +934,21 @@ impl Core {
                 (n, a)
             })
             .collect()
+    }
+
+    /// Networks come and go while downloads run (a phone plugged in, Wi-Fi lost, one unticked in the
+    /// Networks window): each spread download gets the ones there now, and one that wasn't spread is
+    /// once a second network appears. Checked about every second.
+    fn tick_lanes(&self) {
+        for job in self.jobs().into_iter().filter(|j| j.running() && j.multi_ok.load(Relaxed)) {
+            let url = job.info().url.clone();
+            let spread = !job.lanes.lock().unwrap().is_empty();
+            let now = self.lanes_from(&url, if spread { 1 } else { 2 });
+            let mut lanes = job.lanes.lock().unwrap();
+            if lanes.iter().map(|l| &l.0).ne(now.iter().map(|l| &l.0)) {
+                *lanes = now;
+            }
+        }
     }
 
     pub fn new_info(&self, url: &str) -> Info {
@@ -1066,6 +1086,7 @@ impl Core {
         // ponytail: used from the next start (Resume, queue retries), not by restarting the failed one at once
         let browser = on && !bp.is_empty() && job.fails.load(Relaxed) > 0;
         let agent = if browser { engine::agent(&bp, &ua) } else { self.agent(&url) };
+        job.multi_ok.store(!browser, Relaxed);
         *job.lanes.lock().unwrap() = if browser { vec![] } else { self.lanes(&url) };
         job.start(agent, self.limiter.clone());
     }
@@ -1538,6 +1559,7 @@ impl Core {
                 core.tick_quota();
                 core.tick_queue();
                 core.tick_sounds();
+                core.tick_lanes();
                 if last_save.elapsed() > Duration::from_secs(5) {
                     core.save();
                     last_save = Instant::now();

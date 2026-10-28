@@ -614,7 +614,7 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
             .map(|(t, len)| {
                 let (g, h) = (got[t].load(Relaxed), have[t].load(Relaxed) as u64);
                 let est = if h > 0 { g * *len as u64 / h } else { g }.max(g);
-                let s = Seg { start: off, next: off + g, stop: (!live).then_some(off + est), info: note.into(), owned: false, net: String::new() };
+                let s = Seg { start: off, next: off + g, stop: (!live).then_some(off + est), info: note.into(), owned: false, ..Default::default() };
                 off += if live { g } else { est };
                 s
             })
@@ -785,7 +785,7 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     let size = fs::metadata(&dest).map_err(|e| e.to_string())?.len();
     let mut i = job.info();
     i.size = Some(size);
-    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, net: String::new() }];
+    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
     Ok(true)
 }
 
@@ -951,7 +951,7 @@ pub fn run_media(job: &Job) -> Result<bool, String> {
     let mut stopped = false;
     for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
         if let Some(n) = line.strip_prefix("total_size=").and_then(|n| n.parse::<u64>().ok()) {
-            job.info().segs = vec![Seg { start: 0, next: n, stop: None, info: crate::i18n::tr("Receiving data..."), owned: false, net: String::new() }];
+            job.info().segs = vec![Seg { start: 0, next: n, stop: None, info: crate::i18n::tr("Receiving data..."), owned: false, ..Default::default() }];
         }
         if job.stopping() {
             let _ = child.kill();
@@ -966,7 +966,7 @@ pub fn run_media(job: &Job) -> Result<bool, String> {
     }
     let mut i = job.info();
     i.size = Some(size);
-    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, net: String::new() }];
+    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
     Ok(true)
 }
 

@@ -29,7 +29,8 @@
 </ol>
 <p><img src="images/options-connection.png" alt="Options, Connection page"></p>
 <p><img src="images/networks.png" alt="The Networks window with Wi-Fi and a phone connection"></p>
-<p>NDM opens the connections of a download in turn on each ticked network. If one network stops working, its connections give their parts back and the download finishes over the others.</p>
+<p>Each ticked network runs its own connections, as many as the download would get on one network (the number set on the Connection page), starting with one and doubling as on a single network. Parts are shared out as connections free up, so a faster network ends up with more of the file. Near the end, the part that would take longest is split by the two connections' speeds, so a slow network can't hold up the finish.</p>
+<p>NDM looks at the networks every second while a download runs. A network you plug in, or tick in the Networks window, joins the download in progress; one that drops out, or that you untick, hands its parts back to the others, and the download goes on without an error. A part that failed on one network goes to another one first. The progress window shows each network's speed and its share of the download.</p>
 <ul>
 <li>Two networks connected to the same router share that router's internet connection, so they add no speed.</li>
 <li>NDM uses one network whenever a proxy, a configuration script or the system proxy applies to the address, for ftp:// addresses, and for video streams.</li>

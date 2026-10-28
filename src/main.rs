@@ -3836,6 +3836,23 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             d.label(ox + 7.0, oy + y, vx - 9.0, 9.0, k);
                             d.label(ox + vx, oy + y, 260.0, 9.0, v);
                         }
+                        // spread over several networks: each one's speed now and its share of this run
+                        let nets = job.net_bytes.lock().unwrap().clone();
+                        if nets.keys().any(|n| !n.is_empty()) {
+                            let total = nets.values().sum::<u64>().max(1);
+                            let mut names: Vec<&String> = nets.keys().filter(|n| !n.is_empty()).collect();
+                            names.sort();
+                            let line = names
+                                .iter()
+                                .map(|n| {
+                                    let rate: f64 = if running { i.segs.iter().filter(|s| s.owned && s.net == **n).map(|s| s.rate).sum() } else { 0.0 };
+                                    format!("{n} {}/{} ({}%)", size3(rate as u64), tr("sec"), nets[*n] * 100 / total)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("   ");
+                            d.label(ox + 7.0, oy + 80.0, 66.0, 9.0, "Networks");
+                            d.at(ox + 75.0, oy + 80.0, 260.0, 9.0, |ui| ui.label(line));
+                        }
                     }
                     1 => {
                         d.label(ox + 7.0, oy + 7.0, 63.0, 9.0, "Transfer rate");

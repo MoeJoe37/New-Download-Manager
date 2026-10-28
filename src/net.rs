@@ -122,7 +122,8 @@ pub fn local_proxy(route: &str) -> String {
             thread::spawn(move || {
                 let mut c = c;
                 if let Ok((_, host, port)) = socks_accept(&mut c, Some((&token, &token))) {
-                    let out = connect(&route, &host, port);
+                    // a network that vanishes without closing its connections mustn't hold a thread for good
+                    let out = connect(&route, &host, port).and_then(|o| o.set_read_timeout(Some(Duration::from_secs(120))).map(|_| o));
                     if socks_reply(&mut c, out.as_ref().err()).is_ok() {
                         if let Ok(out) = out {
                             relay(c, out);
