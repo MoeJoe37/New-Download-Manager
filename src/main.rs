@@ -712,13 +712,12 @@ fn explore(arg: impl AsRef<std::ffi::OsStr>) {
     win::open(arg);
 }
 
+/// The file's folder with the file selected (Explorer, Finder, the Linux file manager); its folder when the
+/// file isn't there (yet).
 fn open_folder_of(path: &Path) {
-    if path.exists() {
-        #[cfg(windows)]
-        explore(format!("/select,{}", path.display()));
-        #[cfg(not(windows))]
+    if path.is_file() {
         win::show_in_folder(path);
-    } else if let Some(p) = path.parent() {
+    } else if let Some(p) = path.ancestors().skip(1).find(|p| p.is_dir()) {
         explore(p);
     }
 }

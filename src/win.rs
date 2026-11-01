@@ -290,6 +290,30 @@ pub fn system_proxy() -> (bool, String, String) {
     (r == 0 && on != 0, text("ProxyServer"), text("ProxyOverride"))
 }
 
+/// Explorer with the file selected in its folder. The shell call takes any path (spaces, commas,
+/// non-Latin names); "explorer /select," is the fall-back, its path in quotes of its own (a quoted
+/// "/select,..." argument makes Explorer open Documents instead).
+pub fn show_in_folder(path: &std::path::Path) {
+    use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()).display().to_string().replace('/', "\\");
+    let w = wide(&full);
+    unsafe {
+        let pidl = ILCreateFromPathW(w.as_ptr());
+        if !pidl.is_null() {
+            // the UI thread already has COM (S_FALSE); a thread without it gets it here
+            CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+            let hr = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
+            ILFree(pidl);
+            if hr >= 0 {
+                return;
+            }
+        }
+    }
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{full}\"")).spawn();
+}
+
 /// Adds `dir` to the user's Path (HKCU\Environment) unless it is there, and tells running programs (new
 /// terminals and Explorer pick it up).
 pub fn add_user_path(dir: &std::path::Path) {
@@ -961,4 +985,23 @@ pub fn package_owner(_exe: &Path) -> Option<&'static str> {
 
 pub fn install_package(_file: &Path) -> Result<(), String> {
     Err("not on Windows".into())
+}
+
+#[cfg(test)]
+#[test]
+fn explorer_takes_any_path() {
+    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree};
+    // what made "explorer /select," open Documents: spaces, a comma, non-Latin letters
+    let dir = std::env::temp_dir().join(["ndm test, folder ", "\u{2713} \u{645}\u{62c}\u{644}\u{62f}"].concat());
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("My video (1).mp4");
+    std::fs::write(&file, b"x").unwrap();
+    for p in [file.display().to_string(), file.display().to_string().replace(std::path::MAIN_SEPARATOR, "/")] {
+        let full = std::path::absolute(&p).unwrap().display().to_string().replace('/', "\\");
+        let w = wide(&full);
+        let pidl = unsafe { ILCreateFromPathW(w.as_ptr()) };
+        assert!(!pidl.is_null(), "{full}");
+        unsafe { ILFree(pidl) };
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

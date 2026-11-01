@@ -117,6 +117,9 @@ pub struct Info {
     /// far along, 0..1; below 0 = can't tell. Shown in the same bar as the download.
     #[serde(skip)]
     pub post: Option<(String, f32)>,
+    /// Request headers the address needs besides Referer and Cookie (a stream yt-dlp found: its
+    /// User-Agent and the like).
+    pub headers: Vec<(String, String)>,
     /// When the step in `post` began (its time left).
     #[serde(skip)]
     pub post_since: Option<Instant>,
@@ -453,6 +456,14 @@ pub fn agent(proxy: &str, user_agent: &str) -> ureq::Agent {
         }
     }
     b.build()
+}
+
+/// `r` with a download's own headers (`Info::headers`).
+fn with_headers(mut r: ureq::Request, headers: &[(String, String)]) -> ureq::Request {
+    for (k, v) in headers {
+        r = r.set(k, v);
+    }
+    r
 }
 
 pub(crate) fn request(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> ureq::Request {
@@ -1259,6 +1270,12 @@ impl Job {
         Ok(())
     }
 
+    /// Runs this download here and now (not on a thread of its own, no status kept): a part of another
+    /// download, such as the video or audio stream of a video page (`ytdlp::run`).
+    pub(crate) fn run_part(&self, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
+        self.run(agent, global)
+    }
+
     pub fn start(self: &Arc<Self>, agent: ureq::Agent, global: Arc<Limiter>) {
         if self.info().status == Status::Complete || self.running.swap(true, Relaxed) {
             return;
@@ -1309,10 +1326,10 @@ impl Job {
     }
 
     fn run(&self, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
-        let (url, referrer, cookies, probed) = {
+        let (url, referrer, cookies, probed, headers) = {
             let mut i = self.info();
             i.last_try = chrono::Local::now().timestamp();
-            (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.probed)
+            (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.probed, i.headers.clone())
         };
         if self.info().fed {
             return Err(crate::i18n::tr_os("This file came from its web page through the browser: download it again from the page."));
@@ -1321,7 +1338,7 @@ impl Job {
             return crate::stream::run_media(self);
         }
         if self.info().ytdlp || crate::ytdlp::is_video_page(&url) {
-            return crate::ytdlp::run(self);
+            return crate::ytdlp::run(self, agent, global);
         }
         if crate::stream::is_manifest(&url) || self.info().stream {
             return crate::stream::run(self, agent, global);
@@ -1340,7 +1357,7 @@ impl Job {
                 (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), stream: false }, r)
             } else {
                 let first_req = |agent: &ureq::Agent| {
-                    let mut req = request(agent, &url, &referrer, &cookies).set("Range", "bytes=0-");
+                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-");
                     if let Some((_, since)) = &cached {
                         req = req.set("If-Modified-Since", since);
                     }
@@ -1597,7 +1614,7 @@ impl Job {
     }
 
     fn fetch(&self, k: usize, part: &Path, agent: &ureq::Agent, global: &Limiter, pre: Option<Body>) -> Result<(), String> {
-        let (url, referrer, cookies, ranges, start, stop, back) = {
+        let (url, referrer, cookies, ranges, start, stop, back, headers) = {
             let mut i = self.info();
             let ranges = i.ranges;
             let s = &mut i.segs[k];
@@ -1610,14 +1627,14 @@ impl Job {
             s.info = "Connecting...".into();
             let (start, stop) = (s.next, s.stop);
             let back = if ranges { (s.next - s.start).min(VERIFY) } else { 0 };
-            (i.url.clone(), i.referrer.clone(), i.cookies.clone(), ranges, start, stop, back)
+            (i.url.clone(), i.referrer.clone(), i.cookies.clone(), ranges, start, stop, back, i.headers.clone())
         };
         let from = start - back;
         let mut r = match pre.filter(|_| start == 0) {
             Some(r) => r,
             None if is_ftp(&url) => ftp_open(&url, from)?.2,
             None => {
-                let mut req = request(agent, &url, &referrer, &cookies);
+                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers);
                 if ranges {
                     let range = stop.map_or(format!("bytes={from}-"), |e| format!("bytes={from}-{}", e - 1));
                     req = req.set("Range", &range);
@@ -1803,13 +1820,13 @@ impl Job {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
 
     /// Tiny HTTP server: paths starting with /r honour Range, others always send 200 + full body.
-    fn serve(data: Arc<Vec<u8>>) -> String {
+    pub(crate) fn serve(data: Arc<Vec<u8>>) -> String {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", l.local_addr().unwrap());
         thread::spawn(move || {

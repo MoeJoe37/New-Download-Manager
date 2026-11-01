@@ -3,7 +3,7 @@
 //! Downloads -> Set yt-dlp installs yt-dlp and Deno (the JavaScript runtime yt-dlp needs for YouTube) in
 //! NDM's tools folder and keeps them up to date. The best video and audio are joined by ffmpeg when it is
 //! installed, else by NDM itself (stream::join_files).
-use crate::engine::{sanitize, Job, Probe, Seg};
+use crate::engine::{sanitize, Info, Job, Limiter, Probe, Seg, Status};
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -112,26 +112,35 @@ const SINGLE: &str = "b";
 /// and WebM), else the single file.
 const PAIR: &str = "bv*[acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/bv*[acodec=none][ext=webm]+ba[vcodec=none][ext=webm]/b";
 
-/// What yt-dlp's look-up (-J) picked: the video and audio streams' format ids, or the single file's, and
-/// their size when the site tells it (0: unknown).
-struct Picked {
-    pair: Option<(String, String)>,
-    single: String,
+/// One stream yt-dlp's look-up (-J) picked: its format id, address, type and size (0: unknown), the
+/// headers it is fetched with, and whether it is a plain file NDM can fetch itself (http / https; DASH and
+/// HLS streams stay with yt-dlp).
+struct Stream {
+    id: String,
+    url: String,
+    ext: String,
     size: u64,
+    headers: Vec<(String, String)>,
+    direct: bool,
 }
 
-impl Picked {
-    fn of(json: &[u8]) -> Option<Picked> {
-        let v: serde_json::Value = serde_json::from_slice(json).ok()?;
-        let size = |f: &serde_json::Value| f.get("filesize").and_then(|s| s.as_f64()).or_else(|| f.get("filesize_approx").and_then(|s| s.as_f64())).unwrap_or(0.0) as u64;
-        let id = |f: &serde_json::Value| f.get("format_id").and_then(|s| s.as_str()).map(str::to_string);
-        match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
-            Some(r) => {
-                let known = r.iter().all(|f| size(f) > 0);
-                Some(Picked { pair: Some((id(&r[0])?, id(&r[1])?)), single: String::new(), size: if known { r.iter().map(size).sum() } else { 0 } })
-            }
-            None => Some(Picked { pair: None, single: id(&v)?, size: size(&v) }),
-        }
+impl Stream {
+    fn of(f: &serde_json::Value) -> Option<Stream> {
+        let text = |k: &str| f.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let size = f.get("filesize").and_then(|s| s.as_f64()).or_else(|| f.get("filesize_approx").and_then(|s| s.as_f64())).unwrap_or(0.0) as u64;
+        let headers = f.get("http_headers").and_then(|h| h.as_object()).map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default();
+        let url = text("url");
+        let direct = matches!(text("protocol").as_str(), "http" | "https") && (url.starts_with("http://") || url.starts_with("https://"));
+        Some(Stream { id: f.get("format_id")?.as_str()?.to_string(), url, ext: text("ext"), size, headers, direct })
+    }
+}
+
+/// What the look-up picked: the video and audio streams, or the one stream that has both.
+fn picked(json: &[u8]) -> Option<Vec<Stream>> {
+    let v: serde_json::Value = serde_json::from_slice(json).ok()?;
+    match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
+        Some(r) => r.iter().map(Stream::of).collect(),
+        None => Some(vec![Stream::of(&v)?]),
     }
 }
 
@@ -209,10 +218,15 @@ fn fetch_video(job: &Job, p: &Path, source: &[String], args: &[String], fmt: &st
                 (last, part_total) = (done, total);
                 // the size known from the look-up (video and audio) until the streams say more
                 let all = (before + base + total.max(done)).max(expected);
+                // the bar never goes back: the total only grows (yt-dlp's estimates), done only advances
                 let mut i = job.info();
                 i.post = None;
-                i.size = Some(all).filter(|s| *s > 0);
-                i.segs = vec![Seg { start: 0, next: before + base + done, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
+                i.size = Some(all).filter(|s| *s > 0).max(i.size);
+                let next = (before + base + done).max(i.segs.first().map_or(0, |s| s.next));
+                i.segs = vec![Seg { start: 0, next, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
+                if i.status == Status::Connecting {
+                    i.status = Status::Downloading;
+                }
             } else if let Some((label, out, expected)) = post_step(&line, base + part_total.max(last)) {
                 // after the download, ffmpeg (through yt-dlp) writes "<name>.temp.<ext>": the bar follows it
                 job.set_post(label, 0.0);
@@ -263,14 +277,11 @@ fn template(p: &Path) -> String {
     p.display().to_string().replace('%', "%%")
 }
 
-/// The file a run with output template "<stem>.<tag>.%(ext)s" left (the formats are MP4, M4A or WebM).
-fn left(dir: &Path, stem: &str, tag: &str) -> Option<PathBuf> {
-    ["mp4", "m4a", "webm"].iter().map(|e| dir.join(format!("{stem}.{tag}.{e}"))).find(|p| p.is_file())
-}
-
-/// Downloads the video into the job's file; progress from yt-dlp's own lines. Stop ends yt-dlp (its .part
-/// files stay, and the next start goes on from them).
-pub fn run(job: &Job) -> Result<bool, String> {
+/// Downloads the video into the job's file. yt-dlp looks the page up and picks the streams (the best
+/// video and its audio, or the one file that has both); plain files among them are fetched by NDM itself,
+/// each over the download's connections in segments and both at once, others by yt-dlp. The video and
+/// audio are then joined (NDM's own joiner, else ffmpeg) as a processing step of its own.
+pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
     let p = yt_dlp()?;
     let (url, referrer, cookies, named) = {
         let i = job.info();
@@ -287,78 +298,177 @@ pub fn run(job: &Job) -> Result<bool, String> {
         i.path()
     };
     let args = base_args(&url, &referrer, &cookies);
-    let finish = |got: Got| -> Result<bool, String> {
-        match got {
-            Got::Stopped => Ok(false),
-            Got::Failed(e) => Err(e),
-            Got::Done => {
-                let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                if size == 0 {
-                    return Err("yt-dlp finished without a file".into());
-                }
-                let mut i = job.info();
-                i.size = Some(size);
-                i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
-                Ok(true)
-            }
-        }
-    };
-    if let Some(ff) = ffmpeg() {
-        let mut args = args.clone();
-        args.extend(["--merge-output-format".into(), "mp4".into()]);
-        if ff.is_absolute() {
-            args.extend(["--ffmpeg-location".into(), ff.display().to_string()]);
-        }
-        let (got, _) = fetch_video(job, &p, std::slice::from_ref(&url), &args, MERGED, &template(&dest), 0, 0)?;
-        return finish(got);
-    }
-    // no ffmpeg: one look-up (-J) that picks the best video stream and the audio that goes with it, then
-    // both downloaded from that look-up (no second look-up between them) and joined here; a site without
-    // separate streams gives its single file
-    let dir = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-    let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
-    let looked = command(&p).args(&args).args(["-J", "-f", PAIR]).arg(&url).output().map_err(|e| e.to_string())?;
+    let ff = ffmpeg();
+    // with ffmpeg any video and audio can be joined; without, a pair NDM joins itself (MP4 + M4A, WebM + WebM)
+    let fmt = if ff.is_some() { MERGED } else { PAIR };
+    let looked = command(&p).args(&args).args(["-J", "-f", fmt]).arg(&url).output().map_err(|e| e.to_string())?;
     if !looked.status.success() {
         return Err(last_error(&String::from_utf8_lossy(&looked.stderr)));
     }
-    let picked = Picked::of(&looked.stdout).ok_or("yt-dlp gave no formats")?;
-    let json = dir.join(format!("{stem}.ndm-info.json"));
-    std::fs::write(&json, &looked.stdout).map_err(|e| e.to_string())?;
-    let source = ["--load-info-json".to_string(), json.display().to_string()];
-    let result = (|| -> Result<bool, String> {
-        let Some((v, a)) = picked.pair else {
-            let (got, _) = fetch_video(job, &p, &source, &args, &picked.single, &template(&dest), 0, picked.size)?;
-            return finish(got);
-        };
-        let (got, fetched) = fetch_video(job, &p, &source, &args, &v, &format!("{}.ndm-video.%(ext)s", template(&dir.join(&stem))), 0, picked.size)?;
-        if !matches!(got, Got::Done) {
-            return finish(got);
-        }
-        let video = left(&dir, &stem, "ndm-video").ok_or("yt-dlp finished without the video stream")?;
-        let (got, _) = fetch_video(job, &p, &source, &args, &a, &format!("{}.ndm-audio.%(ext)s", template(&dir.join(&stem))), fetched, picked.size)?;
-        if !matches!(got, Got::Done) {
-            return finish(got);
-        }
-        let audio = left(&dir, &stem, "ndm-audio").ok_or("yt-dlp finished without the audio stream")?;
-        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        let expected = size(&video) + size(&audio);
-        let joined = crate::stream::with_post(job, "Joining video and audio...", std::slice::from_ref(&dest), expected, || crate::stream::join_files(&video, &audio, &dest));
-        match joined {
-            Ok(true) => {
-                let _ = std::fs::remove_file(&video);
-                let _ = std::fs::remove_file(&audio);
-            }
-            // couldn't join them: the video as the file, its sound beside it
-            _ => {
-                std::fs::rename(&video, &dest).map_err(|e| e.to_string())?;
-                let ext = audio.extension().unwrap_or_default().to_string_lossy().to_string();
-                let _ = std::fs::rename(&audio, dir.join(format!("{stem}.audio.{ext}")));
+    let streams = picked(&looked.stdout).ok_or("yt-dlp gave no formats")?;
+    let dir = dest.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let outs: Vec<PathBuf> = if streams.len() == 2 {
+        ["ndm-video", "ndm-audio"].iter().zip(&streams).map(|(tag, s)| dir.join(format!("{stem}.{tag}.{}", s.ext))).collect()
+    } else {
+        vec![dest.clone()]
+    };
+    let got = if streams.iter().all(|s| s.direct) {
+        fetch_direct(job, agent, global, &streams, &outs)?
+    } else {
+        // DASH, HLS...: yt-dlp downloads them from the look-up, one after the other
+        let json = dir.join(format!("{stem}.ndm-info.json"));
+        std::fs::write(&json, &looked.stdout).map_err(|e| e.to_string())?;
+        let source = ["--load-info-json".to_string(), json.display().to_string()];
+        let expected = if streams.iter().all(|s| s.size > 0) { streams.iter().map(|s| s.size).sum() } else { 0 };
+        let mut got = Got::Done;
+        let mut before = 0;
+        for (s, out) in streams.iter().zip(&outs) {
+            let (g, fetched) = fetch_video(job, &p, &source, &args, &s.id, &template(out), before, expected)?;
+            before += fetched;
+            if !matches!(g, Got::Done) {
+                got = g;
+                break;
             }
         }
-        finish(Got::Done)
-    })();
-    let _ = std::fs::remove_file(&json);
-    result
+        let _ = std::fs::remove_file(&json);
+        match got {
+            Got::Done => true,
+            Got::Stopped => false,
+            Got::Failed(e) => return Err(e),
+        }
+    };
+    if !got {
+        return Ok(false);
+    }
+    if let [video, audio] = &outs[..] {
+        join(job, video, audio, &dest, ff.as_deref())?;
+    }
+    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return Err("yt-dlp finished without a file".into());
+    }
+    let mut i = job.info();
+    i.size = Some(size);
+    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
+    Ok(true)
+}
+
+/// The video and audio streams joined into `dest` after the download, with the bar showing it: NDM's own
+/// joiner (MP4, WebM), else ffmpeg; failing both, the video is the file and its sound lies beside it.
+fn join(job: &Job, video: &Path, audio: &Path, dest: &Path, ff: Option<&Path>) -> Result<(), String> {
+    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let expected = size(video) + size(audio);
+    let watch = [dest.to_path_buf()];
+    let label = "Joining video and audio...";
+    let mut joined = crate::stream::with_post(job, label, &watch, expected, || crate::stream::join_files(video, audio, dest)).unwrap_or(false);
+    if !joined {
+        if let Some(ff) = ff {
+            let _ = std::fs::remove_file(dest);
+            joined = crate::stream::with_post(job, label, &watch, expected, || {
+                command(ff).args(["-y", "-v", "error", "-i"]).arg(video).arg("-i").arg(audio).args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy"]).arg(dest).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+            });
+        }
+    }
+    if joined {
+        let _ = std::fs::remove_file(video);
+        let _ = std::fs::remove_file(audio);
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(dest);
+    std::fs::rename(video, dest).map_err(|e| e.to_string())?;
+    let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let ext = audio.extension().unwrap_or_default().to_string_lossy().to_string();
+    let _ = std::fs::rename(audio, dest.with_file_name(format!("{stem}.audio.{ext}")));
+    Ok(())
+}
+
+/// The streams fetched by NDM's own engine, all at once, each a download of its own with the parent's
+/// connections, segments, networks and speed limit; the parent's bar shows their segments one after the
+/// other, against the size the look-up gave (or the servers', once they answer). False: stopped.
+fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
+    let (conns, referrer, limit) = {
+        let i = job.info();
+        (i.conns.max(1), i.referrer.clone(), i.limit_kb)
+    };
+    let lanes = job.lanes.lock().unwrap().clone();
+    let parts: Vec<std::sync::Arc<Job>> = streams
+        .iter()
+        .zip(outs)
+        .map(|(s, out)| {
+            let header = |name: &str| s.headers.iter().find(|h| h.0.eq_ignore_ascii_case(name)).map(|h| h.1.clone());
+            let headers = s.headers.iter().filter(|h| !["referer", "cookie"].contains(&h.0.to_ascii_lowercase().as_str())).cloned().collect();
+            let part = Job::new(Info {
+                url: s.url.clone(),
+                folder: out.parent().map(|d| d.display().to_string()).unwrap_or_default(),
+                name: out.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                referrer: header("referer").unwrap_or_else(|| referrer.clone()),
+                cookies: header("cookie").unwrap_or_default(),
+                headers,
+                conns,
+                limit_kb: limit,
+                ..Default::default()
+            });
+            *part.lanes.lock().unwrap() = lanes.clone();
+            part
+        })
+        .collect();
+    let expected: Vec<u64> = streams.iter().map(|s| s.size).collect();
+    // the total from the look-up before anything arrives
+    show_parts(job, &parts, &expected);
+    let results: Vec<Result<bool, String>> = std::thread::scope(|sc| {
+        let running: Vec<_> = parts.iter().map(|part| sc.spawn(move || part.run_part(agent, global))).collect();
+        while running.iter().any(|h| !h.is_finished()) {
+            if job.stopping() {
+                parts.iter().for_each(|p| p.stop());
+            }
+            show_parts(job, &parts, &expected);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        show_parts(job, &parts, &expected);
+        running.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("a download thread stopped".into()))).collect()
+    });
+    for r in results {
+        match r {
+            Err(e) => return Err(e),
+            Ok(false) => return Ok(false),
+            Ok(true) => {}
+        }
+    }
+    Ok(!job.stopping())
+}
+
+/// The parent's bar and segment list from its streams' downloads: their segments one after the other, the
+/// total from each stream's size (the server's once known, else the look-up's). The total only grows when
+/// a stream's real size turns out larger; done never goes back.
+fn show_parts(job: &Job, parts: &[std::sync::Arc<Job>], expected: &[u64]) {
+    let (mut segs, mut offset, mut known) = (Vec::new(), 0u64, true);
+    for (part, guess) in parts.iter().zip(expected) {
+        let i = part.info();
+        for s in &i.segs {
+            let mut s = s.clone();
+            s.start += offset;
+            s.next += offset;
+            s.stop = s.stop.map(|e| e + offset);
+            segs.push(s);
+        }
+        let size = i.size.unwrap_or(*guess);
+        known &= size > 0;
+        offset += size;
+    }
+    let probed = parts.iter().all(|p| p.info().probed);
+    let ranges = parts.iter().all(|p| p.info().ranges);
+    let mut i = job.info();
+    if known {
+        i.size = Some(offset);
+    }
+    (i.probed, i.ranges) = (probed, ranges);
+    if !segs.is_empty() {
+        i.segs = segs;
+        if i.status == Status::Connecting && i.done() > 0 {
+            i.status = Status::Downloading;
+        }
+    }
 }
 
 // ---------- Downloads -> Set yt-dlp ----------
@@ -830,7 +940,7 @@ mod tests {
         assert!(ffmpeg().is_none(), "ffmpeg hidden");
         let dir = home.join("Video");
         let job = Job::new(crate::engine::Info { url: format!("{base}clip.mpd"), folder: dir.display().to_string(), name: "clip.mp4".into(), ..Default::default() });
-        assert_eq!(run(&job), Ok(true));
+        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         let d = std::fs::read(dir.join("clip.mp4")).unwrap();
         let top = crate::stream::boxes(&d, 0, d.len());
         let moov = top.iter().find(|b| &b.3 == b"moov").copied().expect("one MP4");
@@ -844,11 +954,11 @@ mod tests {
         assert_eq!(job.info().size, Some(d.len() as u64));
         // a site with one file that has both: no separate streams, so that file
         let job = Job::new(crate::engine::Info { url: format!("{base}movie.mp4"), folder: dir.display().to_string(), name: "movie.mp4".into(), ..Default::default() });
-        assert_eq!(run(&job), Ok(true));
+        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         assert_eq!(std::fs::read(dir.join("movie.mp4")).unwrap(), movie);
         // and yt-dlp's own error when there is nothing
         let job = Job::new(crate::engine::Info { url: format!("{base}gone.mp4"), folder: dir.display().to_string(), name: "gone.mp4".into(), ..Default::default() });
-        let e = run(&job).unwrap_err();
+        let e = run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()).unwrap_err();
         assert!(e.contains("404"), "{e}");
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -862,5 +972,47 @@ mod tests {
         let prog = unzip_one(&zip, &name).unwrap();
         let sum = Sha256::digest(&prog).iter().map(|b| format!("{b:02x}")).collect::<String>();
         assert_eq!(sum, std::env::var("NDM_TEST_DENO_SHA256").unwrap());
+    }
+    /// The video and audio streams fetched by NDM's engine at once, each over several connections; the
+    /// parent's bar only moves forward against a total that stays put.
+    #[test]
+    fn ndm_fetches_both_streams() {
+        use std::sync::Arc;
+        let data: Vec<u8> = (0..4_000_000u32).map(|i| (i % 251) as u8).collect();
+        let base = crate::engine::tests::serve(Arc::new(data.clone()));
+        let dir = std::env::temp_dir().join(format!("ndm-direct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = Job::new(Info { conns: 4, folder: dir.display().to_string(), name: "x.mp4".into(), ..Default::default() });
+        let stream = |id: &str, path: &str, ext: &str| Stream { id: id.into(), url: format!("{base}{path}"), ext: ext.into(), size: data.len() as u64, headers: vec![("User-Agent".into(), "ndm-test/1".into())], direct: true };
+        let streams = [stream("137", "rslow-v.mp4", "mp4"), stream("140", "r-a.m4a", "m4a")];
+        let outs = [dir.join("x.ndm-video.mp4"), dir.join("x.ndm-audio.m4a")];
+        let agent = crate::engine::agent("", "ndm-test");
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let (ok, samples) = std::thread::scope(|sc| {
+            let watch = sc.spawn(|| {
+                let mut v = Vec::new();
+                while !done.load(Relaxed) {
+                    let i = job.info();
+                    v.push((i.done(), i.size, i.segs.iter().filter(|s| s.owned).count()));
+                    drop(i);
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                }
+                v
+            });
+            let ok = fetch_direct(&job, &agent, &Limiter::default(), &streams, &outs);
+            done.store(true, Relaxed);
+            (ok, watch.join().unwrap())
+        });
+        assert_eq!(ok, Ok(true));
+        for out in &outs {
+            assert_eq!(std::fs::read(out).unwrap(), data, "{out:?}");
+        }
+        assert!(samples.windows(2).all(|w| w[1].0 >= w[0].0), "the bar never goes back");
+        let total = 2 * data.len() as u64;
+        assert!(samples.iter().all(|s| s.1 == Some(total)), "the total stays put: {:?}", samples.iter().map(|s| s.1).collect::<Vec<_>>());
+        assert!(samples.iter().map(|s| s.2).max().unwrap() > 2, "several connections at once");
+        assert_eq!(job.info().done(), total);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
