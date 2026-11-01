@@ -23,7 +23,7 @@ jobs:
       - run: cargo test --release
       - name: Language files are up to date
         run: python tools/ndm_lng.py --check
-      - name: NDM starts (no graphics card here: OpenGL, else wgpu with Windows' software renderer)
+      - name: "NDM starts (no graphics card here: OpenGL, else wgpu with Windows' software renderer)"
         run: powershell -File tools\smoke-windows.ps1 target\release\ndm.exe
       - name: Installer builds
         run: |
