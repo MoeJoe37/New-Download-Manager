@@ -85,7 +85,8 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     return items;
   }
   function download(m) {
-    chrome.runtime.sendMessage({ kind: 'download', url: m.url, filename: `${title()}.${ext(m)}` });
+    // the size and type the page got, so the app can tell whether it gets the same file
+    chrome.runtime.sendMessage({ kind: 'download', url: m.url, filename: `${title()}.${ext(m)}`, size: m.size || 0, mime: /\//.test(m.type) ? m.type : '' });
     menu.style.display = 'none';
   }
   function show(el) {

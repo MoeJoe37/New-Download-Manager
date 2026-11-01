@@ -102,6 +102,8 @@ pub struct Info {
     /// Server's Last-Modified; a different one on resume means the file changed (option
     /// "Ignore file modification time changes when resuming a download").
     pub modified: String,
+    /// The server labels the file a web page (text/html): then a part labelled so is no sign of trouble.
+    pub page: bool,
     /// Temporary directory for the .part file (Options -> Save to); "" = next to the file.
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
@@ -937,6 +939,38 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
     Ok(probe_of(&r))
 }
 
+/// Does NDM get the file the browser is downloading? A download the browser starts comes to NDM as an address,
+/// and some addresses give NDM something else: a file a site's service worker makes in the page (Telegram
+/// Web), an expired or one-time link, a login page. The browser's `mime` and `size` (0: unknown) and file name
+/// are compared with what the server sends NDM; Err says why the browser should keep the download.
+pub fn same_file(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str, mime: &str, size: u64, filename: &str) -> Result<(), String> {
+    if crate::stream::is_manifest(url) || crate::stream::is_media_url(url) || is_ftp(url) {
+        return Ok(());
+    }
+    let r = call(request(agent, url, referrer, cookies).set("Range", "bytes=0-0"))?;
+    let got = r.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let p = probe_of(&r);
+    drop(r); // not read: a server that ignores the range would send the whole file
+    let page = |m: &str| m == "text/html" || m == "application/xhtml+xml";
+    let want = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let named_page = matches!(filename.rsplit('.').next().map(str::to_ascii_lowercase).as_deref(), Some("htm" | "html" | "xhtml" | "mht" | "mhtml"));
+    if page(&got) && !page(&want) && !(want.is_empty() && named_page) {
+        return Err(format!("the server sends a web page ({got}), not the file the browser gets ({})", if want.is_empty() { "?" } else { &want }));
+    }
+    if let (true, Some(s)) = (size > 0, p.size) {
+        if s != size {
+            return Err(format!("the server sends {s} bytes, the browser gets {size}"));
+        }
+    }
+    Ok(())
+}
+
+/// A Content-Type that says web page.
+fn is_page(content_type: Option<&str>) -> bool {
+    let m = content_type.unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    m == "text/html" || m == "application/xhtml+xml"
+}
+
 fn probe_of(r: &ureq::Response) -> Probe {
     let total = r.header("Content-Range").and_then(|c| c.rsplit('/').next()).and_then(|t| t.trim().parse().ok());
     let ranges = r.status() == 206 && total.is_some();
@@ -1157,6 +1191,7 @@ impl Job {
                     let mut i = self.info();
                     i.cookies = merge_cookies(&i.cookies, &set);
                 }
+                self.info().page = is_page(r.header("Content-Type"));
                 (probe_of(&r), r.into_reader())
             };
             let mut i = self.info();
@@ -1400,6 +1435,10 @@ impl Job {
                 if ranges && resp.status() != 206 {
                     return Err("server ignored the Range request".into());
                 }
+                // a page where the file was (an expired link, a login or error page): not written into the file
+                if is_page(resp.header("Content-Type")) && !self.info().page {
+                    return Err("the server sends a web page instead of the file".into());
+                }
                 let lm = resp.header("Last-Modified").unwrap_or_default();
                 let old = self.info().modified.clone();
                 if !lm.is_empty() && !old.is_empty() && lm != old && !self.ignore_date.load(Relaxed) {
@@ -1623,6 +1662,37 @@ mod tests {
             }
         });
         base
+    }
+
+    #[test]
+    fn browser_file_is_checked() {
+        // /file: a 1000-byte video; /app: the site's web page (what a service worker's address gives NDM);
+        // /gone: an expired link
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut line = String::new();
+                let mut r = BufReader::new(&s);
+                r.read_line(&mut line).unwrap();
+                while { let mut h = String::new(); r.read_line(&mut h).unwrap_or(0) > 2 } {}
+                let head = match line.split(' ').nth(1).unwrap_or("") {
+                    "/file" => "HTTP/1.1 206 Partial\r\nContent-Type: video/mp4\r\nContent-Range: bytes 0-0/1000\r\nContent-Length: 1\r\n\r\nx",
+                    "/app" => "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 4\r\n\r\n<p/>",
+                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                };
+                let _ = (&s).write_all(head.as_bytes());
+            }
+        });
+        let a = agent("", "");
+        let check = |path: &str, mime: &str, size: u64, name: &str| same_file(&a, &format!("{base}{path}"), "", "", mime, size, name);
+        assert!(check("/file", "video/mp4", 1000, "v.mp4").is_ok());
+        assert!(check("/file", "", 0, "v.mp4").is_ok(), "nothing known from the browser");
+        assert!(check("/file", "video/mp4", 1_000_000, "v.mp4").is_err(), "another size");
+        assert!(check("/app", "video/mp4", 12_000_000, "v.mp4").is_err(), "a page for a video");
+        assert!(check("/app", "", 0, "song.mp3").is_err(), "a page for an mp3");
+        assert!(check("/app", "text/html", 0, "page.html").is_ok(), "a page is a page");
+        assert!(check("/gone", "audio/mpeg", 0, "a.mp3").is_err(), "an error");
     }
 
     /// A server that serves at most `most` requests at once and answers 503 to the rest; returns its

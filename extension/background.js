@@ -45,7 +45,10 @@ async function browserProxy() {
   return v.proxyType === 'autoConfig' && v.autoConfigUrl ? `pac:${v.autoConfigUrl}` : '';
 }
 
-// true: the app took it, false: the app declined it, null: the app couldn't be reached (even after starting it)
+// true: the app took it, false: the app declined it, null: the app couldn't be reached (even after starting it).
+// With extra.check the app first makes sure the server sends it the same file the browser gets (size, type);
+// pages that make their files themselves (a service worker, as Telegram Web does), expired one-time links and
+// login pages give the app something else, and those stay with the browser.
 async function post(url, extra) {
   const cookies = (await chrome.cookies.getAll({ url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
   const body = JSON.stringify({ url, cookies, proxy: await browserProxy(), ...extra });
@@ -91,15 +94,18 @@ chrome.downloads.onDeterminingFilename?.addListener((item, suggest) => {
 async function handle(item, suggest) {
   const k = (await refreshConfig()).keys;
   // the prevent keys (Options -> General -> Keys...) leave it to the browser
+  const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
   const taken = k && keysHeld(k, 'prevent') ? false : await post(item.finalUrl || item.url, { referrer: item.referrer || '', filename: item.filename || '', mime: item.mime || '',
+    size, check: true,
     // force keys without the link-click check: take over whatever starts while they are held
     force: !!k && !k.check_mouse && keysHeld(k, 'force') && !(k.skip_html && PAGE_LIKE.test(item.mime || '')) });
-  if (taken === false) {
-    // declined by the app's file types / exceptions: the browser downloads it as usual
+  if (taken !== true) {
+    // declined (the app's file types and exceptions, or the server doesn't send the app the same file), or the
+    // app can't be reached: the browser downloads it as usual
     suggest();
     return chrome.downloads.resume(item.id).catch(() => {});
   }
-  // taken by the app, or the app can't be reached: the browser doesn't download it
+  // taken by the app: the browser doesn't download it
   await chrome.downloads.cancel(item.id).catch(() => {});
   chrome.downloads.erase({ id: item.id });
 }
@@ -164,7 +170,7 @@ chrome.webRequest.onResponseStarted.addListener(async d => {
   list.push({ url: d.url, type: stream ? (/mpd$/i.test(path) || /dash/.test(type) ? 'dash' : 'hls') : type || path.split('.').pop(), size });
   await chrome.storage.session.set({ [key(d.tabId)]: list.slice(-20) });
   // "Don't capture downloads from web-players automatically" turned off: hand it over right away
-  if (c.panel_nocap === false && !stream) send(d.url, { referrer: d.initiator || d.originUrl || '', mime: type }); // originUrl: Firefox
+  if (c.panel_nocap === false && !stream) send(d.url, { referrer: d.initiator || d.originUrl || '', mime: type, size, check: true }); // originUrl: Firefox
   chrome.tabs.sendMessage(d.tabId, { kind: 'media', count: list.length }).catch(() => {});
 }, { urls: ['<all_urls>'], types: ['media', 'xmlhttprequest', 'other', 'object'] }, ['responseHeaders']);
 
@@ -202,7 +208,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     return true;
   }
   if (msg.kind === 'download') {
-    send(msg.url, { referrer: tab.url, filename: msg.filename || '', force: true }).then(reply);
+    // a file the app can't get as the page did: the browser's own download takes it
+    send(msg.url, { referrer: tab.url, filename: msg.filename || '', force: true, check: true, size: msg.size || 0, mime: msg.mime || '' }).then(ok => {
+      if (!ok) chrome.downloads.download({ url: msg.url, ...(msg.filename ? { filename: msg.filename } : {}) }).catch(() => {});
+      reply(ok);
+    });
     return true;
   }
 });

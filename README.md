@@ -110,7 +110,8 @@ Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager
    needed). The portable zip runs from any folder (a USB stick, too): unpack it and start `ndm.exe`.
 2. Install the browser extension: open your browser's extensions page, turn on *Developer mode*, click
    *Load unpacked* and choose the `extension` folder in NDM's install folder
-   (Start menu → New Download Manager → *Browser extension folder*).
+   (Start menu → New Download Manager → *Browser extension folder*). Or choose **Tasks → Export
+   extension...** in NDM to save a copy anywhere and see the steps for your browser.
 3. Start NDM once, so the browser can reach it.
 
 **macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first

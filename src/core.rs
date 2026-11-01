@@ -732,6 +732,10 @@ pub struct Incoming {
     pub force: bool,
     /// The browser's proxy (`Info::browser_proxy`).
     pub proxy: String,
+    /// A download the browser started (the extension holds it meanwhile): NDM takes it only if the server
+    /// sends NDM the same file (`engine::same_file`), with the browser's `size` (0: unknown) and `mime`.
+    pub check: bool,
+    pub size: u64,
     /// "Download all links": the page's links; `url` is the page.
     pub links: Vec<Link>,
     /// From the command line:
@@ -1702,11 +1706,37 @@ impl Core {
                 let accepted = req.and_then(|(_, body, ua)| serde_json::from_slice::<Incoming>(&body).ok().map(|i| (i, ua)))
                     .filter(|(inc, ua)| inc.cli || core.captures(ua) && core.wants(inc))
                     .map(|(inc, _)| inc);
-                reply(if accepted.is_some() { "200 OK" } else { "204 No Content" }, "");
-                if let Some(inc) = accepted {
-                    let _ = tx.send(inc);
-                    notify();
-                }
+                let inc = match accepted {
+                    Some(inc) if inc.check => inc,
+                    other => {
+                        reply(if other.is_some() { "200 OK" } else { "204 No Content" }, "");
+                        if let Some(inc) = other {
+                            let _ = tx.send(inc);
+                            notify();
+                        }
+                        continue;
+                    }
+                };
+                // a download the browser started: taken only when the server sends NDM the same file, else the
+                // browser keeps it (checked on its own thread; no answer in 15 s leaves it to the browser too)
+                let (core, tx, notify) = (core.clone(), tx.clone(), notify.clone());
+                thread::spawn(move || {
+                    let (done, wait) = std::sync::mpsc::channel();
+                    let i = inc.clone();
+                    let agent = core.agent(&i.url);
+                    thread::spawn(move || {
+                        let _ = done.send(engine::same_file(&agent, &i.url, &i.referrer, &i.cookies, &i.mime, i.size, &i.filename));
+                    });
+                    let same = wait.recv_timeout(Duration::from_secs(15)).unwrap_or_else(|_| Err("no answer".into()));
+                    if let Err(e) = &same {
+                        eprintln!("left to the browser: {} ({e})", inc.url);
+                    }
+                    let _ = (&s).write_all(format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\nX-NDM: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", if same.is_ok() { "200 OK" } else { "204 No Content" }).as_bytes());
+                    if same.is_ok() {
+                        let _ = tx.send(inc);
+                        notify();
+                    }
+                });
             }
         });
     }

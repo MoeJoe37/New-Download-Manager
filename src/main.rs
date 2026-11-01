@@ -748,6 +748,33 @@ fn refresh_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     copy_dir(from, to)
 }
 
+/// The height (DLU) of a message window's text: room for about 55 characters a line, at least the 38 of NDM's
+/// own message windows (translations run longer, so the translated text is measured).
+fn info_height(text: &str) -> f32 {
+    let lines: usize = tr(text).split('\n').map(|l| l.chars().count() / 55 + 1).sum();
+    (lines as f32 * 9.0).max(38.0)
+}
+
+/// Tasks -> Export extension...: a copy of NDM's browser extension in a folder the user picks, to load in any
+/// browser (its extensions page, "Load unpacked"; Firefox: about:debugging), with the steps in a message.
+impl App {
+    fn export_extension(&mut self) {
+        let Some(src) = extension_dir() else {
+            return self.open(Dialog::Info { title: "Export extension".into(), text: "The browser extension isn't in NDM's folder: install NDM again to get it.".into() });
+        };
+        let Some(to) = rfd::FileDialog::new().set_title(tr_os("Export extension")).pick_folder() else { return };
+        let dest = to.join("NDM extension");
+        let text = match copy_dir(&src, &dest) {
+            Ok(()) => {
+                explore(&dest);
+                i18n::trf_os("The browser extension is in this folder:\n%s\n\nChrome, Edge, Brave, Opera, Vivaldi: open the browser's extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select the folder.\nFirefox: open about:debugging, click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in the folder.", &[&i18n::ltr(&dest.display().to_string())])
+            }
+            Err(e) => i18n::trf_os("The extension couldn't be saved there: %s", &[&e]),
+        };
+        self.open(Dialog::Info { title: "Export extension".into(), text });
+    }
+}
+
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? {
@@ -2866,6 +2893,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.close_menu();
                 }
                 ui.separator();
+                if ui.button(tr("Export extension...")).clicked() {
+                    ui.close_menu();
+                    self.export_extension();
+                }
                 // macOS has no floating drop target
                 if cfg!(not(target_os = "macos")) {
                     let mut dt = self.core.settings().drop_target;
@@ -4245,7 +4276,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Networks { nics, .. } => ("Networks".into(), tpl(240.0, 66.0 + 12.0 * nics.len().max(1) as f32)),
             Dialog::QueueName { .. } => ("Enter queue name".into(), tpl(186.0, 74.0)),
             Dialog::QuotaHit { .. } => ("Download limits exceeded!".into(), tpl(339.0, 93.0)),
-            Dialog::Info { title, .. } => (title.clone(), tpl(260.0, 70.0)),
+            Dialog::Info { title, text } => (title.clone(), tpl(260.0, 32.0 + info_height(text))),
             Dialog::AdvProxy { .. } => ("Advanced proxy settings".into(), tpl(268.0, 285.0)),
             Dialog::Category { orig, .. } => (if orig.is_some() { "Editing category properties" } else { "Adding a category to New Download Manager categories list" }.to_string(), tpl(322.0, 177.0)),
             Dialog::CatDelete { .. } => ("Deleting a category from New Download Manager categories list".into(), tpl(260.0, 60.0)),
@@ -6004,8 +6035,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::Info { text, .. } => {
                 let mut d = dlu::D::new(ui);
-                d.text(7.0, 7.0, 246.0, 38.0, text.as_str());
-                !d.button(105.0, 50.0, 50.0, 14.0, "OK", true)
+                let h = info_height(text);
+                d.text(7.0, 7.0, 246.0, h, text.as_str());
+                !d.button(105.0, h + 12.0, 50.0, 14.0, "OK", true)
             }
             Dialog::Update { slot, quiet } => {
                 let mut d = dlu::D::new(ui);
