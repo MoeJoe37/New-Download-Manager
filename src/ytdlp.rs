@@ -11,10 +11,13 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 /// Sites whose pages hold a video for yt-dlp (the page itself, not a file on their servers); the browser
 /// extension's "Download this video" menu item and panel use the same list (VIDEO_SITES).
-const SITES: [&str; 22] = [
+const SITES: &[&str] = &[
     "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "dai.ly", "twitch.tv", "tiktok.com", "instagram.com",
     "facebook.com", "fb.watch", "x.com", "twitter.com", "reddit.com", "v.redd.it", "soundcloud.com", "bilibili.com",
-    "rumble.com", "streamable.com", "ok.ru", "vk.com", "bandcamp.com", "mixcloud.com",
+    "rumble.com", "streamable.com", "ok.ru", "vk.com", "bandcamp.com", "mixcloud.com", "douyin.com", "kick.com",
+    "threads.net", "threads.com", "pinterest.com", "tumblr.com", "linkedin.com", "9gag.com", "imgur.com", "weibo.com",
+    "nicovideo.jp", "bilibili.tv", "snapchat.com", "likee.video", "coub.com", "odysee.com", "bitchute.com",
+    "vkvideo.ru", "rutube.ru", "clips.twitch.tv",
 ];
 
 fn host_of(url: &str) -> String {
@@ -33,7 +36,10 @@ pub fn is_video_page(url: &str) -> bool {
     }
     let host = u.host_str().unwrap_or("").to_ascii_lowercase();
     let file = u.path().rsplit('/').next().unwrap_or("").to_ascii_lowercase();
-    let plain = [".mp4", ".webm", ".mp3", ".m4a", ".zip", ".jpg", ".png", ".m3u8", ".mpd"].iter().any(|e| file.ends_with(e));
+    // a file on the site (a picture, a document, a program, a stream's playlist) is NDM's own to download
+    let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    let known = crate::core::CATEGORIES.iter().any(|(_, exts)| exts.split_whitespace().any(|x| x == ext));
+    let plain = !ext.is_empty() && (known || ["jpg", "jpeg", "png", "gif", "gifv", "webp", "avif", "svg", "bmp", "m3u8", "mpd", "json", "txt", "csv"].contains(&ext));
     !plain && SITES.iter().any(|s| on_site(&host, s))
 }
 
@@ -97,9 +103,14 @@ fn base_args(url: &str, referrer: &str, cookies: &str) -> Vec<String> {
     a
 }
 
-/// The last "ERROR: ..." yt-dlp printed, as the download's error.
+/// The last "ERROR: ..." yt-dlp printed, as the download's error; an address yt-dlp doesn't know as a video
+/// (its "generic" extractor gave up: a feed, a profile, a search) says so first.
 fn last_error(err: &str) -> String {
-    err.lines().rev().find_map(|l| l.strip_prefix("ERROR: ")).unwrap_or(err.lines().last().unwrap_or("yt-dlp failed")).trim().to_string()
+    let e = err.lines().rev().find_map(|l| l.strip_prefix("ERROR: ")).unwrap_or(err.lines().last().unwrap_or("yt-dlp failed")).trim().to_string();
+    if e.starts_with("[generic]") || e.contains("Unsupported URL") {
+        return format!("{}\n{e}", crate::i18n::tr_os("There is no video at this address that yt-dlp knows: open the video's own page (click the video or its date) and download it from there."));
+    }
+    e
 }
 
 /// With ffmpeg: the best video and audio, merged by yt-dlp into an MP4.
@@ -129,10 +140,30 @@ impl Stream {
         let text = |k: &str| f.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let size = f.get("filesize").and_then(|s| s.as_f64()).or_else(|| f.get("filesize_approx").and_then(|s| s.as_f64())).unwrap_or(0.0) as u64;
         let headers = f.get("http_headers").and_then(|h| h.as_object()).map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default();
+        // the stream's cookies (yt-dlp keeps them out of its headers: "name=value; Domain=...; Path=/; ...")
+        let mut headers: Vec<(String, String)> = headers;
+        let cookie = cookie_header(&text("cookies"));
+        if !cookie.is_empty() {
+            headers.retain(|h: &(String, String)| !h.0.eq_ignore_ascii_case("cookie"));
+            headers.push(("Cookie".into(), cookie));
+        }
         let url = text("url");
         let direct = matches!(text("protocol").as_str(), "http" | "https") && (url.starts_with("http://") || url.starts_with("https://"));
         Some(Stream { id: f.get("format_id")?.as_str()?.to_string(), url, ext: text("ext"), size, headers, direct })
     }
+}
+
+/// yt-dlp's cookie list for a stream ("a=1; Domain=.x.com; Path=/; Secure; Expires=...; b=2; ...") as a
+/// Cookie header ("a=1; b=2").
+fn cookie_header(list: &str) -> String {
+    const ATTRS: [&str; 7] = ["domain", "path", "secure", "expires", "version", "httponly", "max-age"];
+    list.split(';')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .filter(|p| !ATTRS.contains(&p.split('=').next().unwrap_or("").trim().to_ascii_lowercase().as_str()))
+        .filter(|p| p.contains('='))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// What the look-up picked: the video and audio streams, or the one stream that has both.
@@ -163,7 +194,7 @@ pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> 
     let ext = if ff.is_some() { "mp4" } else { ext.trim() };
     let name = sanitize(&format!("{}.{ext}", title.trim()));
     // the size shows as the streams arrive (video and audio come separately)
-    Ok(Probe { name, size: None, ranges: false, modified: String::new(), stream: false })
+    Ok(Probe { name, size: None, ranges: false, modified: String::new(), stream: false, page: false, ytdlp: true })
 }
 
 /// What one yt-dlp run left: done, stopped by the user, or yt-dlp's error.
@@ -313,10 +344,9 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     } else {
         vec![dest.clone()]
     };
-    let got = if streams.iter().all(|s| s.direct) {
-        fetch_direct(job, agent, global, &streams, &outs)?
-    } else {
-        // DASH, HLS...: yt-dlp downloads them from the look-up, one after the other
+    // DASH, HLS... (and a server that won't let NDM's engine in): yt-dlp downloads them from the look-up,
+    // one after the other
+    let by_ytdlp = |job: &Job| -> Result<bool, String> {
         let json = dir.join(format!("{stem}.ndm-info.json"));
         std::fs::write(&json, &looked.stdout).map_err(|e| e.to_string())?;
         let source = ["--load-info-json".to_string(), json.display().to_string()];
@@ -333,10 +363,29 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
         }
         let _ = std::fs::remove_file(&json);
         match got {
-            Got::Done => true,
-            Got::Stopped => false,
-            Got::Failed(e) => return Err(e),
+            Got::Done => Ok(true),
+            Got::Stopped => Ok(false),
+            Got::Failed(e) => Err(e),
         }
+    };
+    let got = if streams.iter().all(|s| s.direct) {
+        match fetch_direct(job, agent, global, &streams, &outs) {
+            Ok(got) => got,
+            Err(e) => {
+                // NDM's engine was turned away (a site that checks more than the address): yt-dlp's own way
+                eprintln!("{url}: NDM's engine couldn't fetch the streams ({e}), yt-dlp downloads them");
+                for out in &outs {
+                    let _ = std::fs::remove_file(out);
+                    let _ = std::fs::remove_file(format!("{}.part", out.display()));
+                }
+                let mut i = job.info();
+                (i.size, i.segs) = (None, Vec::new());
+                drop(i);
+                by_ytdlp(job)?
+            }
+        }
+    } else {
+        by_ytdlp(job)?
     };
     if !got {
         return Ok(false);
@@ -747,6 +796,10 @@ mod tests {
         assert!(!is_video_page("https://video.twimg.com/a/b.mp4"));
         assert!(!is_video_page("https://cdn.vimeo.com/file.mp4"), "a file is downloaded by NDM itself");
         assert!(!is_video_page("ftp://youtube.com/x"));
+        assert!(is_video_page("https://www.tiktok.com/@a/video/123"));
+        assert!(is_video_page("https://www.threads.net/@a/post/xyz"));
+        assert!(!is_video_page("https://i.imgur.com/abc.gif"), "a picture on a video site is a file");
+        assert!(!is_video_page("https://www.linkedin.com/dms/report.pdf"));
         assert_eq!(last_error("[info] x\nERROR: [youtube] abc: Video unavailable\n"), "[youtube] abc: Video unavailable");
         let sums = "aa  yt-dlp\n0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa  yt-dlp_macos\n";
         assert_eq!(listed_sum(sums, "yt-dlp_macos").as_deref(), Some("0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa"));
@@ -759,6 +812,10 @@ mod tests {
         assert!(!base_args("https://www.youtube.com/watch?v=a", "", "SID=1").iter().any(|a| a.starts_with("Cookie")));
         assert!(base_args("https://www.instagram.com/p/a", "", "s=1").iter().any(|a| a == "Cookie: s=1"));
         assert_eq!(template(Path::new("/d/100% fun.mp4")), "/d/100%% fun.mp4");
+        assert_eq!(cookie_header("tt_chain_token=abc; Domain=.tiktok.com; Path=/; Secure; Expires=1790000000; ttwid=1%7Cx; Domain=.tiktok.com; Path=/"), "tt_chain_token=abc; ttwid=1%7Cx");
+        assert_eq!(cookie_header(""), "");
+        assert!(last_error("ERROR: [generic] Unable to download webpage: HTTP Error 404\n").contains("[generic]"));
+        assert!(last_error("ERROR: Unsupported URL: https://www.tiktok.com/foryou\n").starts_with("There is no video"));
     }
 
     /// A zip as Deno's release has it: one program, deflated (or stored), maybe in a folder.

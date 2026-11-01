@@ -2709,7 +2709,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let (s, c, agent) = (slot.clone(), ctx.clone(), self.core.agent(&info.url));
             let (url, r, k) = (info.url.clone(), info.referrer.clone(), info.cookies.clone());
             std::thread::spawn(move || {
-                *s.lock().unwrap() = Some(if video_page { ytdlp::probe(&url, &r, &k) } else { engine::probe(&agent, &url, &r, &k) });
+                let found = if video_page { ytdlp::probe(&url, &r, &k) } else { engine::probe(&agent, &url, &r, &k) };
+                // a web page from any of the sites yt-dlp knows (well beyond the ones NDM names): its video
+                let found = match found {
+                    Ok(p) if p.page => ytdlp::probe(&url, &r, &k).or(Ok(p)),
+                    other => other,
+                };
+                *s.lock().unwrap() = Some(found);
                 c.request_repaint();
             });
         }
@@ -4447,7 +4453,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let i = j.info();
                     let res = match &i.status {
                         Status::Error(e) => Some(Err(e.clone())),
-                        _ if i.probed => Some(Ok(engine::Probe { name: i.name.clone(), size: i.size, ranges: i.ranges, modified: i.modified.clone(), stream: i.stream })),
+                        _ if i.probed => Some(Ok(engine::Probe { name: i.name.clone(), size: i.size, ranges: i.ranges, modified: i.modified.clone(), stream: i.stream, page: i.page, ytdlp: i.ytdlp })),
                         _ => None,
                     };
                     drop(i);
@@ -4468,6 +4474,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                     *path = Path::new(&info.folder).join(name).display().to_string();
                                 }
                                 (info.size, info.ranges, info.probed, info.stream) = (p.size, p.ranges, true, p.stream);
+                                info.ytdlp |= p.ytdlp;
                             }
                             Err(e) => {
                                 // yt-dlp's own message says what is missing or wrong (Set yt-dlp, a sign-in...)

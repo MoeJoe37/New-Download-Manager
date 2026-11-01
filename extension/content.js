@@ -21,8 +21,44 @@
   }, true);
 })();
 
+// A video's own page, for yt-dlp: on feeds (TikTok's For You, Instagram, X, Facebook, Reddit...) the address
+// bar shows the feed, which yt-dlp can't take, while the post holding the player links to the video's page.
+// The link nearest the player that is a video's address, else the page's own (og:url, canonical), else the
+// address bar. Shared by the download panel and the right-click menu.
+const VIDEO_URL = [
+  /tiktok\.com\/@[^/?#]+\/(video|photo)\/\d+/, /vm\.tiktok\.com\/\w+/, /instagram\.com\/([^/?#]+\/)?(p|reels?|tv)\/[\w-]+/,
+  /(twitter|x)\.com\/[^/?#]+\/status\/\d+/, /facebook\.com\/(watch\/?\?v=|reel\/|[^/?#]+\/videos\/|share\/[rv]\/|video\.php)/, /fb\.watch\//,
+  /reddit\.com\/r\/[^/?#]+\/comments\//, /youtube\.com\/(watch\?|shorts\/|live\/|embed\/)/, /youtu\.be\//, /vimeo\.com\/(\d+|video\/)/,
+  /twitch\.tv\/(videos\/\d+|[^/?#]+\/clip\/|clip\/)/, /clips\.twitch\.tv\//, /dailymotion\.com\/video\//, /dai\.ly\//, /bilibili\.com\/video\//,
+  /vk\.com\/(video|clip)-?\d/, /ok\.ru\/video\//, /rumble\.com\/v[\w-]+/, /streamable\.com\/\w+/, /soundcloud\.com\/[^/?#]+\/[^/?#]+/,
+  /bandcamp\.com\/(track|album)\//, /mixcloud\.com\/[^/?#]+\/[^/?#]+/, /threads\.(net|com)\/@[^/?#]+\/post\//, /pinterest\.[a-z.]+\/pin\//,
+  /linkedin\.com\/(posts|feed\/update)\//, /tumblr\.com\/.+\/\d+/, /9gag\.com\/gag\//, /imgur\.com\/(gallery|a)\//, /kick\.com\/[^/?#]+\/(videos|clips)\//,
+];
+const isVideoUrl = u => VIDEO_URL.some(p => p.test(u || ''));
+function videoPage(el) {
+  if (isVideoUrl(location.href)) return location.href;
+  // from the player out, a few levels: the first container with a video's link is the player's post
+  for (let n = el, depth = 0; n && n !== document.documentElement && depth < 14; n = n.parentElement, depth++) {
+    const own = n.closest && n.closest('a[href]');
+    if (own && isVideoUrl(own.href)) return own.href;
+    const link = n.querySelectorAll ? [...n.querySelectorAll('a[href]')].find(a => isVideoUrl(a.href)) : null;
+    if (link) return link.href;
+  }
+  const meta = document.querySelector('meta[property="og:url"]')?.content || document.querySelector('link[rel="canonical"]')?.href;
+  if (meta && isVideoUrl(meta)) return new URL(meta, location.href).href;
+  return location.href;
+}
+// the element last right-clicked, for the menu's "Download this video" (the background asks for its page)
+let rightClicked = null;
+addEventListener('contextmenu', e => (rightClicked = e.target), true);
+
 // "Download all links": every link on the page with its text, for the app's link list.
 chrome.runtime.onMessage.addListener((m, _, reply) => {
+  if (m.kind === 'video-page-of-click') {
+    // the right-clicked player's own page (the menu asks the frame that was clicked)
+    const media = rightClicked && (rightClicked.closest?.('video,audio') || [...document.querySelectorAll('video,audio')].find(v => v.contains(rightClicked) || rightClicked.contains?.(v)));
+    return reply(videoPage(media || rightClicked || document.querySelector('video')));
+  }
   if (m.kind === 'links' && window === window.top) {
     const seen = new Set();
     reply([...document.links].filter(a => /^https?:/.test(a.href) && !seen.has(a.href) && seen.add(a.href))
@@ -86,8 +122,11 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     const r = target.getBoundingClientRect();
     if (r.width < 120 || r.height < 40) return hide();
     host.style.display = 'block';
-    host.style.top = `${window.scrollY + r.top + 6}px`;
-    host.style.left = `${window.scrollX + r.right - host.offsetWidth - 6}px`;
+    // inside a full-screen element the panel sits on the screen itself, else on the page
+    const fixed = host.parentNode !== document.documentElement;
+    host.style.position = fixed ? 'fixed' : 'absolute';
+    host.style.top = `${(fixed ? 0 : window.scrollY) + r.top + 6}px`;
+    host.style.left = `${(fixed ? 0 : window.scrollX) + r.right - host.offsetWidth - 6}px`;
   }
   async function list() {
     const items = (await chrome.runtime.sendMessage({ kind: 'list' }).catch(() => [])) || [];
@@ -105,26 +144,30 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     if (el.mediaKeys && !panel_drm) return; // protected (EME) content: "Show download panel for protected content" off
     target = el;
     label.textContent = el.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video';
-    if (!host.isConnected) document.documentElement.appendChild(host);
+    // in full screen only the full-screen element shows: the panel goes inside it
+    const holder = document.fullscreenElement || document.documentElement;
+    if (host.parentNode !== holder) holder.appendChild(host);
     clearTimeout(hideTimer);
     place();
   }
 
   bar.addEventListener('click', async e => {
     e.stopPropagation();
+    // the extension was updated or reloaded since this page opened: this copy can't reach it any more
+    if (!chrome.runtime?.id) return say('Reload the page to use New Download Manager');
     if (e.target.classList.contains('x')) {
       dismissed.add(target);
       return hide();
     }
     // YouTube and other sites that play videos in their own player: the stream pieces the page fetches
     // aren't the video, so the app gets the page and its yt-dlp finds the video
-    const page = await chrome.runtime.sendMessage({ kind: 'video-page', url: location.href }).catch(() => false);
+    const page = await chrome.runtime.sendMessage({ kind: 'video-page', url: videoPage(target) }).catch(() => false);
     if (page) return say(page === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first');
     const items = await list();
     if (!items.length) {
       // nothing played yet, or a player that streams in pieces: the page goes to yt-dlp, which knows
       // most players without the video having to play
-      const any = await chrome.runtime.sendMessage({ kind: 'video-page', url: location.href, any: true }).catch(() => false);
+      const any = await chrome.runtime.sendMessage({ kind: 'video-page', url: videoPage(target), any: true }).catch(() => false);
       return say(any === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first');
     }
     if (items.length === 1) return download(items[0]);
@@ -199,6 +242,7 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
   document.addEventListener('mousemove', pointer, { capture: true, passive: true });
   document.addEventListener('play', e => e.target.matches && e.target.matches('video,audio') && show(e.target), true);
   window.addEventListener('scroll', place, true);
+  document.addEventListener('fullscreenchange', () => target && show(target));
   window.addEventListener('resize', place);
   chrome.runtime.onMessage.addListener(m => {
     if (m.kind === 'media' && !target) {

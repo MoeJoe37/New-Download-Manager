@@ -146,23 +146,38 @@ const keysHeld = (k, which) => {
 };
 const PAGE_LIKE = /^(text\/|image\/|application\/(x-)?javascript|application\/json)/i;
 
-// The browser's download bubble is off,
-// a download is paused when created and its file name (Chrome's Save As dialog) held until the app decides.
-chrome.downloads.setUiOptions?.({ enabled: false }).catch(() => {});
+// While the app decides on a download the browser's download bubble stays hidden, the download is paused
+// and its file name (Chrome's Save As dialog) held; the bubble comes back once nothing is waiting, so the
+// downloads the browser keeps show in it as usual.
+let deciding = 0;
+const bubble = on => chrome.downloads.setUiOptions?.({ enabled: on }).catch(() => {});
+bubble(true);
 const web = item => /^https?:/i.test(item.finalUrl || item.url);
+// downloads this extension hands back to the browser (the app couldn't take them): not offered again
+const ours = new Set();
 
 chrome.downloads.onCreated.addListener(item => {
   if (!web(item)) return;
+  if (ours.delete(item.finalUrl || item.url) || ours.delete(item.url)) return;
   chrome.downloads.pause(item.id).catch(() => {});
   if (!chrome.downloads.onDeterminingFilename) handle(item, () => {}); // Firefox has no filename step
 });
 chrome.downloads.onDeterminingFilename?.addListener((item, suggest) => {
-  if (!web(item)) return false;
+  if (!web(item) || ours.has('det:' + item.url)) return ours.delete('det:' + item.url) && false;
   handle(item, suggest);
   return true; // suggest() later: no Save As dialog meanwhile
 });
 
 async function handle(item, suggest) {
+  if (deciding++ === 0) bubble(false);
+  try {
+    await decide(item, suggest);
+  } finally {
+    if (--deciding === 0) bubble(true);
+  }
+}
+
+async function decide(item, suggest) {
   const k = (await refreshConfig()).keys;
   // the prevent keys (Options -> General -> Keys...) leave it to the browser
   const size = item.totalBytes > 0 ? item.totalBytes : item.fileSize > 0 ? item.fileSize : 0;
@@ -189,7 +204,10 @@ async function handle(item, suggest) {
 // Sites that play videos in their own player: the app hands the page to yt-dlp (src/ytdlp.rs, SITES).
 const VIDEO_SITES = ['youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 'dai.ly', 'twitch.tv', 'tiktok.com', 'instagram.com',
   'facebook.com', 'fb.watch', 'x.com', 'twitter.com', 'reddit.com', 'v.redd.it', 'soundcloud.com', 'bilibili.com',
-  'rumble.com', 'streamable.com', 'ok.ru', 'vk.com', 'bandcamp.com', 'mixcloud.com'];
+  'rumble.com', 'streamable.com', 'ok.ru', 'vk.com', 'bandcamp.com', 'mixcloud.com', 'douyin.com', 'kick.com',
+  'threads.net', 'threads.com', 'pinterest.com', 'tumblr.com', 'linkedin.com', '9gag.com', 'imgur.com', 'weibo.com',
+  'nicovideo.jp', 'bilibili.tv', 'snapchat.com', 'likee.video', 'coub.com', 'odysee.com', 'bitchute.com',
+  'vkvideo.ru', 'rutube.ru', 'clips.twitch.tv'];
 
 function isVideoSite(url) {
   try {
@@ -257,16 +275,19 @@ async function onMenu(info, tab) {
     chrome.runtime.openOptionsPage();
     return;
   }
+  // the right-clicked player's own page (a feed's address is no video's), from the frame that was clicked
+  const clickedPage = async () => (tab ? await chrome.tabs.sendMessage(tab.id, { kind: 'video-page-of-click' }, { frameId: info.frameId || 0 }).catch(() => null) : null)
+    || info.frameUrl || info.pageUrl || tab?.url || '';
   if (info.menuItemId === 'ndm-video') {
     // the page itself: the app's yt-dlp finds its video
-    send(info.pageUrl || tab?.url, { referrer: '', force: true, video: true });
+    send(await clickedPage(), { referrer: '', force: true, video: true });
     return;
   }
   if (info.menuItemId === 'ndm-media' || info.menuItemId === 'ndm-audio') {
     // a player: its file when it plays one from an address, else (a stream in pieces, a video site) the page
-    const page = info.pageUrl || tab?.url || '';
+    const page = info.frameUrl || info.pageUrl || tab?.url || '';
     if (/^https?:/i.test(info.srcUrl || '') && !isVideoSite(page)) send(info.srcUrl, { referrer: page, force: true });
-    else send(page, { referrer: '', force: true, video: true });
+    else send(await clickedPage(), { referrer: '', force: true, video: true });
     return;
   }
   if (info.menuItemId === 'ndm-all') {
@@ -361,7 +382,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.kind === 'download') {
     // a file the app can't get as the page did: the browser's own download takes it
     send(msg.url, { referrer: tab.url, filename: msg.filename || '', force: true, check: true, size: msg.size || 0, mime: msg.mime || '' }).then(ok => {
-      if (!ok) chrome.downloads.download({ url: msg.url, ...(msg.filename ? { filename: msg.filename } : {}) }).catch(() => {});
+      if (!ok) {
+        ours.add(msg.url);
+        ours.add('det:' + msg.url);
+        chrome.downloads.download({ url: msg.url, ...(msg.filename ? { filename: msg.filename } : {}) }).catch(() => {});
+      }
       reply(ok);
     });
     return true;

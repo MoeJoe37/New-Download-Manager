@@ -229,6 +229,10 @@ pub struct Probe {
     pub ranges: bool,
     pub modified: String,
     pub stream: bool,
+    /// The address is a web page (text/html): perhaps one yt-dlp knows a video on.
+    pub page: bool,
+    /// yt-dlp found a video at the address: it downloads it (`Info::ytdlp`).
+    pub ytdlp: bool,
 }
 
 /// `old` ("a=1; b=2") with each `name=value` of `set` replacing the cookie of that name or added.
@@ -961,11 +965,11 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
     }
     if crate::stream::is_media_url(url) {
         // a live mms / rtmp / rtsp stream: no size until it is recorded
-        return Ok(Probe { name: sanitize(&url_name(url)), size: None, ranges: false, modified: String::new(), stream: true });
+        return Ok(Probe { name: sanitize(&url_name(url)), size: None, ranges: false, modified: String::new(), stream: true, page: false, ytdlp: false });
     }
     if is_ftp(url) {
         let (size, ranges, _) = ftp_open(url, 0)?;
-        return Ok(Probe { name: sanitize(&url_name(url)), size, ranges, modified: String::new(), stream: false });
+        return Ok(Probe { name: sanitize(&url_name(url)), size, ranges, modified: String::new(), stream: false, page: false, ytdlp: false });
     }
     let r = call(request(agent, url, referrer, cookies).set("Range", "bytes=0-0"))?;
     if r.header("Content-Type").is_some_and(crate::stream::is_manifest_type) {
@@ -1012,7 +1016,7 @@ fn probe_of(r: &ureq::Response) -> Probe {
     let size = if ranges { total } else { r.header("Content-Length").and_then(|l| l.trim().parse().ok()) };
     let name = r.header("Content-Disposition").and_then(disposition_name).unwrap_or_else(|| url_name(r.get_url()));
     let name = typed_name(&sanitize(&name), r.header("Content-Type").and_then(mime_ext));
-    Probe { name, size, ranges, modified: r.header("Last-Modified").unwrap_or_default().to_string(), stream: false }
+    Probe { name, size, ranges, modified: r.header("Last-Modified").unwrap_or_default().to_string(), stream: false, page: is_page(r.header("Content-Type")), ytdlp: false }
 }
 
 /// The file type a Content-Type names, as an extension (None: not a type NDM files by).
@@ -1354,7 +1358,7 @@ impl Job {
             // Like NDM (0x589960) the first request is the download itself, `bytes=0-`; no separate probe.
             let (p, r): (Probe, Body) = if is_ftp(&url) {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
-                (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), stream: false }, r)
+                (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), stream: false, page: false, ytdlp: false }, r)
             } else {
                 let first_req = |agent: &ureq::Agent| {
                     let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-");

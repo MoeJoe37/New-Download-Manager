@@ -451,7 +451,7 @@ fn out_ext(tracks: &[Track]) -> &str {
 
 pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     let tracks = plan(&|u| text(agent, u, referrer, cookies), url)?;
-    Ok(Probe { name: engine::sanitize(&with_ext(&engine::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), stream: true })
+    Ok(Probe { name: engine::sanitize(&with_ext(&engine::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), stream: true, page: false, ytdlp: false })
 }
 
 fn aes_cbc(key: &[u8], iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
