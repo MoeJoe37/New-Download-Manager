@@ -43,6 +43,12 @@ pub fn is_video_page(url: &str) -> bool {
     !plain && SITES.iter().any(|s| on_site(&host, s))
 }
 
+/// A download yt-dlp gets: a page marked so (the extension's download panel, a pasted page) or one on
+/// `SITES`, unless it is a stream yt-dlp already found (`Info::plain`).
+pub fn wants(i: &Info) -> bool {
+    !i.plain && (i.ytdlp || is_video_page(&i.url))
+}
+
 /// A program next to NDM's exe, else NDM's own copy (Downloads -> Set yt-dlp), else the name to find on PATH.
 fn beside_or_path(name: &str) -> PathBuf {
     let file = exe_file(name);
@@ -324,6 +330,32 @@ fn template(p: &Path) -> String {
     p.display().to_string().replace('%', "%%")
 }
 
+/// A yt-dlp run's output, unless the download is stopped meanwhile (None: yt-dlp ended at once).
+fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::process::Output>, String> {
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let read = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = r.read_to_end(&mut v);
+            v
+        })
+    };
+    let out = read(Box::new(child.stdout.take().unwrap()));
+    let err = read(Box::new(child.stderr.take().unwrap()));
+    let status = loop {
+        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
+            break s;
+        }
+        if job.stopping() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    Ok(Some(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() }))
+}
+
 /// Downloads the video into the job's file. yt-dlp looks the page up and picks the streams (the best
 /// video and its audio, or the one file that has both); plain files among them are fetched by NDM itself,
 /// each over the download's connections in segments and both at once, others by yt-dlp. The video and
@@ -348,7 +380,9 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     let ff = ffmpeg();
     // with ffmpeg any video and audio can be joined; without, a pair NDM joins itself (MP4 + M4A, WebM + WebM)
     let fmt = formats(&url, ff.is_some());
-    let looked = command(&p).args(&args).args(["-J", "-f", &fmt]).arg(&url).output().map_err(|e| e.to_string())?;
+    let mut look = command(&p);
+    look.args(&args).args(["-J", "-f", &fmt]).arg(&url);
+    let Some(looked) = output_unless_stopped(job, look)? else { return Ok(false) };
     if !looked.status.success() {
         return Err(last_error(&String::from_utf8_lossy(&looked.stderr)));
     }
@@ -472,6 +506,7 @@ fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Str
                 headers,
                 conns,
                 limit_kb: limit,
+                plain: true,
                 ..Default::default()
             });
             *part.lanes.lock().unwrap() = lanes.clone();
@@ -1120,5 +1155,31 @@ mod tests {
         assert_eq!(formats("https://www.youtube.com/watch?v=x", true), MERGED);
         assert_eq!(formats("https://vimeo.com/1", true), MERGED);
         assert_eq!(formats("https://vimeo.com/1", false), format!("b/{PAIR}"));
+    }
+    /// TikTok's streams are on tiktok.com with no file type in the address: one yt-dlp found is fetched
+    /// as it is, not looked up again (which went on forever, the download stuck at "Connecting...").
+    #[test]
+    fn found_streams_stay_plain() {
+        let cdn = "https://v16-webapp-prime.tiktok.com/video/tos/useast2a/tos-useast2a-pve-0068/oQ/?a=1988&mime_type=video_mp4&tk=tt_chain_token";
+        assert!(is_video_page(cdn), "on the site, no file type");
+        assert!(wants(&Info { url: cdn.into(), ..Default::default() }));
+        assert!(!wants(&Info { url: cdn.into(), plain: true, ..Default::default() }));
+        assert!(!wants(&Info { url: cdn.into(), plain: true, ytdlp: true, ..Default::default() }));
+    }
+    /// Stop ends a yt-dlp look-up at once instead of waiting for it.
+    #[cfg(unix)]
+    #[test]
+    fn lookup_stops() {
+        let job = Job::new(Info::default());
+        job.stop();
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        let t = std::time::Instant::now();
+        assert!(output_unless_stopped(&job, c).unwrap().is_none());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        let mut c = Command::new("echo");
+        c.arg("hi");
+        let out = output_unless_stopped(&Job::new(Info::default()), c).unwrap().unwrap();
+        assert_eq!(out.stdout, b"hi\n");
     }
 }

@@ -130,6 +130,10 @@ pub struct Info {
     /// A page whose video yt-dlp gets, on any site (the extension's download panel); pages of the sites
     /// yt-dlp is known for go to it anyway (`ytdlp::is_video_page`).
     pub ytdlp: bool,
+    /// A file to fetch as it is, never handed to yt-dlp: a stream yt-dlp found for a video (its address
+    /// can be on the video's own site, as TikTok's are, and would otherwise be looked up again, over and over).
+    #[serde(default)]
+    pub plain: bool,
     /// Temporary directory for the .part file (Options -> Save to); "" = next to the file.
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
@@ -1345,7 +1349,7 @@ impl Job {
         if crate::stream::is_media_url(&url) {
             return crate::stream::run_media(self);
         }
-        if self.info().ytdlp || crate::ytdlp::is_video_page(&url) {
+        if crate::ytdlp::wants(&self.info()) {
             return crate::ytdlp::run(self, agent, global);
         }
         if crate::stream::is_manifest(&url) || self.info().stream {
