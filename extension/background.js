@@ -200,6 +200,22 @@ function isVideoSite(url) {
   }
 }
 
+// The app keeps a copy of this extension and refreshes it when the app is updated; when the app is newer
+// than the extension running, the extension reloads itself from that copy (once per version, in case the
+// browser loaded it from another folder).
+async function selfUpdate(app) {
+  const newer = (a, b) => {
+    const x = String(a || '').split('.').map(Number), y = String(b || '').split('.').map(Number);
+    for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+    return false;
+  };
+  if (!newer(app, chrome.runtime.getManifest().version)) return;
+  const { reloaded_for } = await chrome.storage.local.get('reloaded_for').catch(() => ({}));
+  if (reloaded_for === app) return;
+  await chrome.storage.local.set({ reloaded_for: app });
+  chrome.runtime.reload();
+}
+
 // The app's Options decide the context menu items and the panel exceptions (370).
 let config = { menu_dl: true, menu_all: true, panel_skip: '', keys: null }, configAt = 0, menus = '';
 async function refreshConfig() {
@@ -209,9 +225,14 @@ async function refreshConfig() {
     const r = await ndm('/config', { method: 'POST', headers: { 'X-NDM': '1' } });
     if (r.ok) config = await r.json();
   } catch {}
-  if (menus === `${config.menu_dl}${config.menu_all}`) return config;
-  menus = `${config.menu_dl}${config.menu_all}`;
+  selfUpdate(config.ext_version);
+  const { panel_off = false } = await chrome.storage.local.get('panel_off').catch(() => ({}));
+  if (menus === `${config.menu_dl}${config.menu_all}${panel_off}`) return config;
+  menus = `${config.menu_dl}${config.menu_all}${panel_off}`;
   await chrome.contextMenus.removeAll();
+  // the toolbar button's own menu: the download panel on or off, and the extension's options
+  chrome.contextMenus.create({ id: 'ndm-panel', type: 'checkbox', checked: !panel_off, title: 'Show the download panel over videos', contexts: ['action'] });
+  chrome.contextMenus.create({ id: 'ndm-options', title: 'Extension options...', contexts: ['action'] });
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm', title: 'Download with New Download Manager', contexts: ['link', 'video', 'audio', 'image'] });
   if (config.menu_all) chrome.contextMenus.create({ id: 'ndm-all', title: 'Download all links with New Download Manager', contexts: ['page', 'selection'] });
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-video', title: 'Download this video with New Download Manager', contexts: ['page', 'video', 'audio'],
@@ -222,6 +243,15 @@ chrome.runtime.onInstalled.addListener(refreshConfig);
 chrome.runtime.onStartup.addListener(refreshConfig);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === 'ndm-panel') {
+    await chrome.storage.local.set({ panel_off: !info.checked });
+    menus = '';
+    return;
+  }
+  if (info.menuItemId === 'ndm-options') {
+    chrome.runtime.openOptionsPage();
+    return;
+  }
   if (info.menuItemId === 'ndm-video') {
     // the page itself: the app's yt-dlp finds its video
     send(info.pageUrl || tab?.url, { referrer: '', force: true });
@@ -300,10 +330,15 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     return true;
   }
   if (msg.kind === 'video-page') {
-    // the panel on a video site: the page, like the "Download this video" menu item
-    if (!isVideoSite(msg.url)) return reply(false);
-    send(msg.url, { referrer: '', force: true }).then(ok => reply(ok ? 'sent' : 'off'));
+    // the panel on a video site, or on any page whose video the browser can't hand over (a player that
+    // streams it in pieces): the page itself, for the app's yt-dlp
+    if (!msg.any && !isVideoSite(msg.url)) return reply(false);
+    send(msg.url, { referrer: '', force: true, video: true }).then(ok => reply(ok ? 'sent' : 'off'));
     return true;
+  }
+  if (msg.kind === 'options') {
+    chrome.runtime.openOptionsPage();
+    return;
   }
   if (msg.kind === 'sel') {
     // the selected-links panel: like "Download all links", for the links in the selection

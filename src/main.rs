@@ -1569,6 +1569,8 @@ struct Row {
     category: String,
     referrer: String,
     parent: String,
+    /// After the data is in: what NDM does with it and how far along (engine::Info::post).
+    post: Option<(String, f32)>,
 }
 
 impl Row {
@@ -1577,9 +1579,16 @@ impl Row {
         (self.running && self.speed > 0.0).then(|| (size.saturating_sub(self.done) as f64 / self.speed) as u64)
     }
     fn pct(&self) -> Option<f64> {
+        if let Some((_, f)) = &self.post {
+            // processing: the same bar starts again for it
+            return (*f >= 0.0).then_some(*f as f64 * 100.0);
+        }
         self.size.filter(|s| *s > 0).map(|s| self.done as f64 * 100.0 / s as f64)
     }
     fn status_text(&self) -> String {
+        if let Some((_, f)) = self.post.as_ref().filter(|_| self.running) {
+            return if *f >= 0.0 { format!("{} {:.0}%", tr_os("Processing"), f * 100.0) } else { tr("Processing...") };
+        }
         match &self.status {
             Status::Complete => tr("Complete"),
             Status::Error(_) => tr("Error"),
@@ -2667,8 +2676,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         (info.referrer, info.cookies, info.browser_proxy) = (inc.referrer, inc.cookies, inc.proxy);
         let slot: ProbeSlot = Arc::default();
         let hint = inc.filename.rsplit(['/', '\\']).next().map(engine::sanitize).filter(|n| n != "download").unwrap_or_default();
-        // a video page (YouTube...): the Video category until yt-dlp names the file from the video's title
-        let video_page = ytdlp::is_video_page(&info.url);
+        // a video page (YouTube..., or any page from the download panel): the Video category until yt-dlp
+        // names the file from the video's title
+        info.ytdlp = inc.video;
+        let video_page = info.ytdlp || ytdlp::is_video_page(&info.url);
         let name = if !hint.is_empty() {
             hint.clone()
         } else if video_page {
@@ -2699,7 +2710,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let (s, c, agent) = (slot.clone(), ctx.clone(), self.core.agent(&info.url));
             let (url, r, k) = (info.url.clone(), info.referrer.clone(), info.cookies.clone());
             std::thread::spawn(move || {
-                *s.lock().unwrap() = Some(engine::probe(&agent, &url, &r, &k));
+                *s.lock().unwrap() = Some(if video_page { ytdlp::probe(&url, &r, &k) } else { engine::probe(&agent, &url, &r, &k) });
                 c.request_repaint();
             });
         }
@@ -2798,6 +2809,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     category: i.category.clone(),
                     referrer: i.referrer.clone(),
                     parent: i.parent.clone(),
+                    post: i.post.clone(),
                 }
             })
             .filter(|r| match &self.cat {
@@ -4460,7 +4472,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             }
                             Err(e) => {
                                 // yt-dlp's own message says what is missing or wrong (Set yt-dlp, a sign-in...)
-                                if ytdlp::is_video_page(&info.url) {
+                                if info.ytdlp || ytdlp::is_video_page(&info.url) {
                                     self.open(Dialog::Info { title: "Download File Info".into(), text: i18n::tr_msg_os(&e) });
                                 }
                                 *error = e;
@@ -4591,6 +4603,21 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let running = job.running();
                 let done = i.done();
                 let frac = i.size.filter(|s| *s > 0).map(|s| done as f64 / s as f64);
+                // after the download, the processing (joining video and audio, moving the file...) fills the
+                // same bar again; a step that can't tell how far it is runs to and fro
+                let post = i.post.clone().filter(|_| running);
+                let bar = match &post {
+                    Some((_, f)) if *f >= 0.0 => *f,
+                    Some(_) => {
+                        ui.ctx().request_repaint_after(Duration::from_millis(50));
+                        let t = (ui.input(|x| x.time) * 0.6).fract() as f32;
+                        if t < 0.5 { t * 2.0 } else { 2.0 - t * 2.0 }
+                    }
+                    None => frac.unwrap_or(0.0) as f32,
+                };
+                if post.is_some() {
+                    ui.ctx().request_repaint_after(Duration::from_millis(200));
+                }
                 let mut d = dlu::D::new(ui).with_dx(PROG_DX);
                 // tabs the user hid (template 367 / "Hide tab", 0x4a46d0) are left out; `tab` indexes the shown ones
                 let (sl_tab, c_tab, btns) = { let s = self.core.settings(); (s.prog_sl_tab, s.prog_c_tab, s.prog_tab_btns) };
@@ -4611,6 +4638,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 match page {
                     0 => {
                         let status = match &i.status {
+                            _ if post.is_some() => {
+                                let (label, f) = post.clone().unwrap();
+                                if f >= 0.0 { i18n::line(&format!("{} ({}%)", tr_os(&label), (f * 100.0) as u32)) } else { tr(&label) }
+                            }
                             Status::Error(e) => i18n::line(&format!("{}: {}", tr_os("Error"), i18n::tr_msg_os(e))),
                             Status::Connecting => tr("Connecting..."),
                             Status::Downloading => tr("Receiving data..."),
@@ -4624,14 +4655,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             _ => size3(done),
                         };
                         let limited = i.limit_kb > 0 || self.core.settings().limit_on;
-                        let speed_text = if running { i18n::line(&format!("{}/{}{}", size3_os(speed as u64), tr_os("sec"), if limited { format!(" {}", tr_os("(Limited)")) } else { String::new() })) } else { String::new() };
+                        // processing: nothing is coming in, so no rate or time left
+                        let left = if post.is_some() { None } else { left };
+                        let speed_text = if running && post.is_none() { i18n::line(&format!("{}/{}{}", size3_os(speed as u64), tr_os("sec"), if limited { format!(" {}", tr_os("(Limited)")) } else { String::new() })) } else { String::new() };
                         d.label(ox + 7.0, oy + 4.0, 329.0, 9.0, i.url.as_str());
                         for (y, k, vx, v) in [
                             (15.0, "Status", 53.0, status),
                             (28.0, "File size", 75.0, i.size.map_or(tr("(unknown)"), size3)),
                             (38.0, "Downloaded", 75.0, downloaded),
                             (48.0, "Transfer rate", 75.0, speed_text),
-                            (58.0, "Time left", 75.0, left.unwrap_or_else(|| if running { "(unknown)".into() } else { String::new() })),
+                            (58.0, "Time left", 75.0, left.unwrap_or_else(|| if running && post.is_none() { "(unknown)".into() } else { String::new() })),
                             (68.0, "Resume capability", 127.0, if !i.probed { "(unknown)".into() } else if i.ranges { "Yes".into() } else { "No".into() }),
                         ] {
                             d.label(ox + 7.0, oy + y, vx - 9.0, 9.0, k);
@@ -4681,7 +4714,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d.check(ox + 7.0, oy + 52.0, 225.0, 10.0, &mut flags.1, "Turn off computer when done");
                     }
                 }
-                d.progress(7.0, 111.0, 338.0, 10.0, frac.unwrap_or(0.0) as f32);
+                d.progress(7.0, 111.0, 338.0, 10.0, bar);
                 if d.button(15.0, 126.0, 93.0, 15.0, if *details { "<< Hide details" } else { "Show details >>" }, true) {
                     *details = !*details;
                     self.core.settings().prog_details = *details; // NDM saves dPrDtVis (0x4a3490)

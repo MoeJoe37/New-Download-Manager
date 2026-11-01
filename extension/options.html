@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>New Download Manager</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1f2328; --muted: #656d76; --line: #d0d7de; --accent: #1f6feb; --bg: #fff; --chip: #f6f8fa; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --bg: #1e1e1e; --chip: #2a2a2a; } }
+  body { font: 14px/1.45 system-ui, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 16px 18px; min-width: 380px; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  label.row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+  label.row input { margin-top: 3px; accent-color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  h2 { font-size: 13px; margin: 18px 0 6px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; justify-content: space-between; align-items: center; padding: 5px 8px; background: var(--chip); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 5px; }
+  li button { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; }
+  .empty { color: var(--muted); font-size: 12.5px; }
+  .note { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<h1>New Download Manager</h1>
+<label class="row"><input type="checkbox" id="panel">
+  <span>Show the download panel over videos and audio<br>
+  <span class="sub">The "Download this video" button on players. Right-click it to hide it on a site or turn it off.</span></span>
+</label>
+<h2>Hidden on these sites</h2>
+<ul id="sites"></ul>
+<p class="note">Which file types the browser hands to New Download Manager, the right-click menu items and more are set in the app: Options → General.</p>
+<script src="options.js"></script>
+</body>
+</html>

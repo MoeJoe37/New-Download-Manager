@@ -40,7 +40,7 @@ NOT_UI = re.compile(
     # yt-dlp's arguments and output, the extension's feed protocol (src/ytdlp.rs, core.rs `feed`)
     r"|^download:ndm |^ERROR: $|^ndm $|^no (at|id)$|^no such download$|^unknown op$|^%\("
     # Set yt-dlp and macOS drops: diagnostics, test data and the registry key (src/ytdlp.rs, mac.rs, win.rs)
-    r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$"
+    r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])"
 )
 
 
@@ -59,6 +59,8 @@ EXTRA += ["OK", "KB", "MB", "GB", "URL", "sec", "min", "seconds", "hours", "ever
 EXTRA += ["Main download queue", "Synchronization queue", "%b %d %H:%M:%S %Y"]
 # a video download's state (ytdlp.rs, shown through the segment info)
 EXTRA += ["Joining video and audio..."]
+# what NDM does after a download (Job::set_post, shown through Info::post)
+EXTRA += ["Joining the pieces...", "Getting the audio...", "Moving the file to its folder...", "Processing...", "Processing"]
 
 
 def strings():

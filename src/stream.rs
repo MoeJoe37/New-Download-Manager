@@ -739,54 +739,83 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     let tfile = |t: usize| move |k: usize| file(t, k);
     let (f0, f1) = (tfile(0), tfile(1.min(n - 1)));
     let ft: [&dyn Fn(usize) -> PathBuf; 2] = [&f0, &f1];
-    let base = (0..n).filter(|t| fmp4(*t)).filter_map(|t| first_time(timed(tracks[t].whole, &parts[t], ft[t]))).fold(f64::INFINITY, f64::min);
-    let base = if base.is_finite() { base } else { 0.0 };
-    let muxed = if n == 2 && fmp4(0) && fmp4(1) {
-        let mut v = Regroup::new(retime(timed(tracks[0].whole, &parts[0], ft[0]), base), Kind::Mp4);
-        let mut a = Regroup::new(retime(timed(tracks[1].whole, &parts[1], ft[1]), base), Kind::Mp4);
-        mux_mp4(&mut v, &mut a, &dest)?
-    } else if ext(0) == "ts" {
-        let mut a = pieces(1.min(n - 1));
-        remux::ts_to_mp4(&mut pieces(0), (n == 2).then_some(&mut a as remux::Pieces), &dest)?
-    } else if n == 2 && ext(0) == "webm" && ext(1) == "webm" {
-        remux::webm_merge(&mut Regroup::new(&mut pieces(0), Kind::Webm), &mut Regroup::new(&mut pieces(1), Kind::Webm), &dest)?
-    } else {
-        false
-    };
-    if !muxed {
-        if ext(0) == "ts" {
-            // couldn't remux (MPEG-2 video, Opus...): keep it as MPEG-TS
-            let mut i = job.info();
-            i.name = with_ext(&i.name, "ts");
-            dest = i.path();
-        }
-        let joined: Vec<PathBuf> = (0..n)
-            .map(|t| {
-                let out = dir.join(format!("track{t}.{}", ext(t)));
-                let mut w = BufWriter::new(File::create(&out).map_err(|e| e.to_string())?);
-                let src: Box<dyn Iterator<Item = Result<Vec<u8>, String>>> = if fmp4(t) { Box::new(retime(timed(tracks[t].whole, &parts[t], ft[t]), base)) } else { Box::new(pieces(t)) };
-                for p in src {
-                    w.write_all(&p?).map_err(|e| e.to_string())?;
+    // joining the pieces into the file: the bar shows the file growing towards the pieces' size
+    let expected: u64 = (0..n).flat_map(|t| (0..parts[t].len()).map(move |k| (t, k))).filter_map(|(t, k)| fs::metadata(file(t, k)).ok()).map(|m| m.len()).sum();
+    let watch = [dest.clone(), dir.join(format!("track0.{}", ext(0))), dir.join(format!("track1.{}", ext(1.min(n - 1)))), dest.with_extension("ts")];
+    dest = with_post(job, "Joining the pieces...", &watch, expected, || -> Result<PathBuf, String> {
+        let base = (0..n).filter(|t| fmp4(*t)).filter_map(|t| first_time(timed(tracks[t].whole, &parts[t], ft[t]))).fold(f64::INFINITY, f64::min);
+        let base = if base.is_finite() { base } else { 0.0 };
+        let muxed = if n == 2 && fmp4(0) && fmp4(1) {
+            let mut v = Regroup::new(retime(timed(tracks[0].whole, &parts[0], ft[0]), base), Kind::Mp4);
+            let mut a = Regroup::new(retime(timed(tracks[1].whole, &parts[1], ft[1]), base), Kind::Mp4);
+            mux_mp4(&mut v, &mut a, &dest)?
+        } else if ext(0) == "ts" {
+            let mut a = pieces(1.min(n - 1));
+            remux::ts_to_mp4(&mut pieces(0), (n == 2).then_some(&mut a as remux::Pieces), &dest)?
+        } else if n == 2 && ext(0) == "webm" && ext(1) == "webm" {
+            remux::webm_merge(&mut Regroup::new(&mut pieces(0), Kind::Webm), &mut Regroup::new(&mut pieces(1), Kind::Webm), &dest)?
+        } else {
+            false
+        };
+        if !muxed {
+            if ext(0) == "ts" {
+                // couldn't remux (MPEG-2 video, Opus...): keep it as MPEG-TS
+                let mut i = job.info();
+                i.name = with_ext(&i.name, "ts");
+                dest = i.path();
+            }
+            let joined: Vec<PathBuf> = (0..n)
+                .map(|t| {
+                    let out = dir.join(format!("track{t}.{}", ext(t)));
+                    let mut w = BufWriter::new(File::create(&out).map_err(|e| e.to_string())?);
+                    let src: Box<dyn Iterator<Item = Result<Vec<u8>, String>>> = if fmp4(t) { Box::new(retime(timed(tracks[t].whole, &parts[t], ft[t]), base)) } else { Box::new(pieces(t)) };
+                    for p in src {
+                        w.write_all(&p?).map_err(|e| e.to_string())?;
+                    }
+                    w.flush().map_err(|e| e.to_string())?;
+                    Ok(out)
+                })
+                .collect::<Result<_, String>>()?;
+            if joined.len() == 1 || !ffmpeg(&joined[0], &joined[1], &dest) {
+                move_file(&joined[0], &dest)?;
+                if let Some(a) = joined.get(1) {
+                    // ponytail: formats without a native muxer here; ffmpeg on PATH makes them one file
+                    let stem = dest.file_stem().unwrap_or_default().to_string_lossy();
+                    move_file(a, &dest.with_file_name(format!("{stem}.audio.{}", ext(1))))?;
                 }
-                w.flush().map_err(|e| e.to_string())?;
-                Ok(out)
-            })
-            .collect::<Result<_, String>>()?;
-        if joined.len() == 1 || !ffmpeg(&joined[0], &joined[1], &dest) {
-            move_file(&joined[0], &dest)?;
-            if let Some(a) = joined.get(1) {
-                // ponytail: formats without a native muxer here; ffmpeg on PATH makes them one file
-                let stem = dest.file_stem().unwrap_or_default().to_string_lossy();
-                move_file(a, &dest.with_file_name(format!("{stem}.audio.{}", ext(1))))?;
             }
         }
-    }
+        Ok(dest)
+    })?;
     let _ = fs::remove_dir_all(&dir);
     let size = fs::metadata(&dest).map_err(|e| e.to_string())?.len();
     let mut i = job.info();
     i.size = Some(size);
     i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
     Ok(true)
+}
+
+/// Runs `work` (joining pieces, video and audio...) while the download's bar shows `label` and how far the
+/// files in `out` have grown towards `expected` bytes (0: unknown).
+pub(crate) fn with_post<T>(job: &Job, label: &str, out: &[PathBuf], expected: u64, work: impl FnOnce() -> T) -> T {
+    let stop = AtomicBool::new(false);
+    job.set_post(label, if expected > 0 { 0.0 } else { -1.0 });
+    let r = thread::scope(|sc| {
+        sc.spawn(|| {
+            while !stop.load(Relaxed) {
+                if expected > 0 {
+                    let have: u64 = out.iter().filter_map(|p| fs::metadata(p).ok()).map(|m| m.len()).sum();
+                    job.set_post(label, (have as f64 / expected as f64).min(0.99) as f32);
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        });
+        let r = work();
+        stop.store(true, Relaxed);
+        r
+    });
+    job.info().post = None;
+    r
 }
 
 /// Joins a video file and an audio file (a site's separate streams, fetched by yt-dlp without ffmpeg)
@@ -1453,6 +1482,31 @@ pub(crate) mod tests {
         let tfhd_ids: Vec<u32> = top.iter().filter(|b| &b.3 == b"moof").map(|b| be32(&d, find(&d, *b, &[b"traf", b"tfhd"]).unwrap().1 + 4)).collect();
         assert_eq!(tfhd_ids, [1, 2, 1, 2, 1]);
         assert!(!top.iter().any(|b| &b.3 == b"styp"));
+    }
+
+    /// The bar during processing: the output growing towards the expected size, cleared when done.
+    #[test]
+    fn processing_shows_progress() {
+        let dir = std::env::temp_dir().join(format!("ndm-post-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.bin");
+        let job = Job::new(crate::engine::Info::default());
+        let seen = Mutex::new(Vec::new());
+        let r = with_post(&job, "Joining the pieces...", std::slice::from_ref(&out), 1000, || {
+            for k in 1..=4 {
+                fs::write(&out, vec![0u8; k * 250]).unwrap();
+                thread::sleep(Duration::from_millis(400));
+                seen.lock().unwrap().push(job.info().post.clone());
+            }
+            7
+        });
+        assert_eq!(r, 7);
+        let seen = seen.into_inner().unwrap();
+        assert!(seen.iter().all(|p| p.as_ref().is_some_and(|(l, _)| l == "Joining the pieces...")), "{seen:?}");
+        let fr: Vec<f32> = seen.iter().map(|p| p.as_ref().unwrap().1).collect();
+        assert!(fr[0] >= 0.2 && fr[0] <= 0.3 && fr[2] >= 0.7 && fr[3] <= 0.99, "{fr:?}");
+        assert!(job.info().post.is_none(), "cleared when done");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// yt-dlp's separate YouTube streams: whole fragmented-MP4 files (with a sidx), joined into one MP4.

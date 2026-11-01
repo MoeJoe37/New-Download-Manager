@@ -1,6 +1,6 @@
 <html><head><title>Video and audio streams</title></head><body>
 <h1>Video and audio streams</h1>
-<p class="lead">When a web page plays video or audio, the browser extension shows a small download panel over the player. The panel lists the files and streams the page loaded; click one to download it with NDM.</p>
+<p class="lead">When a web page plays video or audio, the browser extension shows a small download panel over the player. The panel lists the files and streams the page loaded; click one to download it with NDM. When the page hasn't loaded a file NDM can take (nothing played yet, or a player that streams in pieces, as YouTube's does), the panel hands the page itself to NDM, which gets the video with <a href="streams.htm#Sites">yt-dlp</a>: the video doesn't have to play first.</p>
 
 <h2 id="HLS">HLS and DASH</h2>
 <p>Many sites send video as a playlist (.m3u8 or .mpd) of short pieces. NDM picks the highest quality, downloads the pieces over several connections, decrypts AES-128 pieces, and joins video and audio into one MP4 or WebM file. No other program is needed.</p>
@@ -15,5 +15,9 @@
 
 <h2 id="Panel">The download panel</h2>
 <p>On the General page of Options, the button next to <b>Customize download panels in browsers</b> sets which file types and smallest sizes the panel lists, on which sites it stays hidden, and whether it appears over players that use DRM.</p>
+<p>Right-click the panel to hide it for now, on that site, or everywhere. The extension's own options (right-click the extension's button in the browser's toolbar → <b>Extension options</b>) turn it back on and list the sites it is hidden on; the same menu has <b>Show the download panel over videos</b>.</p>
+
+<h2 id="Processing">After the download</h2>
+<p>Some downloads need work once the data is in: the pieces of a stream joined into one file, a video's picture and sound joined, or the file moved from the temporary folder to a folder on another drive. The progress window's bar then fills again for that step, with what NDM is doing and how far along it is, and the list shows <b>Processing</b> with its percentage.</p>
 <p class="note">Streams protected by DRM can't be downloaded.</p>
 </body></html>

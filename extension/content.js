@@ -39,27 +39,38 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
   const wild = p => new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
   const site = location.hostname;
   if (panel_skip.split(/\s+/).filter(Boolean).some(p => wild(p).test(site) || site.endsWith('.' + p))) return;
+  // the extension's own options (and the panel's right-click menu): off everywhere, or on these sites
+  const store = chrome.storage.local;
+  const hidden = s => s.panel_off || (s.panel_sites_off || []).includes(site);
+  if (hidden(await store.get(['panel_off', 'panel_sites_off']).catch(() => ({})))) return;
 
   const host = document.createElement('div');
   host.style.cssText = 'position:absolute;z-index:2147483647;display:none;top:0;left:0';
   const root = host.attachShadow({ mode: 'closed' });
   root.innerHTML = `<style>
-    .bar{display:flex;align-items:center;gap:6px;font:12px Tahoma,Segoe UI,sans-serif;color:#fff;cursor:pointer;
+    .bar{display:flex;width:max-content;align-items:center;gap:6px;font:12px Tahoma,Segoe UI,sans-serif;color:#fff;cursor:pointer;
       background:linear-gradient(#4a90e2,#1f5fb8);border:1px solid #174a8f;border-radius:3px;padding:4px 8px 4px 6px;
       box-shadow:0 1px 4px rgba(0,0,0,.45);user-select:none;white-space:nowrap}
     .bar:hover{background:linear-gradient(#5ea0ee,#2a6ccb)}
     .arrow{width:14px;height:14px;border-radius:50%;background:#fff;color:#1f5fb8;font-weight:bold;
       display:flex;align-items:center;justify-content:center;font-size:11px}
     .x{margin-left:4px;opacity:.8;padding:0 2px}.x:hover{opacity:1}
-    .menu{display:none;margin-top:2px;background:#fff;color:#000;border:1px solid #999;font:12px Tahoma,sans-serif;
+    .menu{display:none;width:max-content;margin-top:2px;background:#fff;color:#000;border:1px solid #999;font:12px Tahoma,sans-serif;
       box-shadow:2px 2px 4px rgba(0,0,0,.3);max-width:420px}
     .menu div{padding:4px 10px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .menu div:hover{background:#cce8ff}</style>
+    .menu div:hover{background:#cce8ff}
+    .menu .hint{color:#666;cursor:default;font-size:11px;white-space:normal;max-width:230px}.menu .hint:hover{background:none}
+    .menu hr{border:0;border-top:1px solid #ddd;margin:2px 0}</style>
     <div class="bar"><span class="arrow">&#8595;</span><span class="label">Download this video</span><span class="x" title="Hide">&#10005;</span></div>
     <div class="menu"></div>`;
   const bar = root.querySelector('.bar'), menu = root.querySelector('.menu'), label = root.querySelector('.label');
+  const say = text => {
+    label.textContent = text;
+    clearTimeout(say.t);
+    say.t = setTimeout(() => (label.textContent = target && target.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video'), 3000);
+  };
   if (panel_mini) label.style.display = 'none'; // Panel view: Mini mode
-  let target = null, hideTimer = 0;
+  let target = null, hideTimer = 0, off = false;
   const dismissed = new WeakSet();
 
   const human = n => !n ? '' : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
@@ -90,7 +101,7 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     menu.style.display = 'none';
   }
   function show(el) {
-    if (dismissed.has(el)) return;
+    if (off || dismissed.has(el)) return;
     if (el.mediaKeys && !panel_drm) return; // protected (EME) content: "Show download panel for protected content" off
     target = el;
     label.textContent = el.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video';
@@ -108,15 +119,13 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     // YouTube and other sites that play videos in their own player: the stream pieces the page fetches
     // aren't the video, so the app gets the page and its yt-dlp finds the video
     const page = await chrome.runtime.sendMessage({ kind: 'video-page', url: location.href }).catch(() => false);
-    if (page) {
-      label.textContent = page === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first';
-      setTimeout(() => (label.textContent = target && target.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video'), 3000);
-      return;
-    }
+    if (page) return say(page === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first');
     const items = await list();
     if (!items.length) {
-      label.textContent = 'Play the video first';
-      return;
+      // nothing played yet, or a player that streams in pieces: the page goes to yt-dlp, which knows
+      // most players without the video having to play
+      const any = await chrome.runtime.sendMessage({ kind: 'video-page', url: location.href, any: true }).catch(() => false);
+      return say(any === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first');
     }
     if (items.length === 1) return download(items[0]);
     menu.replaceChildren(...items.map(m => {
@@ -127,6 +136,42 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
       return d;
     }));
     menu.style.display = 'block';
+  });
+  // right click: hide it now, on this site, or everywhere (the extension's options bring it back)
+  bar.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const item = (text, act) => {
+      const d = document.createElement('div');
+      d.textContent = text;
+      d.onclick = async ev => {
+        ev.stopPropagation();
+        menu.style.display = 'none';
+        await act();
+      };
+      return d;
+    };
+    const sites = async () => (await store.get('panel_sites_off').catch(() => ({}))).panel_sites_off || [];
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = "Turn it back on in the extension's options (right-click the extension's button).";
+    menu.replaceChildren(
+      item('Hide for now', () => { dismissed.add(target); hide(); }),
+      item(`Don't show on ${site}`, async () => { await store.set({ panel_sites_off: [...new Set([...(await sites()), site])] }); hide(); }),
+      item('Disable the download panel', async () => { await store.set({ panel_off: true }); hide(); }),
+      document.createElement('hr'),
+      item('Extension options...', () => chrome.runtime.sendMessage({ kind: 'options' }).catch(() => {})),
+      hint,
+    );
+    menu.style.display = 'block';
+  });
+  // turned off from the options or another tab: gone at once
+  chrome.storage.onChanged.addListener(async () => {
+    off = hidden(await store.get(['panel_off', 'panel_sites_off']).catch(() => ({})));
+    if (off) {
+      target = null;
+      hide();
+    }
   });
   host.addEventListener('mouseenter', () => clearTimeout(hideTimer));
   host.addEventListener('mouseleave', () => (hideTimer = setTimeout(hide, 1500)));

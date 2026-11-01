@@ -158,26 +158,55 @@ fn fetch_video(job: &Job, p: &Path, url: &str, args: &[String], fmt: &str, out: 
     // with ffmpeg, video then audio in one run: each part counts from 0, the bar adds them up
     let (mut base, mut last, mut part_total) = (0u64, 0u64, 0u64);
     let mut stopped = false;
-    for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-        if let Some(rest) = line.strip_prefix("ndm ") {
-            let mut it = rest.split_whitespace().map(|v| v.parse::<f64>().ok().map(|v| v as u64));
-            let (done, total) = (it.next().flatten().unwrap_or(0), it.next().flatten().unwrap_or(0));
-            if done < last {
-                base += part_total.max(last);
+    // after the download, yt-dlp's ffmpeg joins video and audio (its "[Merger]" line) into "<name>.temp.<ext>":
+    // the bar follows that file growing towards the bytes fetched
+    let merging: std::sync::Mutex<Option<(PathBuf, u64)>> = Default::default();
+    let done_reading = std::sync::atomic::AtomicBool::new(false);
+    let ok = std::thread::scope(|sc| {
+        sc.spawn(|| {
+            while !done_reading.load(Relaxed) {
+                if let Some((out, expected)) = merging.lock().unwrap().clone() {
+                    let have = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+                    job.set_post("Joining video and audio...", (have as f64 / expected.max(1) as f64).min(0.99) as f32);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
             }
-            (last, part_total) = (done, total);
-            let all = before + base + total.max(done);
-            let mut i = job.info();
-            i.size = Some(all).filter(|s| *s > 0);
-            i.segs = vec![Seg { start: 0, next: before + base + done, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
+        });
+        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            if let Some(rest) = line.strip_prefix("ndm ") {
+                let mut it = rest.split_whitespace().map(|v| v.parse::<f64>().ok().map(|v| v as u64));
+                let (done, total) = (it.next().flatten().unwrap_or(0), it.next().flatten().unwrap_or(0));
+                if done < last {
+                    base += part_total.max(last);
+                }
+                (last, part_total) = (done, total);
+                let all = before + base + total.max(done);
+                let mut i = job.info();
+                i.post = None;
+                i.size = Some(all).filter(|s| *s > 0);
+                i.segs = vec![Seg { start: 0, next: before + base + done, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
+            } else if let Some(rest) = line.strip_prefix("[Merger] ") {
+                let out = rest.split('"').nth(1).map(PathBuf::from).map(|p| {
+                    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+                    p.with_extension(format!("temp.{ext}"))
+                });
+                job.set_post("Joining video and audio...", -1.0);
+                *merging.lock().unwrap() = out.map(|o| (o, base + part_total.max(last)));
+            } else if line.starts_with("[Fixup") || line.starts_with("[VideoRemuxer]") || line.starts_with("[VideoConvertor]") {
+                *merging.lock().unwrap() = None;
+                job.set_post("Processing...", -1.0);
+            }
+            if job.stopping() {
+                let _ = child.kill();
+                stopped = true;
+                break;
+            }
         }
-        if job.stopping() {
-            let _ = child.kill();
-            stopped = true;
-            break;
-        }
-    }
-    let ok = child.wait().is_ok_and(|s| s.success());
+        let ok = child.wait().is_ok_and(|s| s.success());
+        done_reading.store(true, Relaxed);
+        ok
+    });
+    job.info().post = None;
     let errors = errors.join().unwrap_or_default();
     let fetched = base + part_total.max(last);
     Ok((if stopped { Got::Stopped } else if ok { Got::Done } else { Got::Failed(last_error(&errors)) }, fetched))
@@ -253,6 +282,8 @@ pub fn run(job: &Job) -> Result<bool, String> {
         other => return finish(other),
     }
     let video = left(&dir, &stem, "ndm-video").ok_or("yt-dlp finished without the video stream")?;
+    // yt-dlp looks the video up again for its sound: the bar says so rather than sit at 100 %
+    job.set_post("Getting the audio...", -1.0);
     let audio_fmt = if video.extension().is_some_and(|e| e == "webm") { "ba[vcodec=none][ext=webm]" } else { "ba[vcodec=none][ext=m4a]" };
     let (got, _) = fetch_video(job, &p, &url, &args, audio_fmt, &format!("{}.ndm-audio.%(ext)s", template(&dir.join(&stem))), fetched)?;
     match got {
@@ -264,13 +295,9 @@ pub fn run(job: &Job) -> Result<bool, String> {
         other => return finish(other),
     }
     let audio = left(&dir, &stem, "ndm-audio").ok_or("yt-dlp finished without the audio stream")?;
-    {
-        let mut i = job.info();
-        if let Some(s) = i.segs.first_mut() {
-            s.info = "Joining video and audio...".into();
-        }
-    }
-    let joined = crate::stream::join_files(&video, &audio, &dest);
+    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let expected = size(&video) + size(&audio);
+    let joined = crate::stream::with_post(job, "Joining video and audio...", std::slice::from_ref(&dest), expected, || crate::stream::join_files(&video, &audio, &dest));
     match joined {
         Ok(true) => {
             let _ = std::fs::remove_file(&video);

@@ -747,6 +747,9 @@ pub struct Incoming {
     /// sends NDM the same file (`engine::same_file`), with the browser's `size` (0: unknown) and `mime`.
     pub check: bool,
     pub size: u64,
+    /// The download panel on a page whose video the browser can't hand over (a player streaming it in
+    /// pieces): the page goes to yt-dlp, whatever the site.
+    pub video: bool,
     /// "Download all links": the page's links; `url` is the page.
     pub links: Vec<Link>,
     /// From the command line:
@@ -1036,7 +1039,7 @@ impl Core {
 
     /// Queue-added downloads with an unknown name get one (and a category) from the URL.
     pub fn add(&self, mut info: Info) -> Arc<Job> {
-        if info.name.is_empty() && crate::ytdlp::is_video_page(&info.url) {
+        if info.name.is_empty() && (info.ytdlp || crate::ytdlp::is_video_page(&info.url)) {
             // a video page: the video's category; yt-dlp names the file from its title when it starts
             info.category = self.settings().category_for("video.mp4", &info.url);
             info.folder = self.settings().folder_for(&info.category);
@@ -1827,7 +1830,9 @@ impl Core {
                         serde_json::json!({ "menu_dl": st.menu_dl, "menu_all": st.menu_all, "panel_skip": st.panel_skip, "keys": st.keys,
                             "panel_types": types, "panel_min": st.panel_min, "panel_mini": st.panel_mini, "panel_nocap": st.panel_nocap,
                             "panel_drm": st.panel_drm, "sel_mode": st.sel_mode, "sel_sites": st.sel_sites, "sel_mini": st.sel_mini,
-                            "want_cookies": *core.login_wait.lock().unwrap() })
+                            "want_cookies": *core.login_wait.lock().unwrap(),
+                            // the extension reloads itself from NDM's copy when NDM is newer (NDM refreshes that copy)
+                            "ext_version": env!("CARGO_PKG_VERSION") })
                     };
                     reply("200 OK", &c.to_string());
                     continue;

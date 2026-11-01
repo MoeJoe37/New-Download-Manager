@@ -44,7 +44,10 @@
 - Extension for Chrome, Edge, Brave, Opera, Vivaldi and Firefox: downloads go to NDM, not the browser,
   and NDM starts in the notification area if it isn't running
 - Right-click *Download with New Download Manager* and *Download all links*
-- Download panel on video and audio players
+- Download panel on video and audio players: no need to play the video first, and right-click it to hide
+  it on a site or turn it off (the extension has its own options page)
+- After a download, the processing (joining video and audio or a stream's pieces, moving the file) shows in the
+  same progress bar
 - Files a page makes itself (Telegram Web's videos and music come from its service worker) are fetched
   inside the page and handed to NDM piece by piece, so they arrive whole
 - Keys to force or prevent a download, file-type and site exceptions

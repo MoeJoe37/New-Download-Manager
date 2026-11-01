@@ -113,6 +113,13 @@ pub struct Info {
     /// The browser extension fetched the file inside its web page and handed it over (a file the page makes
     /// itself, as Telegram Web does): NDM can't download it again from the address.
     pub fed: bool,
+    /// After the data is in: what NDM is doing with it (joining video and audio, moving the file...) and how
+    /// far along, 0..1; below 0 = can't tell. Shown in the same bar as the download.
+    #[serde(skip)]
+    pub post: Option<(String, f32)>,
+    /// A page whose video yt-dlp gets, on any site (the extension's download panel); pages of the sites
+    /// yt-dlp is known for go to it anyway (`ytdlp::is_video_page`).
+    pub ytdlp: bool,
     /// Temporary directory for the .part file (Options -> Save to); "" = next to the file.
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
@@ -1096,6 +1103,43 @@ impl Job {
         if self.running() { s.2 } else { 0.0 }
     }
 
+    /// Shows what NDM does with the data after the download (see `Info::post`); `frac` below 0 = unknown.
+    pub fn set_post(&self, label: &str, frac: f32) {
+        self.info().post = Some((label.to_string(), frac.min(1.0)));
+    }
+
+    /// The finished file copied from the temporary directory to its folder on another drive, then the
+    /// temporary copy removed; the bar shows the copy.
+    fn copy_out(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let total = fs::metadata(from).map(|m| m.len()).unwrap_or(0).max(1);
+        let tmp = PathBuf::from(format!("{}.ndm-copy", to.display()));
+        let copy = || -> std::io::Result<()> {
+            let (mut src, mut dst) = (File::open(from)?, File::create(&tmp)?);
+            let mut buf = vec![0u8; 4 << 20];
+            let mut done = 0u64;
+            loop {
+                let n = src.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+                done += n as u64;
+                self.set_post("Moving the file to its folder...", done as f32 / total as f32);
+            }
+            dst.sync_all()?;
+            drop(dst);
+            fs::rename(&tmp, to)
+        };
+        let r = copy();
+        self.info().post = None;
+        if let Err(e) = r {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+        let _ = fs::remove_file(from);
+        Ok(())
+    }
+
     pub fn start(self: &Arc<Self>, agent: ureq::Agent, global: Arc<Limiter>) {
         if self.info().status == Status::Complete || self.running.swap(true, Relaxed) {
             return;
@@ -1107,6 +1151,7 @@ impl Job {
         thread::spawn(move || {
             let r = job.run(&agent, &global);
             let mut i = job.info();
+            i.post = None;
             i.status = match r {
                 Ok(true) => {
                     i.queued = false;
@@ -1156,7 +1201,7 @@ impl Job {
         if crate::stream::is_media_url(&url) {
             return crate::stream::run_media(self);
         }
-        if crate::ytdlp::is_video_page(&url) {
+        if self.info().ytdlp || crate::ytdlp::is_video_page(&url) {
             return crate::ytdlp::run(self);
         }
         if crate::stream::is_manifest(&url) || self.info().stream {
@@ -1321,22 +1366,27 @@ impl Job {
                 thread::sleep(Duration::from_millis(100));
             }
         });
+        if !errors.iter().any(|e| e == CHANGED) && self.info().segs.iter().all(Seg::done) {
+            // the finished file in place: a rename, or a copy (with its progress, the lock free) when the
+            // temporary directory is on another drive
+            let (size, len, dest) = {
+                let i = self.info();
+                (i.size, i.segs.iter().map(|s| s.next).max().unwrap_or(0), i.path())
+            };
+            if size.is_none() {
+                OpenOptions::new().write(true).open(part).and_then(|f| f.set_len(len)).map_err(|e| e.to_string())?;
+            }
+            if fs::rename(part, &dest).is_err() {
+                self.copy_out(part, &dest)?;
+            }
+        }
         let mut i = self.info();
         if errors.iter().any(|e| e == CHANGED) {
             i.segs.clear(); // the partial data is stale: the next start downloads from scratch
             i.probed = false;
             return Err(CHANGED.into());
         }
-        if i.segs.iter().all(Seg::done) {
-            if i.size.is_none() {
-                let len = i.segs.iter().map(|s| s.next).max().unwrap_or(0);
-                OpenOptions::new().write(true).open(&part).and_then(|f| f.set_len(len)).map_err(|e| e.to_string())?;
-            }
-            // rename, or copy + delete when the temporary directory is on another drive
-            if fs::rename(part, i.path()).is_err() {
-                fs::copy(part, i.path()).map_err(|e| e.to_string())?;
-                let _ = fs::remove_file(part);
-            }
+        if i.segs.iter().all(Seg::done) && !part.exists() {
             if i.size.is_none() {
                 i.size = Some(i.done());
             }
@@ -1803,6 +1853,23 @@ mod tests {
 
     fn info(url: String, dir: &Path) -> Info {
         Info { url, folder: dir.display().to_string(), conns: 4, ..Default::default() }
+    }
+
+    /// The finished file copied out of a temporary directory on another drive: in place, the temporary
+    /// copy gone, and no processing left showing.
+    #[test]
+    fn copy_out_moves_the_file() {
+        let dir = std::env::temp_dir().join(format!("ndm-copyout-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (from, to) = (dir.join("a.part"), dir.join("a.bin"));
+        let data: Vec<u8> = (0..9_000_000u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&from, &data).unwrap();
+        let j = Job::new(Info::default());
+        j.copy_out(&from, &to).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), data);
+        assert!(!from.exists() && !dir.join("a.bin.ndm-copy").exists());
+        assert!(j.info().post.is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
