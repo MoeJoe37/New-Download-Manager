@@ -404,6 +404,19 @@ fn run(mut opts: eframe::NativeOptions, args: &[String]) -> eframe::Result {
         if std::env::var_os("WGPU_BACKEND").is_none() {
             c.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
         }
+        // a graphics card if there is one, else a software renderer (Windows' WARP: computers without a
+        // working GPU driver), which wgpu's own choice leaves out
+        c.native_adapter_selector = Some(Arc::new(|adapters: &[eframe::wgpu::Adapter], surface: Option<&eframe::wgpu::Surface<'_>>| {
+            use eframe::wgpu::DeviceType::*;
+            let rank = |a: &eframe::wgpu::Adapter| match a.get_info().device_type {
+                DiscreteGpu => 0,
+                IntegratedGpu => 1,
+                VirtualGpu => 2,
+                Other => 3,
+                Cpu => 4,
+            };
+            adapters.iter().filter(|a| surface.is_none_or(|s| a.is_surface_supported(s))).min_by_key(|a| rank(a)).cloned().ok_or_else(|| "no graphics adapter".to_string())
+        }));
     }
     // a renderer can also panic while it starts: before the first frame that is the renderer's failure too
     let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eframe::run_native(TITLE, opts, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))));
@@ -430,6 +443,7 @@ fn run(mut opts: eframe::NativeOptions, args: &[String]) -> eframe::Result {
     }
     // neither works: say so (a window can't be drawn), and try OpenGL again next time
     let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::write(marker.with_file_name("renderer-error.log"), format!("{error}\n"));
     win::fatal(TITLE, &format!("New Download Manager can't open its window: {error}\n\nUpdating the graphics driver usually fixes this."));
     Ok(())
 }
