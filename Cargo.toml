@@ -1,10 +1,11 @@
 [package]
 name = "ndm"
-version = "1.3.1"
+version = "2.0.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.31"
+# wgpu: the renderer where OpenGL doesn't start (main.rs, `run`)
+eframe = { version = "0.31", features = ["wgpu"] }
 egui_extras = "0.31"
 ab_glyph = "0.2"
 ureq = { version = "2", default-features = false, features = ["tls", "socks-proxy"] }
@@ -25,23 +26,25 @@ socket2 = { version = "0.6", features = ["all"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp", "ico"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO"] }
 
 # AES-128 (HLS) and MD5 (digest login), which Windows' CNG does on Windows
 [target.'cfg(not(windows))'.dependencies]
 aes = "0.8"
 cbc = "0.1"
 md5 = { package = "md-5", version = "0.10" }
-# the tray icon, drop target, choosers and icon theme (tray-icon already builds on it)
-gtk = "0.18"
 # NTLM (Windows does it in SSPI)
 md4 = "0.10"
 # PAC scripts (Windows runs them in WinHTTP)
 rquickjs = "0.9"
+# getifaddrs (the networks to download over), dlopen (the tray and Kerberos libraries)
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# the tray icon, drop target, choosers and icon theme (tray-icon already builds on it)
+gtk = "0.18"
 # X11 first when DISPLAY is set (eframe already builds on it)
 winit = "0.30"
-# getifaddrs (the networks to download over)
-libc = "0.2"
 # links dropped on the main window (XDND; winit takes dropped files only). Already built for winit.
 x11rb = "0.13"
 

@@ -2,9 +2,23 @@
 ; Build: cargo build --release, then
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss
 ; Output: installer\out\NDM-Setup-<version>.exe
+; Windows on ARM: cargo build --release --target aarch64-pc-windows-msvc, then ISCC.exe /DArch=arm64 installer\ndm.iss
+; Output: installer\out\NDM-ARM64-Setup-<version>.exe (a name NDM 1.x's updater never takes for its own)
 
 #define AppName "New Download Manager"
-#define AppVersion "1.3.1"
+#define AppVersion "2.0.0"
+#ifndef Arch
+  #define Arch "x64"
+#endif
+#if Arch == "arm64"
+  #define Exe "..\target\aarch64-pc-windows-msvc\release\ndm.exe"
+  #define SetupName "NDM-ARM64-Setup-" + AppVersion
+  #define Archs "arm64"
+#else
+  #define Exe "..\target\release\ndm.exe"
+  #define SetupName "NDM-Setup-" + AppVersion
+  #define Archs "x64compatible"
+#endif
 #define AppUrl "https://github.com/MoeJoe37/New-Download-Manager"
 
 [Setup]
@@ -21,12 +35,12 @@ UninstallDisplayIcon={app}\ndm.exe
 LicenseFile=..\LICENSE
 SetupIconFile=..\assets\ndm.ico
 OutputDir=out
-OutputBaseFilename=NDM-Setup-{#AppVersion}
+OutputBaseFilename={#SetupName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#Archs}
+ArchitecturesInstallIn64BitMode={#Archs}
 ; NDM keeps everything per user (HKCU, %APPDATA%), so it installs without admin rights unless asked to
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
@@ -38,7 +52,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "autostart"; Description: "Start New Download Manager with Windows"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
-Source: "..\target\release\ndm.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Exe}"; DestDir: "{app}"; DestName: "ndm.exe"; Flags: ignoreversion
 Source: "..\Languages\*.lng"; DestDir: "{app}\Languages"; Flags: ignoreversion
 Source: "..\help\*.htm"; DestDir: "{app}\help"; Flags: ignoreversion
 Source: "..\help\images\*"; DestDir: "{app}\help\images"; Flags: ignoreversion

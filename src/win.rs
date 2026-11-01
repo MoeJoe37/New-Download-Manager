@@ -149,6 +149,20 @@ unsafe extern "system" fn hidden_proc(h: HWND, msg: u32, w: usize, l: isize, _: 
     DefSubclassProc(h, msg, w, l)
 }
 
+/// Marks a new file sparse (FSCTL_SET_SPARSE), so setting its length doesn't make NTFS write zeros later.
+pub fn sparse(f: &std::fs::File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
+    let mut n = 0u32;
+    unsafe { DeviceIoControl(f.as_raw_handle() as _, FSCTL_SET_SPARSE, std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut n, std::ptr::null_mut()) };
+}
+
+/// A message box when NDM can't start at all (no window to show it in).
+pub fn fatal(title: &str, text: &str) {
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OK | MB_ICONERROR) };
+}
+
 pub fn show(hwnd: isize) {
     let h = hwnd as HWND;
     if h.is_null() {

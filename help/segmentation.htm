@@ -3,9 +3,9 @@
 <p class="lead">NDM splits a file into parts and downloads them over several connections at the same time. This page explains how the parts are made, how a download resumes, and how to limit or spread the traffic.</p>
 
 <h2 id="Parts">Connections and parts</h2>
-<p>The first request already downloads the file. When the server accepts requests for parts of a file, NDM adds connections while the download runs:</p>
+<p>The first request already downloads the file. Connections that finish a part take the next one over the same connection to the server, without connecting again. When the server accepts requests for parts of a file, NDM adds connections while the download runs:</p>
 <ul>
-<li>at most once a second, doubling the count each time (1, 2, 4, 8…) up to the maximum for the download;</li>
+<li>every quarter of a second, doubling the count each time (1, 2, 4, 8, 16 within a second) up to the maximum for the download;</li>
 <li>only while every open connection is receiving data and the speed limits leave room.</li>
 </ul>
 <p>Each new connection takes the second half of the largest part still left. A part is only split when at least 512 KB of it remains, so no part is smaller than 256 KB. When a connection finishes its part, it takes another, so all connections stay busy until the end.</p>

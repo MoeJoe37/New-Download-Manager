@@ -5,7 +5,7 @@
 <h1 align="center">New Download Manager</h1>
 
 <p align="center">
-  A fast, free and open source download manager for Windows and Linux, written in Rust.<br>
+  A fast, free and open source download manager for Windows, macOS and Linux, written in Rust.<br>
   Split downloads, browser integration, video streams, a site grabber and a scheduler, in one small native app.
 </p>
 
@@ -28,6 +28,10 @@
 **Downloading**
 - Splits every file into parts fetched over several connections at once; finished connections take over
   half of the slowest part, so they all stay busy to the end
+- Opens a new connection every quarter second until the download runs at full speed, keeps connections
+  open between parts and remembers the server's address, so parts start without a new handshake
+- Notices a server that allows fewer connections (busy / too many requests) and keeps to what it allows
+  instead of failing; can spread the connections over several networks at once (Wi-Fi, Ethernet, USB tethering)
 - Resumes broken downloads, after checking that the file on the server hasn't changed
 - http, https and ftp (passive and active); mms, rtmp and rtsp through ffmpeg
 - Sign-in: Basic, Digest, NTLM / Negotiate (your Windows account, or your Kerberos ticket on Linux), saved site logins
@@ -62,6 +66,11 @@
 - Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
 - Clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
 - Import and export of download lists, built-in help, automatic update check
+- English, Spanish, French and Arabic (right to left: every window is mirrored), and any language you add
+  (View → Language, see [Translating](#translating))
+- Starts on any machine: when the graphics driver's OpenGL doesn't work (virtual machines, remote desktops,
+  old drivers) NDM starts again with Direct3D / Vulkan / Metal or Windows' software renderer, and when another
+  program holds its browser port it takes the next one (the extension finds it)
 
 <p align="center">
   <img src="docs/download-file-info.png" alt="Download File Info window" width="560"><br>
@@ -85,16 +94,35 @@
 
 ## Installing
 
-1. Download `NDM-Setup-<version>.exe` from [Releases](https://github.com/MoeJoe37/New-Download-Manager/releases)
-   and run it. It installs for your user only (no admin rights needed).
+Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager/releases) page:
+
+| System | File |
+|---|---|
+| Windows 10/11, x64 | `NDM-Setup-<version>.exe`, or `NDM-<version>-windows-x64.zip` (portable) |
+| Windows 11 on ARM (Snapdragon) | `NDM-ARM64-Setup-<version>.exe`, or `NDM-<version>-windows-arm64.zip` |
+| macOS 11 or later (Apple Silicon and Intel) | `NDM-<version>-macOS.dmg` |
+| Linux x86_64 | `ndm_<version>_amd64.deb`, `ndm-<version>-1.x86_64.rpm`, `NDM-x86_64.AppImage`, `ndm-<version>-x86_64.tar.gz` |
+| Linux aarch64 (Raspberry Pi 4/5, ARM laptops and servers) | `ndm_<version>_arm64.deb`, `ndm-<version>-1.aarch64.rpm`, `NDM-aarch64.AppImage`, `ndm-<version>-aarch64.tar.gz` |
+
+**Windows:**
+
+1. Download the setup for your processor and run it. It installs for your user only (no admin rights
+   needed). The portable zip runs from any folder (a USB stick, too): unpack it and start `ndm.exe`.
 2. Install the browser extension: open your browser's extensions page, turn on *Developer mode*, click
    *Load unpacked* and choose the `extension` folder in NDM's install folder
    (Start menu → New Download Manager → *Browser extension folder*).
 3. Start NDM once, so the browser can reach it.
 
-**Linux:** download the package for your distribution from Releases: `ndm_<version>_amd64.deb` (Debian, Ubuntu,
-Mint), `ndm-<version>-1.x86_64.rpm` (Fedora, RHEL, openSUSE), `NDM-x86_64.AppImage` (any distribution: make it
-executable with `chmod +x NDM-x86_64.AppImage` and run it) or `ndm-<version>-x86_64.tar.gz` (unpack and run `./ndm`). Everything the Windows version has works there too: the tray icon (on desktops with a tray: KDE, Xfce,
+**macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first
+time, right-click (or Control-click) NDM in Applications and choose **Open**, then **Open** again; after that
+it starts normally. (Or run `xattr -dr com.apple.quarantine /Applications/NDM.app` once in Terminal.) Its
+icon sits in the menu bar while it runs. Load the browser extension from
+`~/Library/Application Support/NewDownloadManager/extension`, the copy NDM keeps there so updates don't move
+it (*Options → General → Reintegrate All* shows the steps for each browser).
+
+**Linux:** download the package for your distribution and processor: `.deb` (Debian, Ubuntu, Mint, Raspberry
+Pi OS), `.rpm` (Fedora, RHEL, openSUSE), the AppImage (any distribution: make it executable with
+`chmod +x NDM-x86_64.AppImage` and run it) or the `.tar.gz` (unpack and run `./ndm`). Everything the Windows version has works there too: the tray icon (on desktops with a tray: KDE, Xfce,
 Cinnamon, MATE, GNOME with the AppIndicator extension), the drop target, dial-up / VPN through NetworkManager,
 the desktop's proxy, PAC scripts, NTLM and Kerberos sign-in, links dropped on the main window and Firefox's cache.
 
@@ -111,6 +139,7 @@ per button; NDM lists every such folder under **View → Toolbar** (also on the 
 |---|---|
 | Windows | `%APPDATA%\NewDownloadManager\toolbars` |
 | Linux | `~/.config/NewDownloadManager/toolbars` (or `$XDG_CONFIG_HOME/NewDownloadManager/toolbars`) |
+| macOS | `~/Library/Application Support/NewDownloadManager/toolbars` |
 
 **2. Make a folder for your toolbar** inside it. The folder's name is the toolbar's name in the menu, for example
 `toolbars/Sunset`.
@@ -177,6 +206,7 @@ and opens it:
 |---|---|
 | Windows | `%APPDATA%\NewDownloadManager\category-icons` |
 | Linux | `~/.config/NewDownloadManager/category-icons` (or `$XDG_CONFIG_HOME/NewDownloadManager/category-icons`) |
+| macOS | `~/Library/Application Support/NewDownloadManager/category-icons` |
 
 **2. Make a folder for your set** inside it. The folder's name is the set's name in the menu, for example
 `category-icons/Candy`.
@@ -225,18 +255,19 @@ opens this guide.
 
 ## Building from source
 
-Requirements: Windows 10/11 x64, [Rust](https://rustup.rs) (stable, MSVC toolchain), the Windows SDK
-(for the exe icon).
+Requirements: Windows 10/11 (x64 or ARM64), [Rust](https://rustup.rs) (stable, MSVC toolchain), the Windows
+SDK (for the exe icon).
 
 ```sh
 cargo build --release          # target\release\ndm.exe
 cargo test --release           # tests
 ```
 
-Installer ([Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+Installer ([Inno Setup 6](https://jrsoftware.org/isinfo.php)); `/DArch=arm64` makes the ARM64 one from
+`target\aarch64-pc-windows-msvc\release\ndm.exe`:
 
 ```sh
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss   # installer\out\NDM-Setup-1.0.1.exe
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss   # installer\out\NDM-Setup-<version>.exe
 ```
 
 | Folder | What |
@@ -246,22 +277,40 @@ Installer ([Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 | `help/` | Help pages, shown inside the app |
 | `Languages/` | Language files |
 | `installer/` | Inno Setup script |
-| `tools/` | `ndm_lng.py` (language file generator), `icon.py` (app icon), `appimage.sh` (Linux AppImage) |
+| `tools/` | `ndm_lng.py` (language file generator), `icon.py` (app icon), `appimage.sh`, `linux-packages.sh` and `macos.sh` (packages), `smoke*` (start-up tests CI runs) |
 
-Linux AppImage (on Linux, or in WSL on Windows; needs `build-essential pkg-config libgtk-3-dev libxdo-dev
-libayatana-appindicator3-dev` and Rust):
+Linux packages (on Linux, x86_64 or aarch64, or in WSL on Windows; needs `build-essential pkg-config
+libgtk-3-dev libxdo-dev libayatana-appindicator3-dev`, `rpm` for the .rpm, and Rust):
 
 ```sh
-bash tools/appimage.sh         # installer/out/NDM-x86_64.AppImage
+bash tools/appimage.sh                                  # installer/out/NDM-<arch>.AppImage
+bash tools/linux-packages.sh target/release/ndm         # .deb, .rpm and .tar.gz
 ```
+
+macOS (Xcode command line tools and Rust with both Mac targets:
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`):
+
+```sh
+bash tools/macos.sh            # installer/out/NDM-<version>-macOS.dmg, one app for Apple Silicon and Intel
+```
+
+GitHub Actions builds and tests all of them (`.github/workflows/ci.yml`) and attaches them to a release when
+a `v<version>` tag is pushed (`release.yml`).
 
 ## Translating
 
 `Languages/ndm_en.lng` lists every text NDM shows, one `English=Text` per line. It is generated from the
-source by `python tools/ndm_lng.py` (`--check` tells whether it is up to date).
+source by `python tools/ndm_lng.py` (`--check` tells whether it is up to date, and whether every translation
+keeps its placeholders).
 
-To add a language, copy it to `ndm_xx.lng`, change the first line (`lang=0x407 Deutsch`), and translate the
-text after each `=`. Keep `%s` / `%d` and `\n`. NDM lists the file under **View → Language**.
+NDM comes with Spanish (`ndm_es.lng`), French (`ndm_fr.lng`) and Arabic (`ndm_ar.lng`). To add a language,
+copy `ndm_en.lng` to `ndm_xx.lng`, change the first line (`lang=0x407 Deutsch`), and translate the text after
+each `=`. Keep `%s` / `%d` and `\n`, in the same order. A string you leave out shows in English, and a text
+too long for its place is drawn smaller. The `%b %d %H:%M:%S %Y` line is the date format (`%d/%m/%Y` for
+day/month/year). NDM lists the file under **View → Language**.
+
+Files named `ndm_ar`, `ndm_fa`, `ndm_he` or `ndm_iw` are right to left: NDM mirrors every window and lays the
+text out itself (letters joined, words in reading order), so the translation is written as usual.
 Pull requests welcome.
 
 ## License

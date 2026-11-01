@@ -1,5 +1,7 @@
 name: CI
 
+# Every platform NDM ships for: Windows x64 and ARM64, Linux x86_64 and aarch64 (AppImage, .deb, .rpm,
+# .tar.gz, started on mainstream distributions), macOS (one app for Apple Silicon and Intel).
 on:
   push:
     branches: [main]
@@ -19,16 +21,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: cargo test --release
-      - name: Language file is up to date
+      - name: Language files are up to date
         run: python tools/ndm_lng.py --check
+      - name: NDM starts (no graphics card here: OpenGL, else wgpu with Windows' software renderer)
+        run: powershell -File tools\smoke-windows.ps1 target\release\ndm.exe
       - name: Installer builds
         run: |
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /Q installer\ndm.iss
 
+  windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: cargo test --release
+      - name: NDM starts
+        run: powershell -File tools\smoke-windows.ps1 target\release\ndm.exe
+
   linux:
-    # the release's AppImage is built on Ubuntu 20.04 (glibc 2.31), so it starts on every newer distribution
-    runs-on: ubuntu-latest
+    # built on Ubuntu 20.04 (glibc 2.31), so the AppImage and the packages start on it and every newer distribution
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     env:
       DEBIAN_FRONTEND: noninteractive
@@ -49,9 +68,9 @@ jobs:
         run: bash tools/linux-packages.sh target/release/ndm
       - uses: actions/upload-artifact@v4
         with:
-          name: appimage
+          name: linux-${{ matrix.runner == 'ubuntu-24.04-arm' && 'aarch64' || 'x86_64' }}
           path: |
-            installer/out/NDM-x86_64.AppImage
+            installer/out/NDM-*.AppImage
             installer/out/ndm*.deb
             installer/out/ndm*.rpm
             installer/out/ndm*.tar.gz
@@ -61,20 +80,52 @@ jobs:
     # do the AppImage, the .deb / .rpm (installed with the distribution's package manager) and the
     # .tar.gz start on each mainstream distribution?
     needs: linux
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        distro: [ 'ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'debian:13', 'fedora:latest', 'rockylinux:9',
-                  'opensuse/leap:15.6', 'opensuse/tumbleweed', 'archlinux:latest' ]
+        include:
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'ubuntu:20.04' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'ubuntu:22.04' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'ubuntu:24.04' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'debian:12' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'debian:13' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'fedora:latest' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'rockylinux:9' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'opensuse/leap:15.6' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'opensuse/tumbleweed' }
+          - { arch: x86_64, runner: ubuntu-latest, distro: 'archlinux:latest' }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, distro: 'ubuntu:20.04' }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, distro: 'ubuntu:24.04' }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, distro: 'debian:12' }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, distro: 'fedora:latest' }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, distro: 'opensuse/tumbleweed' }
+    runs-on: ${{ matrix.runner }}
     container: ${{ matrix.distro }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: appimage
+          name: linux-${{ matrix.arch }}
       - name: Start NDM
         shell: bash
         run: |
-          chmod +x installer/out/NDM-x86_64.AppImage
+          chmod +x installer/out/NDM-*.AppImage
           # the AppImage first, before a package or the .tar.gz brings GTK in
-          bash tools/smoke.sh installer/out/NDM-x86_64.AppImage installer/out/*.deb installer/out/*.rpm installer/out/*.tar.gz
+          bash tools/smoke.sh installer/out/NDM-*.AppImage installer/out/*.deb installer/out/*.rpm installer/out/*.tar.gz
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+      - name: NDM.app and the disk image (Apple Silicon and Intel)
+        run: bash tools/macos.sh
+      - name: NDM starts
+        run: bash tools/smoke-macos.sh installer/out/NDM-*-macOS.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: installer/out/NDM-*-macOS.dmg

@@ -1,7 +1,12 @@
-# Push a tag vX.Y.Z (matching Cargo.toml's version), or run it by hand on a branch with a tag name, and
-# this builds ndm.exe, the Windows installer, and the
-# Linux AppImage, .deb, .rpm and .tar.gz, and attaches them to that tag's GitHub release (created if missing). NDM's "Check for
-# updates" picks the file this copy came as from the latest release.
+# Push a tag vX.Y.Z (matching Cargo.toml's version), or run it by hand on a branch with a tag name, and this
+# builds every release file and attaches them to that tag's GitHub release (created if missing):
+#   Windows x64     NDM-Setup-<v>.exe, ndm.exe, NDM-<v>-windows-x64.zip (portable)
+#   Windows ARM64   NDM-ARM64-Setup-<v>.exe, ndm-arm64.exe, NDM-<v>-windows-arm64.zip
+#   Linux x86_64    NDM-x86_64.AppImage, ndm_<v>_amd64.deb, ndm-<v>-1.x86_64.rpm, ndm-<v>-x86_64.tar.gz
+#   Linux aarch64   NDM-aarch64.AppImage, ndm_<v>_arm64.deb, ndm-<v>-1.aarch64.rpm, ndm-<v>-aarch64.tar.gz
+#   macOS           NDM-<v>-macOS.dmg (Apple Silicon and Intel)
+# NDM's "Check for updates" picks the file this copy came as, for its system and processor (main.rs,
+# update_asset); the ARM names never match what NDM 1.x looks for.
 name: Release
 
 on:
@@ -10,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to publish, e.g. v1.1.0 (created at the commit this runs on if it doesn't exist)
+        description: Tag to publish, e.g. v2.0.0 (created at the commit this runs on if it doesn't exist)
         required: true
 
 permissions:
@@ -20,31 +25,72 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  version:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
-        shell: bash
         run: |
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           [ "v$v" = "$TAG" ] || { echo "Cargo.toml says $v, tag is $TAG"; exit 1; }
+
+  windows-arm64:
+    needs: version
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - name: Installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64-exe
+          path: target/release/ndm.exe
+
+  windows:
+    # x64 here; the ARM64 program comes from its own job, and both setups are made here (Inno Setup)
+    needs: windows-arm64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-arm64-exe
+          path: target/aarch64-pc-windows-msvc/release
+      - name: Setups, programs and portable folders
+        shell: pwsh
         run: |
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\ndm.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DArch=arm64 installer\ndm.iss
+          $v = $env:TAG.TrimStart('v')
           Copy-Item target\release\ndm.exe installer\out\ndm.exe
+          Copy-Item target\aarch64-pc-windows-msvc\release\ndm.exe installer\out\ndm-arm64.exe
+          # portable: the program with its languages, help and browser extension, to run from any folder
+          foreach ($a in @(@('x64', 'target\release\ndm.exe'), @('arm64', 'target\aarch64-pc-windows-msvc\release\ndm.exe'))) {
+            $dir = "portable\New Download Manager"
+            Remove-Item -Recurse -Force portable -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            Copy-Item $a[1] "$dir\ndm.exe"
+            Copy-Item -Recurse Languages, help, extension, LICENSE $dir
+            Compress-Archive -Path $dir -DestinationPath "installer\out\NDM-$v-windows-$($a[0]).zip" -Force
+          }
+          Get-ChildItem installer\out
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: installer/out/*
 
   linux:
-    # built on Ubuntu 20.04 (glibc 2.31): the AppImage then starts on it and every newer distribution
-    runs-on: ubuntu-latest
+    # built on Ubuntu 20.04 (glibc 2.31): the AppImage and the packages then start on it and every newer distribution
+    needs: version
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     container: ubuntu:20.04
     env:
       DEBIAN_FRONTEND: noninteractive
@@ -61,15 +107,29 @@ jobs:
         run: bash tools/linux-packages.sh "$HOME/.cache/ndm-build/src/target/release/ndm"
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
+          name: linux-${{ matrix.runner == 'ubuntu-24.04-arm' && 'aarch64' || 'x86_64' }}
           path: |
-            installer/out/NDM-x86_64.AppImage
+            installer/out/NDM-*.AppImage
             installer/out/ndm*.deb
             installer/out/ndm*.rpm
             installer/out/ndm*.tar.gz
 
+  macos:
+    needs: version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - run: bash tools/macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: installer/out/NDM-*-macOS.dmg
+
   publish:
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +138,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: out
+          pattern: '{windows,linux-*,macos}'
           merge-multiple: true
       - name: Attach to the release
         env:

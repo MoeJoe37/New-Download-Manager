@@ -25,9 +25,9 @@
 
 <h2 id="View">View menu</h2>
 <ul>
-<li><b>Language</b> changes the language of menus and windows.</li>
+<li><b>Language</b> changes the language of menus and windows: English, Spanish, French, Arabic, or a language file you added. Arabic is written right to left, so every window is mirrored.</li>
 <li><b>Font</b> changes the font of the download list; <b>Reset to default Font</b> undoes it.</li>
-<li><b>Dark Mode support</b> follows the system's dark mode: Windows' dark app mode, or the desktop's dark style on Linux.</li>
+<li><b>Dark Mode support</b> follows the system's dark mode: Windows' dark app mode, the desktop's dark style on Linux, or macOS's dark appearance.</li>
 <li><b>NDM tray icon</b> shows the notification area icon in 3D style, in Classic style, or not at all.</li>
 </ul>
 
@@ -36,7 +36,8 @@
 <ol>
 <li>Copy the file to ndm_xx.lng, where xx is your language's code.</li>
 <li>Change the first line to your language's ID and name.</li>
-<li>Translate the text after each "=".</li>
+<li>Translate the text after each "=". Keep %s, %d and \n, in the same order: NDM puts values there.</li>
 </ol>
+<p>A text you leave out shows in English, and a translation longer than the English is drawn a little smaller to fit. The line starting with "%b %d" is the date format (for example %d/%m/%Y for day/month/year). Files named ndm_ar, ndm_fa, ndm_he or ndm_iw are right to left: NDM mirrors the windows and lays the text out itself.</p>
 <p>NDM lists the new file under <b>View → Language</b> the next time it starts. Translations are welcome as pull requests on GitHub.</p>
 </body></html>

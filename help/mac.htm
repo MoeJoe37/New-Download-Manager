@@ -1,0 +1,37 @@
+<html><head><title>NDM on macOS</title></head><body>
+<h1>NDM on macOS</h1>
+<p class="lead">On a Mac, NDM is one app for Apple Silicon and Intel processors, for macOS 11 or later. This page covers what differs from Windows.</p>
+
+<h2 id="Install">Installing</h2>
+<ol>
+<li>Download <kbd>NDM-&lt;version&gt;-macOS.dmg</kbd> from the release page and open it.</li>
+<li>Drag <b>NDM</b> onto <b>Applications</b>.</li>
+<li>The first time, right-click (or Control-click) NDM in Applications and choose <b>Open</b>, then <b>Open</b> again. NDM isn't notarized by Apple, so a plain double-click is refused once. After that it starts normally. (In Terminal, <kbd>xattr -dr com.apple.quarantine /Applications/NDM.app</kbd> does the same.)</li>
+</ol>
+<p><b>Check for updates</b> downloads the new disk image and replaces the app in place, then starts it again.</p>
+
+<h2 id="MenuBar">The menu bar icon</h2>
+<p>While NDM runs, its icon sits in the menu bar, where Windows has the notification area icon: <b>Open</b>, the main queue, the Speed Limiter and <b>Exit</b>. Closing the window keeps NDM running there.</p>
+
+<h2 id="Extension">The browser extension</h2>
+<p>NDM keeps a copy of its browser extension in <kbd>~/Library/Application Support/NewDownloadManager/extension</kbd>, which stays in place when NDM is updated. Load that folder (see <a href="starting.htm#Browser">From your browser</a>); <b>Options → General → Reintegrate All</b> shows the steps for each browser. NDM registers itself with Chrome, Edge, Brave, Vivaldi, Opera, Chromium and Firefox.</p>
+
+<h2 id="Files">Where NDM keeps its files</h2>
+<p>Settings and the download list are in <kbd>~/Library/Application Support/NewDownloadManager</kbd>, with the toolbars and category icons folders.</p>
+
+<h2 id="System">System settings</h2>
+<ul>
+<li><b>Use system settings</b> on the Proxy / Socks page reads the proxy and the auto-configuration script set in System Settings → Network.</li>
+<li>The Dial Up / VPN page lists the VPN connections set up in System Settings; NDM connects one before downloading.</li>
+<li><b>Launch New Download Manager on startup</b> starts NDM when you log in.</li>
+<li>Sounds play through the system; <b>Turn off computer when done</b> asks the open programs to quit and shuts down, or puts the Mac to sleep.</li>
+<li>Sites asking for Negotiate sign in with your Kerberos ticket.</li>
+</ul>
+
+<h2 id="Limits">Limits on macOS</h2>
+<ul>
+<li>There is no floating drop target; drop links on the browser's download panel or use Add URL.</li>
+<li>Advanced browser integration (system-wide capture) is Windows-only.</li>
+<li>"Look up files in browser cache" reads Firefox's cache only.</li>
+</ul>
+</body></html>

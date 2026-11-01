@@ -75,14 +75,22 @@ pub struct Nic {
     pub ips: Vec<std::net::IpAddr>,
 }
 
-/// A connection that leaves by `nic`: bound to its address of `addr`'s family (on Linux also to
-/// the device, since Linux routes by destination, not by source address).
+/// A connection that leaves by `nic`: bound to its address of `addr`'s family (on Linux and macOS also to
+/// the device, since they route by destination, not by source address).
 pub fn connect_on(nic: &Nic, addr: SocketAddr) -> io::Result<TcpStream> {
     use socket2::{Domain, SockAddr, Socket, Type};
     let ip = nic.ips.iter().find(|ip| ip.is_ipv4() == addr.is_ipv4()).ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, format!("{} has no address for {addr}", nic.name)))?;
     let s = Socket::new(Domain::for_address(addr), Type::STREAM, None)?;
     #[cfg(target_os = "linux")]
     s.bind_device(Some(nic.name.as_bytes()))?;
+    // macOS routes by destination too: IP_BOUND_IF / IPV6_BOUND_IF keep the connection on the interface
+    #[cfg(target_os = "macos")]
+    {
+        let name = std::ffi::CString::new(nic.name.as_str()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        // SAFETY: a valid C string; if_nametoindex only reads it
+        let index = std::num::NonZeroU32::new(unsafe { libc::if_nametoindex(name.as_ptr()) });
+        if addr.is_ipv4() { s.bind_device_by_index_v4(index)? } else { s.bind_device_by_index_v6(index)? }
+    }
     s.bind(&SockAddr::from(SocketAddr::new(*ip, 0)))?;
     s.connect_timeout(&SockAddr::from(addr), CONNECT_TIMEOUT)?;
     Ok(s.into())
@@ -342,7 +350,8 @@ mod tests {
     #[test]
     fn connect_on_binds() {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let lo = Nic { name: if cfg!(windows) { "Loopback".into() } else { "lo".into() }, ips: vec![std::net::Ipv4Addr::LOCALHOST.into()] };
+        let name = if cfg!(windows) { "Loopback" } else if cfg!(target_os = "macos") { "lo0" } else { "lo" };
+        let lo = Nic { name: name.into(), ips: vec![std::net::Ipv4Addr::LOCALHOST.into()] };
         if !nic_supported() {
             return; // Linux before 5.7
         }

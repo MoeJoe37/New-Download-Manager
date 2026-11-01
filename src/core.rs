@@ -13,7 +13,23 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub const PORT: u16 = 9614;
+/// The browser endpoint's ports: the first one free. Windows can reserve a port range for Hyper-V, WSL or
+/// Docker (`netsh int ipv4 show excludedportrange`), so 9614 may not be NDM's to take; the extension tries
+/// the same list (extension/background.js, PORTS).
+pub const PORTS: [u16; 4] = [9614, 19614, 29614, 39614];
+
+/// Asks each of `PORTS` whether NDM answers there: its port, if a copy is running. NDM marks its replies
+/// with "X-NDM: 1"; NDM 1.3 and older (on 9614 only) are known by their /config reply.
+pub fn running_port() -> Option<u16> {
+    PORTS.into_iter().find(|p| {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], *p));
+        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_err() {
+            return false;
+        }
+        let r = ureq::post(&format!("http://127.0.0.1:{p}/config")).set("X-NDM", "1").timeout(Duration::from_secs(3)).call();
+        r.is_ok_and(|r| r.header("X-NDM").is_some() || r.into_string().is_ok_and(|b| b.contains("\"menu_dl\"")))
+    })
+}
 /// "Use advanced browser integration": Windows' proxy for http points here (see `apply_integration`).
 pub const PROXY_PORT: u16 = 9615;
 
@@ -807,7 +823,11 @@ pub struct Core {
 }
 
 pub fn store_path() -> PathBuf {
-    // %APPDATA% on Windows, ~/.config elsewhere
+    // %APPDATA% on Windows, ~/Library/Application Support on macOS, ~/.config elsewhere
+    #[cfg(target_os = "macos")]
+    if let Some(home) = std::env::var_os("HOME") {
+        return Path::new(&home).join("Library/Application Support/NewDownloadManager/state.json");
+    }
     let base = std::env::var("APPDATA").or_else(|_| std::env::var("XDG_CONFIG_HOME")).or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config"))).unwrap_or_else(|_| ".".into());
     Path::new(&base).join("NewDownloadManager").join("state.json")
 }
@@ -1040,7 +1060,7 @@ impl Core {
         let say = |t: Option<String>| *self.dial_text.lock().unwrap() = t;
         let mut n = 1;
         let r = loop {
-            say(Some(crate::i18n::tr("Connecting ...")));
+            say(Some(crate::i18n::tr_os("Connecting ...")));
             let e = match crate::win::ras_dial(&entry) {
                 Ok(()) => break Ok(()),
                 Err(e) => e,
@@ -1054,7 +1074,7 @@ impl Core {
                 if self.dial_cancel.load(Relaxed) || self.dial_now.swap(false, Relaxed) {
                     break;
                 }
-                say(Some(format!("{e}\n{}", crate::i18n::trf("Redial  %ld", &[&left]))));
+                say(Some(format!("{}\n{}", crate::i18n::tr_msg_os(&e), crate::i18n::trf_os("Redial  %ld", &[&left]))));
                 thread::sleep(Duration::from_secs(1));
             }
             if self.dial_cancel.load(Relaxed) {
@@ -1214,9 +1234,10 @@ impl Core {
             q.stopped = Some((end, ids));
             if warn {
                 let hm = |t: chrono::DateTime<Local>| t.format("%H:%M").to_string();
-                *self.quota_msg.lock().unwrap() = Some(format!(
-                    "From {} to {} you downloaded {} MB. All downloads have been stopped at {} because you had exceeded your download limits set in 'Options->Connection'!\r\n\r\nAll stopped downloads will be resumed automatically at {}. If you want to resume downloads immediately, change settings in Download Limits and press on Resume.",
-                    hm(start), hm(now), (got - base) / (1024 * 1024), hm(now), hm(end)
+                // the message window wraps it: reading order
+                *self.quota_msg.lock().unwrap() = Some(crate::i18n::trf_os(
+                    "From %s to %s you downloaded %s MB. All downloads have been stopped at %s because you had exceeded your download limits set in 'Options->Connection'!\r\n\r\nAll stopped downloads will be resumed automatically at %s. If you want to resume downloads immediately, change settings in Download Limits and press on Resume.",
+                    &[&hm(start), &hm(now), &((got - base) / (1024 * 1024)), &hm(now), &hm(end)],
                 ));
             }
         }
@@ -1371,7 +1392,7 @@ impl Core {
             batch.push((i.id, f.url.clone()));
             self.add(i);
         }
-        let ids = batch.iter().map(|b| b.0).collect();
+        let ids: Vec<u64> = batch.iter().map(|b| b.0).collect();
         if opts.convert && !batch.is_empty() {
             self.grab_convert.lock().unwrap().push(batch);
         }
@@ -1638,15 +1659,14 @@ impl Core {
         }
         let core = self.clone();
         thread::spawn(move || {
-            let l = match TcpListener::bind(("127.0.0.1", PORT)) {
-                Ok(l) => l,
-                Err(e) => return eprintln!("browser integration disabled, port {PORT}: {e}"),
+            let Some(l) = PORTS.iter().find_map(|p| TcpListener::bind(("127.0.0.1", *p)).map_err(|e| eprintln!("port {p}: {e}")).ok()) else {
+                return eprintln!("browser integration disabled: none of the ports {PORTS:?} is free");
             };
             for s in l.incoming().flatten() {
                 let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
                 let req = handle(&s);
                 let reply = |status: &str, body: &str| {
-                    let _ = (&s).write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                    let _ = (&s).write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-NDM: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
                 };
                 if req.as_ref().is_some_and(|(path, ..)| path == "/show") {
                     // NDM started again (Linux): bring the window back

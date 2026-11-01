@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Builds NDM's Linux packages beside the AppImage:  bash tools/linux-packages.sh [path/to/ndm]
-#   installer/out/ndm_<version>_amd64.deb        Debian, Ubuntu, Mint
-#   installer/out/ndm-<version>-1.x86_64.rpm     Fedora, RHEL/Alma/Rocky, openSUSE
-#   installer/out/ndm-<version>-x86_64.tar.gz    any distribution: unpack and run ./ndm
+# Builds NDM's Linux packages beside the AppImage, for the machine's processor (x86_64 or aarch64):
+#   bash tools/linux-packages.sh [path/to/ndm]
+#   installer/out/ndm_<version>_<amd64|arm64>.deb          Debian, Ubuntu, Mint, Raspberry Pi OS
+#   installer/out/ndm-<version>-1.<x86_64|aarch64>.rpm     Fedora, RHEL/Alma/Rocky, openSUSE
+#   installer/out/ndm-<version>-<x86_64|aarch64>.tar.gz    any distribution: unpack and run ./ndm
 # They use the system's GTK; libxdo (not in RHEL's own repositories) comes with them in lib/.
 # Needs: dpkg-deb and dpkg-shlibdeps (dpkg-dev), rpmbuild (rpm), patchelf. Without a binary given,
 # runs cargo build --release. Releases build on Ubuntu 20.04, so the packages run on glibc 2.31 and later.
@@ -10,6 +11,8 @@ set -euo pipefail
 src="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$src"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+arch="$(uname -m)"                    # x86_64, aarch64: the .rpm's and the .tar.gz's
+debarch="$(dpkg --print-architecture)" # amd64, arm64: the .deb's
 bin="${1:-}"
 if [ -z "$bin" ]; then
     cargo build --release
@@ -61,7 +64,7 @@ install -m 644 LICENSE "$root/usr/share/doc/ndm/copyright"
 
 # .deb: dependencies from the libraries ndm links (libxdo is bundled, the tray library is opened at run time)
 mkdir -p "$work/shlibs/debian"
-printf 'Source: ndm\n\nPackage: ndm\nArchitecture: amd64\n' > "$work/shlibs/debian/control"
+printf 'Source: ndm\n\nPackage: ndm\nArchitecture: %s\n' "$debarch" > "$work/shlibs/debian/control"
 depends="$(cd "$work/shlibs" && dpkg-shlibdeps -O -l"$root/usr/lib/ndm/lib" -xlibxdo3 --ignore-missing-info "$root/usr/lib/ndm/ndm" "$root/usr/lib/ndm/lib/$(basename "$xdo")" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"
 [ -n "$depends" ] || { echo "dpkg-shlibdeps found no dependencies"; exit 1; }
 # newer Debian and Ubuntu renamed libgdk-pixbuf2.0-0
@@ -74,7 +77,7 @@ Package: ndm
 Version: $version
 Section: web
 Priority: optional
-Architecture: amd64
+Architecture: $debarch
 Maintainer: New Download Manager <https://github.com/MoeJoe37/New-Download-Manager>
 Installed-Size: $(du -sk "$deb/usr" | cut -f1)
 Depends: $depends
@@ -85,7 +88,7 @@ Description: download manager with segmented downloads and browser capture
  broken downloads, takes over downloads from the browser, saves video streams
  and downloads whole web sites. The tray icon needs libayatana-appindicator3.
 EOF
-dpkg-deb --root-owner-group --build "$deb" "$out/ndm_${version}_amd64.deb" >/dev/null
+dpkg-deb --root-owner-group --build "$deb" "$out/ndm_${version}_${debarch}.deb" >/dev/null
 
 # .rpm: rpm works out the libraries ndm needs by their names, which every distribution provides
 rpmtop="$work/rpm"
@@ -120,7 +123,7 @@ cp -a $root/. %{buildroot}/
 %doc /usr/share/doc/ndm/copyright
 EOF
 rpmbuild --quiet --define "_topdir $rpmtop" -bb "$rpmtop/SPECS/ndm.spec"
-cp "$rpmtop"/RPMS/x86_64/ndm-"$version"-1.x86_64.rpm "$out/"
+cp "$rpmtop/RPMS/$arch/ndm-$version-1.$arch.rpm" "$out/"
 
 # .tar.gz: the same folder to run in place, with its menu entry and icon to copy if wanted
 tdir="$work/ndm-$version"
@@ -131,6 +134,6 @@ done
 app "$tdir" "${xlibs[@]}"
 desktop ndm > "$tdir/ndm.desktop"
 install -m 644 assets/ndm.png "$tdir/ndm.png"
-tar -C "$work" -czf "$out/ndm-$version-x86_64.tar.gz" "ndm-$version"
+tar -C "$work" -czf "$out/ndm-$version-$arch.tar.gz" "ndm-$version"
 
-ls -l "$out"/ndm_"$version"_amd64.deb "$out"/ndm-"$version"-1.x86_64.rpm "$out"/ndm-"$version"-x86_64.tar.gz
+ls -l "$out/ndm_${version}_$debarch.deb" "$out/ndm-$version-1.$arch.rpm" "$out/ndm-$version-$arch.tar.gz"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds NDM-x86_64.AppImage on Linux (or in WSL):  bash tools/appimage.sh
+# Builds NDM-<arch>.AppImage on Linux (or in WSL) for the machine's processor (x86_64 or aarch64):
+#   bash tools/appimage.sh
 # Needs: Rust, build-essential, pkg-config, libgtk-3-dev, libxdo-dev, libayatana-appindicator3-dev,
 # librsvg2-common, patchelf, curl, file.
 # Releases are built on Ubuntu 20.04 (glibc 2.31, see .github/workflows/release.yml), so the AppImage
@@ -13,6 +14,7 @@ rsync -a --delete --exclude target --exclude installer/out --exclude .git "$src/
     { rm -rf "$work/src"; mkdir -p "$work/src"; (cd "$src" && tar --exclude=./target --exclude=./installer/out --exclude=./.git -cf - .) | tar -xf - -C "$work/src"; }
 cd "$work/src"
 cargo build --release
+arch="$(uname -m)" # x86_64 or aarch64: linuxdeploy and appimagetool come for both
 
 # AppDir: the program with help, languages and the browser extension next to it (NDM looks beside its exe)
 app="$work/AppDir"
@@ -37,9 +39,9 @@ EOF
 fetch() { # url file
     [ -s "$work/$2" ] || { curl -sSfL -o "$work/$2" "$1"; chmod +x "$work/$2"; }
 }
-fetch https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage linuxdeploy-x86_64.AppImage
+fetch "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage" "linuxdeploy-$arch.AppImage"
 fetch https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gtk.sh
-fetch https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage appimagetool-x86_64.AppImage
+fetch "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$arch.AppImage" "appimagetool-$arch.AppImage"
 export APPIMAGE_EXTRACT_AND_RUN=1 # no FUSE needed (WSL, containers)
 export PATH="$work:$PATH"         # linuxdeploy finds its gtk plugin on PATH
 
@@ -54,10 +56,10 @@ tray="$(ldconfig -p | awk '/libayatana-appindicator3\.so\.1 /{print $NF; exit}')
 cd "$work"
 # libxkbcommon stays the system's: winit opens the system's libxkbcommon-x11 at run time, which crashes
 # against an older bundled libxkbcommon. Every desktop has it.
-DEPLOY_GTK_VERSION=3 linuxdeploy-x86_64.AppImage --appdir "$app" --executable "$app/usr/bin/ndm" --library "$tray" \
+DEPLOY_GTK_VERSION=3 "linuxdeploy-$arch.AppImage" --appdir "$app" --executable "$app/usr/bin/ndm" --library "$tray" \
     --exclude-library 'libxkbcommon.so*' --desktop-file "$app/usr/share/applications/ndm.desktop" --icon-file "$app/usr/share/icons/hicolor/256x256/apps/ndm.png" --plugin gtk
 rm -f "$app"/usr/lib/libxkbcommon.so* # in case a plugin copied it anyway
-ARCH=x86_64 appimagetool-x86_64.AppImage --no-appstream "$app" NDM-x86_64.AppImage
+ARCH="$arch" "appimagetool-$arch.AppImage" --no-appstream "$app" "NDM-$arch.AppImage"
 mkdir -p "$src/installer/out"
-cp NDM-x86_64.AppImage "$src/installer/out/"
-echo "built $src/installer/out/NDM-x86_64.AppImage"
+cp "NDM-$arch.AppImage" "$src/installer/out/"
+echo "built $src/installer/out/NDM-$arch.AppImage"

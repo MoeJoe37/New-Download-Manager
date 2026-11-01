@@ -946,12 +946,12 @@ pub fn run_media(job: &Job) -> Result<bool, String> {
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .spawn()
         // without ffmpeg NDM can't speak the protocol: NDM's own message for that (string 20516)
-        .map_err(|_| crate::i18n::trf("\"%s\" data transmission protocol is not supported by NDM at this time. Or it might be a spelling error, therefore please check the spelling, and try again.", &[&url.split("://").next().unwrap_or("")]))?;
+        .map_err(|_| crate::i18n::trf_os("\"%s\" data transmission protocol is not supported by NDM at this time. Or it might be a spelling error, therefore please check the spelling, and try again.", &[&url.split("://").next().unwrap_or("")]))?;
     let out = child.stdout.take().unwrap();
     let mut stopped = false;
     for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
         if let Some(n) = line.strip_prefix("total_size=").and_then(|n| n.parse::<u64>().ok()) {
-            job.info().segs = vec![Seg { start: 0, next: n, stop: None, info: crate::i18n::tr("Receiving data..."), owned: false, ..Default::default() }];
+            job.info().segs = vec![Seg { start: 0, next: n, stop: None, info: "Receiving data...".into(), owned: false, ..Default::default() }];
         }
         if job.stopping() {
             let _ = child.kill();
@@ -962,7 +962,7 @@ pub fn run_media(job: &Job) -> Result<bool, String> {
     let ok = child.wait().is_ok_and(|s| s.success()) || stopped;
     let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
     if !ok || size == 0 {
-        return Err(crate::i18n::tr("Cannot download this file."));
+        return Err(crate::i18n::tr_os("Cannot download this file."));
     }
     let mut i = job.info();
     i.size = Some(size);

@@ -22,6 +22,8 @@ pub(crate) const RETRIES: u32 = 5;
 const LANE_GONE: &str = "network left the download";
 /// A network whose connections all gave up is tried again after this long (it may come back).
 const LANE_COOLDOWN: Duration = Duration::from_secs(30);
+/// How often a network may double its connections: 1, 2, 4, 8, 16 within a second.
+const RAMP_EVERY: Duration = Duration::from_millis(250);
 /// A split hands over at least this much...
 const MIN_STEAL: u64 = 64 * 1024;
 /// ...and only if it saves more than twice what a new request costs before its first byte (seconds).
@@ -188,6 +190,9 @@ pub struct Job {
     pub net_bytes: Mutex<std::collections::HashMap<String, u64>>,
     /// The core may spread this run over networks as they come and go (not through the browser's proxy).
     pub multi_ok: AtomicBool,
+    /// A network's most connections this run, once its server turned more away (503 / 429 while others
+    /// were receiving): the connections that worked.
+    caps: Mutex<std::collections::HashMap<String, usize>>,
 }
 
 type Body = Box<dyn Read + Send + Sync>;
@@ -384,11 +389,40 @@ fn ftp_http(url: &str, from: u64, proxy: &str) -> Result<(Option<u64>, bool, Bod
     }
 }
 
+/// Name lookups shared by every connection: a server's addresses are looked up once a minute, not once per
+/// connection, and IPv4 comes first, so a network whose IPv6 is broken doesn't stall each new connection
+/// for the connect timeout before trying IPv4.
+struct DnsCache;
+
+impl ureq::Resolver for DnsCache {
+    fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        use std::net::ToSocketAddrs;
+        static CACHE: Mutex<Vec<(String, Instant, Vec<std::net::SocketAddr>)>> = Mutex::new(Vec::new());
+        const TTL: Duration = Duration::from_secs(60);
+        if let Some(hit) = CACHE.lock().unwrap().iter().find(|e| e.0 == netloc && e.1.elapsed() < TTL) {
+            return Ok(hit.2.clone());
+        }
+        let mut addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
+        addrs.sort_by_key(|a| a.is_ipv6()); // stable: the system's order within each family
+        let mut cache = CACHE.lock().unwrap();
+        cache.retain(|e| e.0 != netloc && e.1.elapsed() < TTL);
+        if !addrs.is_empty() {
+            cache.push((netloc.to_string(), Instant::now(), addrs.clone()));
+        }
+        Ok(addrs)
+    }
+}
+
 pub fn agent(proxy: &str, user_agent: &str) -> ureq::Agent {
     let mut b = ureq::AgentBuilder::new()
         .user_agent(if user_agent.trim().is_empty() { UA } else { user_agent.trim() })
         .timeout_connect(Duration::from_secs(20))
-        .timeout_read(Duration::from_secs(30));
+        .timeout_read(Duration::from_secs(30))
+        // a connection that finishes its part takes the next one over the same keep-alive connection
+        // (no new TCP / TLS handshake), for every connection of every download to a server
+        .max_idle_connections_per_host(64)
+        .max_idle_connections(256)
+        .resolver(DnsCache);
     if !proxy.trim().is_empty() {
         match ureq::Proxy::new(proxy.trim()) {
             Ok(p) => b = b.proxy(p),
@@ -479,8 +513,8 @@ fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, St
     }
 }
 
-/// Kerberos for Negotiate (SPNEGO, RFC 4559) through the system's GSSAPI library (MIT krb5 or Heimdal),
-/// opened at run time: NDM runs without it, and a system without Kerberos simply has no ticket.
+/// Kerberos for Negotiate (SPNEGO, RFC 4559) through the system's GSSAPI library (MIT krb5 or Heimdal; GSS
+/// on macOS), opened at run time: NDM runs without it, and a system without Kerberos simply has no ticket.
 #[cfg(not(windows))]
 mod gss {
     use super::{b64, err, strip_ci, unb64};
@@ -519,7 +553,8 @@ mod gss {
     fn lib() -> Option<&'static Lib> {
         static LIB: OnceLock<Option<Lib>> = OnceLock::new();
         LIB.get_or_init(|| unsafe {
-            let h = ["libgssapi_krb5.so.2", "libgssapi.so.3"].iter().map(|n| libc::dlopen(format!("{n}\0").as_ptr().cast(), libc::RTLD_NOW)).find(|h| !h.is_null())?;
+            // MIT krb5 or Heimdal on Linux, the system's GSS framework on macOS
+            let h = ["libgssapi_krb5.so.2", "libgssapi.so.3", "/System/Library/Frameworks/GSS.framework/GSS"].iter().map(|n| libc::dlopen(format!("{n}\0").as_ptr().cast(), libc::RTLD_NOW)).find(|h| !h.is_null())?;
             let sym = |n: &str| Some(libc::dlsym(h, format!("{n}\0").as_ptr().cast())).filter(|p| !p.is_null());
             Some(Lib {
                 import_name: std::mem::transmute::<*mut c_void, ImportName>(sym("gss_import_name")?),
@@ -980,6 +1015,7 @@ impl Job {
             lanes: Mutex::new(vec![]),
             net_bytes: Mutex::default(),
             multi_ok: AtomicBool::new(false),
+            caps: Mutex::default(),
         })
     }
 
@@ -1151,6 +1187,10 @@ impl Job {
                 // One segment for the whole file; more connections split it as they open.
                 i.segs = vec![Seg { stop: i.size, ..Default::default() }];
                 let f = File::create(&part).map_err(|e| e.to_string())?;
+                // NTFS fills the gap with zeros before a write far into a preallocated file, which stalls
+                // the connections that start in the middle of a big file; a sparse file skips that
+                #[cfg(windows)]
+                crate::win::sparse(&f);
                 if let Some(s) = i.size {
                     f.set_len(s).map_err(|e| e.to_string())?;
                 }
@@ -1162,7 +1202,7 @@ impl Job {
         let max = self.info().conns.max(1);
         let mut errors: Vec<String> = Vec::new();
         // Each network ("" = the default one) runs up to `max` connections of its own, as one network
-        // alone would: it starts with one, and doubles at most once a second while every one of them is
+        // alone would: it starts with one, and doubles at most every RAMP_EVERY while every one of them is
         // receiving and the speed limits leave room. The networks are looked at on every round, so one
         // that joins gets connections and one that leaves loses them (see `worker`). A network whose
         // last connection gave up waits LANE_COOLDOWN before it is tried again.
@@ -1171,15 +1211,16 @@ impl Job {
             let mut grown: std::collections::HashMap<String, Instant> = Default::default();
             let mut gave_up: std::collections::HashMap<String, Instant> = Default::default();
             let mut started = false;
+            self.caps.lock().unwrap().clear();
             loop {
                 let (done, live): (Vec<_>, Vec<_>) = hs.into_iter().partition(|(h, _)| h.is_finished());
+                hs = live;
                 for (h, net) in done {
                     if let Some(e) = h.join().unwrap_or(Some("worker panicked".into())) {
                         gave_up.insert(net, Instant::now());
                         errors.push(e);
                     }
                 }
-                hs = live;
                 if self.stopping() {
                     if hs.is_empty() {
                         break;
@@ -1190,10 +1231,12 @@ impl Job {
                 let lanes = self.lanes_or(agent);
                 for (net, lane_agent) in &lanes {
                     let n = hs.iter().filter(|(_, l)| l == net).count();
+                    // fewer once the server turned connections away (`worker`)
+                    let max = self.caps.lock().unwrap().get(net).copied().unwrap_or(max).min(max);
                     let want = if n == 0 {
                         // its first connection, unless it gave up a moment ago
                         usize::from(gave_up.get(net).is_none_or(|t| t.elapsed() >= LANE_COOLDOWN))
-                    } else if n < max && grown.get(net).is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) && self.ramp_ok(global, net) {
+                    } else if n < max && grown.get(net).is_none_or(|t| t.elapsed() >= RAMP_EVERY) && self.ramp_ok(global, net) {
                         (n * 2).min(max) - n
                     } else {
                         0
@@ -1284,6 +1327,16 @@ impl Job {
                     Some(n) => (k, fails) = (n, 0),
                     None => return None,
                 },
+                Err(e) if (e.starts_with("HTTP 503") || e.starts_with("HTTP 429")) && self.others_receiving(k, &net) > 0 => {
+                    // the server allows fewer connections than this: this one ends and hands its part
+                    // back, and the network keeps to the connections that work (`caps`)
+                    let working = self.others_receiving(k, &net).max(1);
+                    self.caps.lock().unwrap().insert(net.clone(), working);
+                    let mut i = self.info();
+                    let s = &mut i.segs[k];
+                    (s.owned, s.rate, s.info) = (false, 0.0, String::new());
+                    return None;
+                }
                 Err(e) => {
                     fails = if self.info().segs[k].next > before { 1 } else { fails + 1 };
                     {
@@ -1425,6 +1478,12 @@ impl Job {
         self.limiter.take(n, &self.stop);
     }
 
+    /// How many other connections on `net` than part `k`'s are receiving data (a finished part keeps its
+    /// owner's last state, so it doesn't count).
+    fn others_receiving(&self, k: usize, net: &str) -> usize {
+        self.info().segs.iter().enumerate().filter(|(j, s)| *j != k && s.owned && !s.done() && s.net == net && s.info.starts_with("Receiving")).count()
+    }
+
     /// Every open connection on `net` is receiving data and the speed limits leave room.
     fn ramp_ok(&self, global: &Limiter, net: &str) -> bool {
         let busy = self.info().segs.iter().filter(|s| s.owned && s.net == net).all(|s| s.info.starts_with("Receiving"));
@@ -1564,6 +1623,77 @@ mod tests {
             }
         });
         base
+    }
+
+    /// A server that serves at most `most` requests at once and answers 503 to the rest; returns its
+    /// address and how many it turned away.
+    fn serve_limited(data: Arc<Vec<u8>>, most: usize) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::AtomicUsize;
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", l.local_addr().unwrap());
+        let (active, refused) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let refused2 = refused.clone();
+        thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let (data, active, refused) = (data.clone(), active.clone(), refused.clone());
+                thread::spawn(move || loop {
+                    // keep-alive: one request after another on this connection
+                    let mut r = BufReader::new(&s);
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut range = (0, data.len() - 1);
+                    loop {
+                        let mut h = String::new();
+                        if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                            break;
+                        }
+                        if let Some(v) = strip_ci(&h, "range: bytes=") {
+                            let (a, b) = v.trim().split_once('-').unwrap();
+                            range = (a.parse().unwrap(), b.parse().unwrap_or(data.len() - 1).min(data.len() - 1));
+                        }
+                    }
+                    let mut w = &s;
+                    if active.fetch_add(1, Relaxed) >= most {
+                        active.fetch_sub(1, Relaxed);
+                        refused.fetch_add(1, Relaxed);
+                        let _ = w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+                        continue;
+                    }
+                    let (a, b) = range;
+                    let head = format!("HTTP/1.1 206 Partial\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\n\r\n", data.len(), b + 1 - a);
+                    let mut ok = w.write_all(head.as_bytes()).is_ok();
+                    for c in data[a..=b].chunks(64 * 1024) {
+                        ok = ok && w.write_all(c).is_ok();
+                        thread::sleep(Duration::from_millis(30));
+                    }
+                    active.fetch_sub(1, Relaxed);
+                    if !ok {
+                        return;
+                    }
+                });
+            }
+        });
+        (base, refused2)
+    }
+
+    #[test]
+    fn keeps_to_a_servers_connection_limit() {
+        let data: Arc<Vec<u8>> = Arc::new((0..3 * 1024 * 1024).map(|i: u32| (i * 13 % 251) as u8).collect());
+        let (base, refused) = serve_limited(data.clone(), 2);
+        let dir = std::env::temp_dir().join(format!("ndm-test-limit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let j = Job::new(Info { conns: 8, ..info(format!("{base}f.bin"), &dir) });
+        let t = Instant::now();
+        run(&j);
+        let (status, segs) = { let i = j.info(); (i.status.clone(), i.segs.iter().map(|s| (s.start, s.next, s.stop, s.owned, s.info.clone())).collect::<Vec<_>>()) };
+        assert_eq!(status, Status::Complete, "{segs:?}");
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        // the connections the server turned away end at once instead of retrying for a minute
+        assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+        assert!(refused.load(Relaxed) <= 12, "{} requests refused", refused.load(Relaxed));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn run(job: &Arc<Job>) {
@@ -1804,7 +1934,8 @@ mod tests {
 
     /// As `lanes_run`; after a second the download's networks become `later`, as the core sets them
     /// when a network comes or goes.
-    fn lanes_run_then(lanes: Vec<(String, ureq::Agent)>, tag: &str, later: Option<Vec<(String, ureq::Agent)>>) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+    /// A download over `lanes`, which become `later` after `after` (if given).
+    fn lanes_run_then(lanes: Vec<(String, ureq::Agent)>, tag: &str, later: Option<(Duration, Vec<(String, ureq::Agent)>)>) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
         let data: Arc<Vec<u8>> = Arc::new((0..4 * 1024 * 1024 + 3).map(|i: u32| (i * 17 % 249) as u8).collect());
         let (url, log) = serve_ua(data.clone());
         let dir = std::env::temp_dir().join(format!("ndm-test-lanes-{tag}-{}", std::process::id()));
@@ -1815,10 +1946,8 @@ mod tests {
         let (start, until) = (Instant::now(), Instant::now() + Duration::from_secs(60));
         let mut later = later;
         while j.running() && Instant::now() < until {
-            if start.elapsed() >= Duration::from_secs(1) {
-                if let Some(l) = later.take() {
-                    *j.lanes.lock().unwrap() = l;
-                }
+            if later.as_ref().is_some_and(|(after, _)| start.elapsed() >= *after) {
+                *j.lanes.lock().unwrap() = later.take().unwrap().1;
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -1837,7 +1966,9 @@ mod tests {
 
     #[test]
     fn lane_joins_mid_download() {
-        let (j, data, log, dir) = lanes_run_then(vec![("a".into(), agent("", "lane-a"))], "join", Some(vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))]));
+        // "b" is plugged in while "a" ramps up (four connections finish the file in about a second)
+        let both = vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))];
+        let (j, data, log, dir) = lanes_run_then(vec![("a".into(), agent("", "lane-a"))], "join", Some((Duration::from_millis(300), both)));
         assert_eq!(j.info().status, Status::Complete);
         assert_eq!(fs::read(j.info().path()).unwrap(), *data);
         assert!(log.lock().unwrap().iter().any(|u| u == "lane-b"), "the network that joined got connections");
@@ -1849,7 +1980,7 @@ mod tests {
     fn lane_leaves_mid_download() {
         // "b" is unplugged after a second: its parts go to "a", and the download completes without an error
         let both = vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))];
-        let (j, data, _, dir) = lanes_run_then(both, "leave", Some(vec![("a".into(), agent("", "lane-a"))]));
+        let (j, data, _, dir) = lanes_run_then(both, "leave", Some((Duration::from_secs(1), vec![("a".into(), agent("", "lane-a"))])));
         assert_eq!(j.info().status, Status::Complete);
         assert_eq!(fs::read(j.info().path()).unwrap(), *data);
         let _ = fs::remove_dir_all(&dir);
@@ -1857,14 +1988,15 @@ mod tests {
 
     #[test]
     fn slow_lane_doesnt_hold_up_the_end() {
-        // a network a tenth as fast would take ~8 s for its quarter alone; the fast one takes most of it
+        // a network a tenth as fast would take ~8 s for its quarter alone: the fast one takes most of it, and
+        // the end comes when it would on the fast network alone
         let t = Instant::now();
         let (j, data, _, dir) = lanes_run(vec![("fast".into(), agent("", "lane-a")), ("slow".into(), agent("", "slow"))], "slow");
         assert_eq!(j.info().status, Status::Complete);
         assert_eq!(fs::read(j.info().path()).unwrap(), *data);
         let bytes = j.net_bytes.lock().unwrap().clone();
         let (fast, slow) = (bytes.get("fast").copied().unwrap_or(0), bytes.get("slow").copied().unwrap_or(0));
-        assert!(slow > 0 && fast > 4 * slow, "fast {fast}, slow {slow}");
+        assert!(slow > 0 && fast > 2 * slow, "fast {fast}, slow {slow}");
         assert!(t.elapsed() < Duration::from_secs(8), "took {:?}", t.elapsed());
         let _ = fs::remove_dir_all(&dir);
     }

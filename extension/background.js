@@ -1,6 +1,24 @@
-// Downloads go to the app at 127.0.0.1:9614; if it isn't running (or declines), the browser keeps them.
-const API = 'http://127.0.0.1:9614/add';
-const CONFIG = 'http://127.0.0.1:9614/config';
+// Downloads go to the app on 127.0.0.1; if it isn't running (or declines), the browser keeps them.
+// The app listens on the first free one of these ports (Windows can reserve one for Hyper-V, WSL or Docker)
+// and marks its replies "X-NDM: 1"; versions before 2.0 listen on 9614 only, without the mark.
+const PORTS = [9614, 19614, 29614, 39614];
+let port = PORTS[0];
+// A request to the app: the port that answered last first, then the others. Throws when none answers.
+async function ndm(path, init) {
+  let old = null; // an unmarked reply on 9614: an older app, unless a marked one answers elsewhere
+  for (const p of [port, ...PORTS.filter(x => x !== port)]) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${p}${path}`, init);
+      if (r.headers.get('X-NDM')) {
+        port = p;
+        return r;
+      }
+      if (p === PORTS[0]) old = r;
+    } catch {}
+  }
+  if (old) return old;
+  throw new Error('New Download Manager is not running');
+}
 // The file type of a media response, as named in the app's download panel list.
 const MIME_TYPE = { 'audio/mpeg': 'MP3', 'video/mpeg': 'MPG', 'video/x-flv': 'FLV', 'video/quicktime': 'MOV', 'video/x-matroska': 'MKV',
   'video/x-ms-wmv': 'WMV', 'audio/x-ms-wma': 'WMA', 'video/x-ms-asf': 'ASF', 'video/3gpp': '3GP', 'audio/mp4': 'M4A', 'audio/x-m4a': 'M4A',
@@ -33,7 +51,7 @@ async function post(url, extra) {
   const body = JSON.stringify({ url, cookies, proxy: await browserProxy(), ...extra });
   for (let i = 0; i < 40; i++) {
     try {
-      const r = await fetch(API, { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body });
+      const r = await ndm('/add', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body });
       return r.status === 200;
     } catch {}
     if (i === 0) await launch();
@@ -92,7 +110,7 @@ async function refreshConfig() {
   if (Date.now() - configAt < 10000) return config;
   configAt = Date.now();
   try {
-    const r = await fetch(CONFIG, { method: 'POST', headers: { 'X-NDM': '1' } });
+    const r = await ndm('/config', { method: 'POST', headers: { 'X-NDM': '1' } });
     if (r.ok) config = await r.json();
   } catch {}
   if (menus === `${config.menu_dl}${config.menu_all}`) return config;
@@ -159,7 +177,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   const main = h => h.split('.').slice(-2).join('.');
   if (!want || (host !== want && !host.endsWith('.' + want) && main(host) !== main(want))) return;
   const cookies = (await chrome.cookies.getAll({ url: tab.url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
-  fetch('http://127.0.0.1:9614/cookies', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ url: tab.url, cookies }) }).catch(() => {});
+  ndm('/cookies', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ url: tab.url, cookies }) }).catch(() => {});
 });
 chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove(key(tabId)));
 

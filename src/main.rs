@@ -7,8 +7,11 @@ mod i18n;
 mod net;
 mod remux;
 mod stream;
-use i18n::tr;
-#[cfg_attr(not(windows), path = "linux.rs")]
+use i18n::{tr, tr_os};
+#[cfg(unix)]
+mod posix;
+#[cfg_attr(target_os = "linux", path = "linux.rs")]
+#[cfg_attr(target_os = "macos", path = "mac.rs")]
 mod win;
 
 use crate::core::{Core, Incoming, Settings, GENERAL};
@@ -36,8 +39,9 @@ static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 /// The main window's X11 window (0 on Wayland, or before the first frame).
 #[cfg(not(windows))]
 static MAIN_XID: AtomicIsize = AtomicIsize::new(0);
-#[cfg(not(windows))]
-thread_local!(static LIMIT_ITEM: std::cell::RefCell<Option<CheckMenuItem>> = const { std::cell::RefCell::new(None) });
+// The Linux tray's Speed Limiter tick and its other items with their English text, on the GTK thread.
+#[cfg(target_os = "linux")]
+thread_local!(static LIMIT_ITEM: std::cell::RefCell<Option<(CheckMenuItem, Vec<(MenuItem, &'static str)>)>> = const { std::cell::RefCell::new(None) });
 /// First argument of the copy started by "Update now".
 const UPDATED: &str = "/updated";
 /// The message when the release information can't be read.
@@ -85,22 +89,44 @@ fn linux_install() -> LinuxInstall {
     })
 }
 
-/// The release file that replaces this program: the setup (or a loose ndm.exe) on Windows; on Linux the
-/// AppImage, the .deb, the .rpm or the .tar.gz, whichever this copy came as.
+/// The release file that replaces this program, for this system and processor: the setup (or a loose
+/// ndm.exe) on Windows; on Linux the AppImage, the .deb, the .rpm or the .tar.gz, whichever this copy came as;
+/// on macOS the disk image. ARM builds' names never match what NDM 1.x looks for (it would take them for
+/// its own): NDM-ARM64-Setup-*.exe, ndm-arm64.exe, *aarch64*, *_arm64.deb.
 fn update_asset(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
+    let arm = cfg!(target_arch = "aarch64");
+    if cfg!(target_os = "macos") {
+        return n.ends_with(".dmg") && n.contains("macos");
+    }
     if !cfg!(windows) {
+        let (deb, rpm, arch) = if arm { ("_arm64.deb", ".aarch64.rpm", "aarch64") } else { ("_amd64.deb", ".x86_64.rpm", "x86_64") };
         match linux_install() {
-            LinuxInstall::AppImage => n.ends_with(".appimage") && n.contains("x86_64"),
-            LinuxInstall::Deb => n.ends_with("_amd64.deb"),
-            LinuxInstall::Rpm => n.ends_with(".x86_64.rpm"),
-            LinuxInstall::Folder => n.starts_with("ndm-") && n.ends_with("-x86_64.tar.gz"),
+            LinuxInstall::AppImage => n.ends_with(".appimage") && n.contains(arch),
+            LinuxInstall::Deb => n.ends_with(deb),
+            LinuxInstall::Rpm => n.ends_with(rpm),
+            LinuxInstall::Folder => n.starts_with("ndm-") && n.ends_with(&format!("-{arch}.tar.gz")),
         }
     } else if installed() {
-        n.starts_with("ndm-setup") && n.ends_with(".exe")
+        n.starts_with(if arm { "ndm-arm64-setup" } else { "ndm-setup" }) && n.ends_with(".exe")
     } else {
-        n == "ndm.exe"
+        n == if arm { "ndm-arm64.exe" } else { "ndm.exe" }
     }
+}
+
+#[test]
+fn update_assets() {
+    let names = ["NDM-Setup-2.0.0.exe", "NDM-ARM64-Setup-2.0.0.exe", "ndm.exe", "ndm-arm64.exe", "NDM-x86_64.AppImage", "NDM-aarch64.AppImage", "ndm_2.0.0_amd64.deb", "ndm_2.0.0_arm64.deb",
+        "ndm-2.0.0-1.x86_64.rpm", "ndm-2.0.0-1.aarch64.rpm", "ndm-2.0.0-x86_64.tar.gz", "ndm-2.0.0-aarch64.tar.gz", "NDM-2.0.0-macOS.dmg", "NDM-2.0.0-windows-x64.zip"];
+    // exactly one file is this build's (whatever way it was installed)
+    assert_eq!(names.iter().filter(|n| update_asset(n)).count(), 1, "{:?}", names.iter().filter(|n| update_asset(n)).collect::<Vec<_>>());
+    // what NDM 1.x looks for on x64 Windows (setup or loose exe) and x86_64 Linux never matches an ARM file
+    let old = |n: &str| {
+        let n = n.to_ascii_lowercase();
+        (n.starts_with("ndm-setup") && n.ends_with(".exe")) || n == "ndm.exe" || (n.ends_with(".appimage") && n.contains("x86_64")) || n.ends_with("_amd64.deb") || n.ends_with(".x86_64.rpm")
+            || (n.starts_with("ndm-") && n.ends_with("-x86_64.tar.gz"))
+    };
+    assert!(names.iter().filter(|n| old(n)).all(|n| !n.to_ascii_lowercase().contains("arm") && !n.contains("aarch64")));
 }
 
 /// The latest release on GitHub, if newer than this build (None = this is the latest).
@@ -147,6 +173,9 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
         data.extend_from_slice(&buf[..n]);
         got.store(data.len() as u64, Relaxed);
     }
+    #[cfg(target_os = "macos")]
+    return mac_update(&exe, &data);
+    #[allow(unreachable_code)]
     let kind = if cfg!(windows) { None } else { Some(linux_install()) };
     let magic: &[u8] = match kind {
         None => b"MZ",
@@ -199,6 +228,42 @@ fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::Atomi
     std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
+/// macOS: the disk image's NDM.app takes the place of the one this copy runs from (the old one is kept as
+/// "<name>.old" until the next start), then the new one starts.
+#[cfg(target_os = "macos")]
+fn mac_update(exe: &Path, dmg: &[u8]) -> Result<(), String> {
+    // a disk image ends with its "koly" trailer
+    if dmg.len() < 4096 || !dmg[dmg.len() - 512..].starts_with(b"koly") {
+        return Err(String::new());
+    }
+    let bundle = exe.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).ok_or("NDM isn't running from its app: download the new version from the release page")?;
+    let file = std::env::temp_dir().join("NDM-update.dmg");
+    let mnt = std::env::temp_dir().join(format!("ndm-update-{}", std::process::id()));
+    std::fs::write(&file, dmg).map_err(|e| e.to_string())?;
+    let attached = std::process::Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"]).arg(&mnt).arg(&file).status().is_ok_and(|s| s.success());
+    if !attached {
+        return Err("the update file is damaged".into());
+    }
+    let result = (|| -> Result<(), String> {
+        let app = std::fs::read_dir(&mnt).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "app")).ok_or("the update file is damaged")?;
+        let old = bundle.with_extension("old");
+        let _ = std::fs::remove_dir_all(&old);
+        std::fs::rename(bundle, &old).map_err(|e| format!("{e}: {}", bundle.display()))?;
+        // ditto keeps the app's links, permissions and signature
+        if !std::process::Command::new("ditto").arg(&app).arg(bundle).status().is_ok_and(|s| s.success()) {
+            let _ = std::fs::remove_dir_all(bundle);
+            let _ = std::fs::rename(&old, bundle); // put the old one back
+            return Err("the new version couldn't be copied".into());
+        }
+        Ok(())
+    })();
+    let _ = std::process::Command::new("hdiutil").arg("detach").arg(&mnt).arg("-quiet").status();
+    let _ = std::fs::remove_file(&file);
+    result?;
+    std::process::Command::new("open").arg("-n").arg(bundle).args(["--args", UPDATED]).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// The .tar.gz's update: unpacked beside the old folder, then each file put in place (the running program
 /// by renaming over it, which Linux allows).
 fn update_folder(tgz: &[u8], dir: &Path) -> Result<(), String> {
@@ -251,8 +316,9 @@ fn main() -> eframe::Result {
         win::native_host(TITLE);
         return Ok(());
     }
-    if args.first().is_some_and(|a| a == UPDATED) {
-        // started by Update now: wait for the old copy to finish saving and exit (15 s at most)
+    if args.first().is_some_and(|a| a == UPDATED) || std::env::var_os("NDM_RENDERER").is_some() {
+        // started by Update now, or again with wgpu (`run`): wait for the old copy to finish saving and exit
+        // (15 s at most)
         for _ in 0..75 {
             if !win::running(TITLE, false) {
                 break;
@@ -262,9 +328,28 @@ fn main() -> eframe::Result {
     }
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_extension("old.exe")); // left behind by an update
+        // macOS: the app bundle an update replaced
+        #[cfg(target_os = "macos")]
+        if let Some(bundle) = exe.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")) {
+            let _ = std::fs::remove_dir_all(bundle.with_extension("old"));
+        }
+    }
+    // a Mac app started from the Finder or the Dock gets a short PATH: Homebrew's and MacPorts' programs
+    // (ffmpeg for mms / rtmp / rtsp streams) are found there too
+    #[cfg(target_os = "macos")]
+    {
+        let mut path: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+        for d in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+            if !path.iter().any(|p| p == Path::new(d)) {
+                path.push(d.into());
+            }
+        }
+        if let Ok(p) = std::env::join_paths(path) {
+            std::env::set_var("PATH", p); // no other thread runs yet
+        }
     }
     // the AppImage's GTK hook asks for X11; on a Wayland desktop without XWayland GTK would then fail
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     if !win::prefer_x11() && std::env::var_os("GDK_BACKEND").is_some_and(|b| b == "x11") {
         std::env::remove_var("GDK_BACKEND"); // no other thread runs yet
     }
@@ -275,7 +360,9 @@ fn main() -> eframe::Result {
         if let Some(i) = cli {
             let body = serde_json::json!({ "url": i.url, "filename": i.filename, "force": true, "cli": true, "folder": i.folder,
                 "silent": i.silent, "later": i.later, "quit": i.quit, "start_queue": i.start_queue });
-            let _ = ureq::post(&format!("http://127.0.0.1:{}/add", core::PORT)).set("X-NDM", "1").send_string(&body.to_string());
+            if let Some(port) = core::running_port() {
+                let _ = ureq::post(&format!("http://127.0.0.1:{port}/add")).set("X-NDM", "1").send_string(&body.to_string());
+            }
         }
         return Ok(());
     }
@@ -293,30 +380,88 @@ fn main() -> eframe::Result {
     let viewport = viewport.with_app_id("ndm");
     #[allow(unused_mut)]
     let mut opts = eframe::NativeOptions { viewport, ..Default::default() };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     if win::prefer_x11() {
         opts.event_loop_builder = Some(Box::new(|b| {
             use winit::platform::x11::EventLoopBuilderExtX11;
             b.with_x11();
         }));
     }
-    eframe::run_native(TITLE, opts, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
+    run(opts, &args)
 }
+
+/// Opens the main window: with OpenGL, which every desktop has; where it can't start (a virtual machine or
+/// a remote session without a graphics driver) NDM starts again with wgpu: Direct3D 12 (with Windows'
+/// software renderer when there is no graphics card), Vulkan or Metal. That choice is kept next to the
+/// settings ("renderer"), so later starts go straight to it.
+fn run(mut opts: eframe::NativeOptions, args: &[String]) -> eframe::Result {
+    let marker = core::store_path().with_file_name("renderer");
+    let wgpu = std::env::var_os("NDM_RENDERER").is_some_and(|v| v == "wgpu") || std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == "wgpu");
+    opts.renderer = if wgpu { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow };
+    // OpenGL is what didn't start: wgpu's own OpenGL backend would fail the same way (or panic), so only
+    // Direct3D 12, Vulkan and Metal
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut opts.wgpu_options.wgpu_setup {
+        if std::env::var_os("WGPU_BACKEND").is_none() {
+            c.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
+        }
+    }
+    // a renderer can also panic while it starts: before the first frame that is the renderer's failure too
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| eframe::run_native(TITLE, opts, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))));
+    let error = match started {
+        Ok(Ok(())) => return Ok(()),
+        Ok(Err(e)) => e.to_string(),
+        Err(p) if !PAINTED.load(Relaxed) => {
+            // the panic hook's crash.log is the renderer's, not a crash of NDM's: kept under its own name
+            let log = core::store_path().with_file_name("crash.log");
+            let _ = std::fs::rename(&log, log.with_file_name("renderer-crash.log"));
+            p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_else(|| "panic".into())
+        }
+        Err(p) => std::panic::resume_unwind(p),
+    };
+    if !wgpu {
+        eprintln!("OpenGL didn't start ({error}): starting again with wgpu");
+        let _ = std::fs::create_dir_all(marker.parent().unwrap());
+        let _ = std::fs::write(&marker, "wgpu\n");
+        // an AppImage's files go away with this process: start the AppImage itself
+        let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok());
+        if exe.is_some_and(|exe| std::process::Command::new(exe).args(args).env("NDM_RENDERER", "wgpu").spawn().is_ok()) {
+            return Ok(());
+        }
+    }
+    // neither works: say so (a window can't be drawn), and try OpenGL again next time
+    let _ = std::fs::remove_file(&marker);
+    win::fatal(TITLE, &format!("New Download Manager can't open its window: {error}\n\nUpdating the graphics driver usually fixes this."));
+    Ok(())
+}
+
+/// The main window has drawn a frame: the renderer works (`run`).
+static PAINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // ---------- formatting ----------
 
 fn human(n: u64) -> String {
+    i18n::line(&human_os(n))
+}
+
+/// `human` in reading order, for a line it is part of.
+fn human_os(n: u64) -> String {
     let n = n as f64;
     match n {
-        _ if n < 1024.0 => format!("{n} {}", tr("Bytes")),
-        _ if n < 1024.0 * 1024.0 => format!("{:.2} {}", n / 1024.0, tr("KB")),
-        _ if n < 1024.0 * 1024.0 * 1024.0 => format!("{:.2} {}", n / 1048576.0, tr("MB")),
-        _ => format!("{:.2} {}", n / 1073741824.0, tr("GB")),
+        _ if n < 1024.0 => format!("{n} {}", tr_os("Bytes")),
+        _ if n < 1024.0 * 1024.0 => format!("{:.2} {}", n / 1024.0, tr_os("KB")),
+        _ if n < 1024.0 * 1024.0 * 1024.0 => format!("{:.2} {}", n / 1048576.0, tr_os("MB")),
+        _ => format!("{:.2} {}", n / 1073741824.0, tr_os("GB")),
     }
 }
 
 fn rate(bps: f64) -> String {
-    if bps <= 0.0 { String::new() } else { format!("{}/{}", human(bps as u64), tr("sec")) }
+    if bps <= 0.0 { String::new() } else { i18n::line(&format!("{}/{}", human_os(bps as u64), tr_os("sec"))) }
+}
+
+/// A menu bar's layout: its menus start at the right edge in right-to-left languages (`menu::bar` rows
+/// follow their parent's direction).
+fn menu_layout() -> Layout {
+    if i18n::is_rtl() { Layout::right_to_left(Align::Min) } else { Layout::left_to_right(Align::Min) }
 }
 
 /// NDM's time left (0x43f730): seconds, minutes and seconds, or hours and minutes ("%ld hour(s) %d min" in
@@ -335,11 +480,16 @@ fn time_left(secs: u64) -> String {
 /// NDM's download-progress sizes (0x4a34c0): three truncated decimals with the locale's separator and two
 /// spaces before the unit ("796.000  KB"); below 1 KB "N  Bytes"; 1000-1023 of a unit go to the next one.
 fn size3(n: u64) -> String {
+    i18n::line(&size3_os(n))
+}
+
+/// `size3` in reading order, for a line it is part of.
+fn size3_os(n: u64) -> String {
     let (b, kb, mb, gb) = (n % 1024, n / 1024 % 1024, n / 1_048_576 % 1024, n / 1_073_741_824);
     let (whole, frac, unit) = if gb == 0 && mb < 1000 {
         if mb == 0 && kb < 1000 {
             if kb == 0 {
-                return format!("{b}  {}", tr("Bytes"));
+                return format!("{b}  {}", tr_os("Bytes"));
             }
             (kb, b * 1000 / 1024, "KB")
         } else {
@@ -348,7 +498,7 @@ fn size3(n: u64) -> String {
     } else {
         (gb, mb * 1000 / 1024, "GB")
     };
-    format!("{whole}{}{frac:03}  {}", win::decimal_sep(), tr(unit))
+    format!("{whole}{}{frac:03}  {}", win::decimal_sep(), tr_os(unit))
 }
 
 /// A percentage as NDM prints it: whole part, separator, two truncated decimals.
@@ -357,12 +507,17 @@ fn pct2(p: f64) -> String {
     format!("{}{}{:02}", whole as u64, win::decimal_sep(), ((p - whole) * 100.0).trunc() as u64)
 }
 
+/// A date and time as NDM's English prints it, or in the language file's format (its "%b %d %H:%M:%S %Y"
+/// line: the languages shipped with NDM use numbers rather than English month names).
 fn date(ts: i64) -> String {
     use chrono::TimeZone;
+    const EN: &str = "%b %d %H:%M:%S %Y";
     if ts == 0 {
         return String::new();
     }
-    chrono::Local.timestamp_opt(ts, 0).single().map(|d| d.format("%b %d %H:%M:%S %Y").to_string()).unwrap_or_default()
+    // a format chrono can't read would panic when printed
+    let f = Some(tr_os(EN)).filter(|f| !chrono::format::StrftimeItems::new(f).any(|i| matches!(i, chrono::format::Item::Error))).unwrap_or_else(|| EN.into());
+    chrono::Local.timestamp_opt(ts, 0).single().map(|d| d.format(&f).to_string()).unwrap_or_default()
 }
 
 /// "http://u:p@host/x" -> ("http://host/x", "u", "p"); the File Properties Login/Password fields.
@@ -489,7 +644,12 @@ fn extension_page(b: &core::Browser) -> Option<String> {
     matches!(k, "chrome" | "edge" | "opera" | "vivaldi" | "brave" | "yandex").then(|| format!("{}://extensions", if k == "chrome" { "chrome" } else if k == "yandex" { "browser" } else { k }))
 }
 
-const FIREFOX_GUIDE: &str = "To capture downloads from Firefox, open its extensions page (about:debugging), click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in this folder. Firefox removes the add-on when it closes, so load it again after a restart:";
+/// The browser-extension window's instructions (English keys): Firefox's temporary add-on, the other
+/// browsers' unpacked extension.
+const GUIDES: [&str; 2] = [
+    "To capture downloads from Firefox, open its extensions page (about:debugging), click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in this folder. Firefox removes the add-on when it closes, so load it again after a restart:",
+    "To capture downloads from this browser, open its extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select this folder:",
+];
 
 fn integration(b: &core::Browser) -> &'static str {
     if extension_page(b).is_some() { "Extension" } else { "Not supported" }
@@ -549,9 +709,9 @@ fn open_folder_of(path: &Path) {
 
 /// The unpacked browser extension: next to the exe or in one of its parent folders (cargo builds).
 fn extension_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let bundled = exe.ancestors().map(|a| a.join("extension")).find(|p| p.join("manifest.json").exists())?;
-    if std::env::var_os("APPIMAGE").is_none() {
+    let bundled = i18n::beside_exe("extension", "manifest.json")?;
+    // an AppImage, and a Mac app (whose bundle the update replaces), give browsers a copy that stays put
+    if std::env::var_os("APPIMAGE").is_none() && !cfg!(target_os = "macos") {
         return Some(bundled);
     }
     // inside the AppImage the bundled copy is under /tmp/.mount_*, a new folder every run: browsers get a
@@ -612,8 +772,7 @@ fn extension_copy_refreshes() {
 
 /// NDM's own help: `help\*.htm` next to the exe or in a parent folder.
 fn help_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    exe.ancestors().map(|a| a.join("help")).find(|d| d.join("index.htm").exists())
+    i18n::beside_exe("help", "index.htm")
 }
 
 /// The help page the UI should show next ("page.htm" or "page.htm#anchor"), set by `help`.
@@ -899,7 +1058,7 @@ fn help_search(
             found += 1;
             let r = egui::Frame::new().corner_radius(3).inner_margin(egui::Margin::symmetric(8, 7)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let at = if head.1.is_empty() { tr(name) } else { format!("{}  \u{203A}  {}", tr(name), tr(&head.1)) };
+                let at = if head.1.is_empty() { tr(name) } else { i18n::line(&format!("{}  \u{203A}  {}", tr_os(name), tr_os(&head.1))) };
                 ui.label(RichText::new(at).size(14.0).color(link));
                 let snip = if t.chars().count() > 180 { t.chars().take(180).collect::<String>() + "\u{2026}" } else { t.clone() };
                 ui.label(RichText::new(snip).size(13.0).color(text));
@@ -1627,12 +1786,13 @@ fn style(ctx: &egui::Context, dark: bool) {
             break;
         }
     }
-    // Linux: egui's built-in font stays first (the dialogs are laid out for its widths); the desktop's
-    // sans-serif and DejaVu Sans fill in the symbols it lacks (arrows, ticks) and other scripts
+    // Linux and macOS: egui's built-in font stays first (the dialogs are laid out for its widths); the desktop's
+    // sans-serif, a font with Arabic letters and DejaVu Sans fill in the symbols it lacks (arrows, ticks) and
+    // other scripts
     #[cfg(not(windows))]
     {
         let mut seen = vec![];
-        for (name, face) in [("sys", "sans-serif"), ("sys_fb", "DejaVu Sans")] {
+        for (name, face) in [("sys", "sans-serif"), ("sys_ar", "sans-serif:lang=ar"), ("sys_fb", "DejaVu Sans")] {
             let Some(f) = win::font_file(face).filter(|f| !seen.contains(f)) else { continue };
             if let Ok(b) = std::fs::read(&f) {
                 fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
@@ -1790,13 +1950,17 @@ fn segment_bar(ui: &mut egui::Ui, info: &Info, h: f32, bars: Option<[egui::Textu
         col(ends, bar.right() - px, bar.right());
         let Some(size) = info.size.filter(|s| *s > 0) else { return };
         let inner = bar.shrink2(Vec2::new(px, 0.0));
-        let x = |b: u64| inner.left() + inner.width() * (b as f32 / size as f32);
+        // the file's start at the right in right-to-left languages, as the progress bar fills
+        let rtl = i18n::is_rtl();
+        let x = |b: u64| if rtl { inner.right() - inner.width() * (b as f32 / size as f32) } else { inner.left() + inner.width() * (b as f32 / size as f32) };
+        let span = |t: egui::TextureId, a: f32, b: f32| col(t, a.min(b), a.max(b));
+        let dir = if rtl { -px } else { px };
         for s in &info.segs {
             let done = if info.status == Status::Complete { s.stop.unwrap_or(s.next) } else { s.next };
             if done > s.start {
-                col(blue, x(s.start) + px, x(done));
+                span(blue, x(s.start) + dir, x(done));
             }
-            col(red, x(s.start), x(s.start) + px);
+            span(red, x(s.start), x(s.start) + dir);
         }
         return;
     }
@@ -1804,10 +1968,12 @@ fn segment_bar(ui: &mut egui::Ui, info: &Info, h: f32, bars: Option<[egui::Textu
     p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
     let Some(size) = info.size.filter(|s| *s > 0) else { return };
     let inner = rect.shrink(1.0);
-    let x = |b: u64| inner.left() + inner.width() * (b as f32 / size as f32);
+    let rtl = i18n::is_rtl();
+    let x = |b: u64| if rtl { inner.right() - inner.width() * (b as f32 / size as f32) } else { inner.left() + inner.width() * (b as f32 / size as f32) };
     for s in &info.segs {
         let done = if info.status == Status::Complete { s.stop.unwrap_or(s.next) } else { s.next };
-        p.rect_filled(egui::Rect::from_x_y_ranges(x(s.start)..=x(done), inner.y_range()), 0.0, BAR);
+        let (a, b) = (x(s.start), x(done));
+        p.rect_filled(egui::Rect::from_x_y_ranges(a.min(b)..=a.max(b), inner.y_range()), 0.0, BAR);
     }
 }
 
@@ -1971,8 +2137,8 @@ impl App {
 
     /// Linux: an AppIndicator on the GTK thread (tray-icon needs GTK's loop and keeps its items there), only
     /// where the desktop shows one; else closing quits. Sets LINUX_TRAY; the items stay on that thread
-    /// (`LIMIT_ITEM` for the Speed Limiter tick).
-    #[cfg(not(windows))]
+    /// (`LIMIT_ITEM`, for the Speed Limiter tick and a language change).
+    #[cfg(target_os = "linux")]
     fn tray(ctx: &egui::Context, core: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
         let style = core.settings().tray_icon;
         // without the indicator library tray-icon panics on the GTK thread, which aborts NDM
@@ -1981,11 +2147,12 @@ impl App {
         }
         let (core, ctx) = (core.clone(), ctx.clone());
         win::gtk_spawn(move || {
-            let open = MenuItem::new(i18n::tr("Open"), true, None);
-            let startq = MenuItem::new(i18n::tr("Start queue"), true, None);
-            let stopq = MenuItem::new(i18n::tr("Stop queue"), true, None);
-            let limit = CheckMenuItem::new(i18n::tr("Speed Limiter"), true, core.settings().limit_on, None);
-            let exit = MenuItem::new(i18n::tr("Exit"), true, None);
+            // the desktop lays the menu out itself (right-to-left languages too)
+            let open = MenuItem::new(i18n::tr_os("Open"), true, None);
+            let startq = MenuItem::new(i18n::tr_os("Start queue"), true, None);
+            let stopq = MenuItem::new(i18n::tr_os("Stop queue"), true, None);
+            let limit = CheckMenuItem::new(i18n::tr_os("Speed Limiter"), true, core.settings().limit_on, None);
+            let exit = MenuItem::new(i18n::tr_os("Exit"), true, None);
             let menu = Menu::new();
             if menu.append_items(&[&open, &PredefinedMenuItem::separator(), &startq, &stopq, &limit, &PredefinedMenuItem::separator(), &exit]).is_err() {
                 return;
@@ -2014,10 +2181,53 @@ impl App {
                 }
                 ctx.request_repaint();
             }));
-            LIMIT_ITEM.with(|l| *l.borrow_mut() = Some(limit));
+            let items = vec![(open, "Open"), (startq, "Start queue"), (stopq, "Stop queue"), (exit, "Exit")];
+            LIMIT_ITEM.with(|l| *l.borrow_mut() = Some((limit, items)));
             std::mem::forget(tray); // lives as long as the app
         });
         None
+    }
+
+    /// macOS: NDM's item in the menu bar, made on the main thread like the window; its menu shows on a click.
+    /// The window is hidden and shown with egui's viewport commands.
+    #[cfg(target_os = "macos")]
+    fn tray(ctx: &egui::Context, core: &Arc<Core>, _: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
+        let open = MenuItem::new(i18n::tr_os("Open"), true, None);
+        let startq = MenuItem::new(i18n::tr_os("Start queue"), true, None);
+        let stopq = MenuItem::new(i18n::tr_os("Stop queue"), true, None);
+        let limit = CheckMenuItem::new(i18n::tr_os("Speed Limiter"), true, core.settings().limit_on, None);
+        let exit = MenuItem::new(i18n::tr_os("Exit"), true, None);
+        let menu = Menu::new();
+        menu.append_items(&[&open, &PredefinedMenuItem::separator(), &startq, &stopq, &limit, &PredefinedMenuItem::separator(), &exit]).ok()?;
+        let style = core.settings().tray_icon;
+        if style == 3 {
+            return None;
+        }
+        let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(TITLE).with_icon(tray_picture(style)?).build().map_err(|e| eprintln!("tray: {e}")).ok()?;
+        let ids = (open.id().clone(), startq.id().clone(), stopq.id().clone(), limit.id().clone(), exit.id().clone());
+        let (core2, ctx2) = (core.clone(), ctx.clone());
+        MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+            let (open, startq, stopq, limit, exit) = &ids;
+            if e.id == *open {
+                ctx2.send_viewport_cmd(ViewportCommand::Visible(true));
+                ctx2.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx2.send_viewport_cmd(ViewportCommand::Focus);
+            } else if e.id == *startq {
+                core2.start_queue(core::MAIN_QUEUE);
+            } else if e.id == *stopq {
+                core2.stop_queue(core::MAIN_QUEUE);
+            } else if e.id == *limit {
+                let on = !core2.settings().limit_on;
+                core2.settings().limit_on = on;
+                core2.apply_settings();
+            } else if e.id == *exit {
+                core2.shutdown();
+                std::process::exit(0);
+            }
+            ctx2.request_repaint();
+        }));
+        let items = vec![(open, "Open"), (startq, "Start queue"), (stopq, "Stop queue"), (exit, "Exit")];
+        Some((tray, limit, items))
     }
 
     /// Notification-area icon. Its handlers run on the UI thread's message loop even while
@@ -2571,7 +2781,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     /// File -> Import: a text file of links, or an NDM export file (.ef2) with referer and cookies.
     fn import(&self, ef2: bool) {
         let (name, ext) = if ef2 { ("NDM export files", "ef2") } else { ("Text Files", "txt") };
-        let Some(p) = rfd::FileDialog::new().add_filter(tr(name), &[ext]).pick_file() else { return };
+        let Some(p) = rfd::FileDialog::new().add_filter(tr_os(name), &[ext]).pick_file() else { return };
         let text = std::fs::read_to_string(p).unwrap_or_default();
         if !ef2 {
             self.add_queued(links(&text));
@@ -2613,9 +2823,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let (font, ink) = (egui::TextStyle::Button.resolve(ui.style()), ui.visuals().text_color());
             let mn = |t: &str| {
                 // ponytail: underlines the first letter, as NDM's English and most translations; reading the
-                // '&' position from the .lng files would cover the rest
+                // '&' position from the .lng files would cover the rest. Right-to-left menus have none (the
+                // first character drawn is a word's last letter there).
                 let t = tr(t);
-                let k = t.chars().next().map_or(0, char::len_utf8);
+                let k = if i18n::is_rtl() { 0 } else { t.chars().next().map_or(0, char::len_utf8) };
                 let mut job = egui::text::LayoutJob::default();
                 let fmt = |u: bool| egui::TextFormat { font_id: font.clone(), color: ink, underline: if u { egui::Stroke::new(1.0_f32, ink) } else { egui::Stroke::NONE }, ..Default::default() };
                 job.append(&t[..k], 0.0, fmt(true));
@@ -2641,12 +2852,15 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.close_menu();
                 }
                 ui.separator();
-                let mut dt = self.core.settings().drop_target;
-                if ui.checkbox(&mut dt, tr("Show drop target")).clicked() {
-                    self.core.settings().drop_target = dt;
-                    ui.close_menu();
+                // macOS has no floating drop target
+                if cfg!(not(target_os = "macos")) {
+                    let mut dt = self.core.settings().drop_target;
+                    if ui.checkbox(&mut dt, tr("Show drop target")).clicked() {
+                        self.core.settings().drop_target = dt;
+                        ui.close_menu();
+                    }
+                    ui.separator();
                 }
-                ui.separator();
                 ui.menu_button(tr("Export"), |ui| {
                     for (t, ef2) in [("To NDM export file", true), ("To text file", false)] {
                         if ui.button(tr(t)).clicked() {
@@ -2731,7 +2945,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 ui.menu_button(tr("Speed Limiter"), |ui| {
                     let on = self.core.settings().limit_on;
                     for (label, v) in [("Turn on", true), ("Turn off", false)] {
-                        if ui.add_enabled(on != v, egui::Button::new(label)).clicked() {
+                        if ui.add_enabled(on != v, egui::Button::new(tr(label))).clicked() {
                             self.core.settings().limit_on = v;
                             self.core.apply_settings();
                             ui.close_menu();
@@ -2846,6 +3060,15 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             }
                             limit.set_text(i18n::tr_os("Speed Limiter"));
                         }
+                        #[cfg(target_os = "linux")]
+                        win::gtk_spawn(|| {
+                            LIMIT_ITEM.with(|l| {
+                                if let Some((limit, items)) = &*l.borrow() {
+                                    items.iter().for_each(|(m, en)| m.set_text(i18n::tr_os(en)));
+                                    limit.set_text(i18n::tr_os("Speed Limiter"));
+                                }
+                            })
+                        });
                         self.core.settings().language = stem;
                         self.core.save();
                         style(ui.ctx(), self.dark);
@@ -3029,7 +3252,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let queues: Vec<(u32, String, bool)> = self.core.settings().queues.iter().map(|q| (q.id, tr(&q.name), self.core.queue_running(q.id))).collect();
         let small = self.core.settings().small_buttons;
         let enabled = [true, can_resume, can_stop, any_running, !sel.is_empty(), any_done, true, true, queues.iter().any(|q| !q.2), queues.iter().any(|q| q.2), true, true];
-        let buttons: Vec<TbButton> = TB_BUTTONS.iter().enumerate().map(|(k, (g, l, t))| (k, *g, tr(l), tr(t), enabled[k], k == 8 || k == 9)).collect();
+        let buttons: Vec<TbButton> = TB_BUTTONS.iter().enumerate().map(|(k, (g, l, t))| (k, *g, i18n::tr_label(l), tr(t), enabled[k], k == 8 || k == 9)).collect();
         let key = { let s = self.core.settings(); (s.tb_skin.clone(), dlu::ndm(), (s.scale_toolbar * 100.0).round() as u32) };
         if self.tb_key != key {
             self.toolbar = Some(Toolbar::load(ui.ctx(), &key.0, key.1, key.2 as f32 / 100.0));
@@ -3137,8 +3360,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         p.text(icon.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(28.0), if enabled { BAR } else { color });
                     }
                 }
-                let mut job = egui::text::LayoutJob::simple_singleline(label.clone(), font.clone(), color);
-                job.wrap = egui::text::TextWrapping { max_width: body.width() - 7.0 / ppp, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                // a longer translation gets smaller type, then "…" (at the left in right-to-left languages)
+                let room = body.width() - 7.0 / ppp;
+                let f = dlu::fit_font(ui, &label, font.clone(), room);
+                let text = if i18n::is_rtl() { dlu::cut_left(&label, room, |l| ui.fonts(|fo| fo.layout_no_wrap(l.to_string(), f.clone(), color).size().x)) } else { label.clone() };
+                let mut job = egui::text::LayoutJob::simple_singleline(text, f, color);
+                job.wrap = egui::text::TextWrapping { max_width: room, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
                 let g = ui.painter().layout_job(job);
                 p.galley(egui::pos2(body.center().x - g.size().x / 2.0, rect.bottom() - 9.0 * sc - g.size().y / 2.0), g, color);
                 if let (true, Some(t)) = (dropdown, &ndm) {
@@ -3456,10 +3683,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     } else if let Some(tex) = glyph(side_glyph(value)) {
                         ui.painter().image(tex, ir, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), if sel { t.accent } else { t.muted });
                     }
-                    let font = FontId::new(10.4 * sc, egui::FontFamily::Name("segoe".into()));
                     let lx = ix + (isz + 7.0 * sc) * dir;
                     let room = (if rtl { lx - row.left() } else { row.right() - lx }) - 4.0;
-                    let mut job = egui::text::LayoutJob::simple_singleline(label.clone(), font, if sel { t.accent } else { ink });
+                    // a longer translation gets smaller type before it is cut short
+                    let font = dlu::fit_font(ui, label, FontId::new(10.4 * sc, egui::FontFamily::Name("segoe".into())), room);
+                    let label = if rtl { dlu::cut_left(label, room, |l| ui.fonts(|f| f.layout_no_wrap(l.to_string(), font.clone(), ink).size().x)) } else { label.clone() };
+                    let mut job = egui::text::LayoutJob::simple_singleline(label, font, if sel { t.accent } else { ink });
                     job.wrap = egui::text::TextWrapping { max_width: room.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
                     let g = ui.painter().layout_job(job);
                     let gx = if rtl { lx - g.size().x } else { lx };
@@ -3553,7 +3782,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             }
                             ui.separator();
                             for (t, tab) in [("Edit queue", 1), ("Schedule", 0)] {
-                                if ui.add_enabled(q.is_some(), egui::Button::new(t)).clicked() {
+                                if ui.add_enabled(q.is_some(), egui::Button::new(tr(t))).clicked() {
                                     queue_dlg = Some((id, tab));
                                     ui.close_menu();
                                 }
@@ -3661,7 +3890,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         if let Some(k) = self.scroll_to.take() {
             tb = tb.scroll_to_row(k, Some(Align::Center));
         }
-        let mut tb = tb.striped(false).resizable(true).auto_shrink(false).sense(Sense::click()).cell_layout(Layout::left_to_right(Align::Center));
+        // right-to-left languages: cells read from the right edge, the file icon right of the name
+        let cell = if i18n::is_rtl() { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
+        let mut tb = tb.striped(false).resizable(true).auto_shrink(false).sense(Sense::click()).cell_layout(cell);
         for (k, (_, _, w)) in cols.iter().enumerate() {
             tb = tb.column(if k + 1 == cols.len() { Column::remainder().at_least(*w) } else { Column::initial(*w).at_least(20.0).clip(true) });
         }
@@ -3672,9 +3903,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.add_space(if nt.is_some() { 8.0 } else { 4.0 });
                     let arrow = if self.sort.0 == *c { if self.sort.1 { " ⏶" } else { " ⏷" } } else { "" };
                     let head = match &nt {
-                        Some(t) => RichText::new(format!("{}{arrow}", tr(name))).color(if self.sort.0 == *c { t.accent } else { t.muted }),
-                        None => RichText::new(format!("{}{arrow}", tr(name))),
+                        Some(t) => RichText::new(i18n::line(&format!("{}{arrow}", tr_os(name)))).color(if self.sort.0 == *c { t.accent } else { t.muted }),
+                        None => RichText::new(i18n::line(&format!("{}{arrow}", tr_os(name)))),
                     };
+                    // a longer translation gets smaller type in a narrow column
+                    let head = dlu::fit(ui, head.into(), ui.available_width() - 4.0, egui::TextStyle::Body);
                     if ui.add(egui::Label::new(head).selectable(false).sense(Sense::click())).clicked() {
                         sort = Some(*c);
                     }
@@ -3712,11 +3945,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             // NDM Style: the status in its colour over a thin progress bar
                             let ink = if error { t.danger } else if r.status == Status::Complete { t.success } else if r.running { t.accent } else { t.muted };
                             if let Some(f) = r.pct().filter(|f| *f > 0.0 && r.status != Status::Complete) {
-                                let cell = ui.max_rect();
-                                let bar = egui::Rect::from_min_max(egui::pos2(cell.left(), cell.bottom() - 6.0), egui::pos2(cell.right() - 10.0, cell.bottom() - 3.0));
+                                let (cell, rtl) = (ui.max_rect(), i18n::is_rtl());
+                                let (x0, x1) = if rtl { (cell.left() + 10.0, cell.right()) } else { (cell.left(), cell.right() - 10.0) };
+                                let bar = egui::Rect::from_min_max(egui::pos2(x0, cell.bottom() - 6.0), egui::pos2(x1, cell.bottom() - 3.0));
                                 if bar.width() > 8.0 {
                                     ui.painter().rect_filled(bar, 1.5, t.raised);
-                                    let done = egui::Rect::from_min_size(bar.min, Vec2::new(bar.width() * (f / 100.0).clamp(0.0, 1.0) as f32, bar.height()));
+                                    // filling from where the text starts (the right in right-to-left languages)
+                                    let w = bar.width() * (f / 100.0).clamp(0.0, 1.0) as f32;
+                                    let done = if rtl { egui::Rect::from_min_max(egui::pos2(bar.right() - w, bar.top()), bar.max) } else { egui::Rect::from_min_size(bar.min, Vec2::new(w, bar.height())) };
                                     ui.painter().rect_filled(done, 1.5, if r.running { t.accent } else { t.muted });
                                 }
                             }
@@ -3740,7 +3976,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 resp.context_menu(|ui| {
                     let done = r.status == Status::Complete;
                     let mut item = |ui: &mut egui::Ui, cmd: &'static str, enabled: bool| {
-                        if ui.add_enabled(enabled, egui::Button::new(cmd)).clicked() {
+                        if ui.add_enabled(enabled, egui::Button::new(tr(cmd))).clicked() {
                             menu_cmd = Some((cmd, r.id));
                             ui.close_menu();
                         }
@@ -3780,7 +4016,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.separator();
                     ui.menu_button(tr("On Double click"), |ui| {
                         for (on, label) in [(true, "Open"), (false, "Properties")] {
-                            if ui.radio(dbl_open == on, label).clicked() {
+                            if ui.radio(dbl_open == on, tr(label)).clicked() {
                                 dbl = Some(on);
                                 ui.close_menu();
                             }
@@ -3889,7 +4125,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let i = j.info();
             (i.path(), i.status == Status::Complete)
         };
-        let mut fd = rfd::FileDialog::new().set_title("Move/Rename");
+        let mut fd = rfd::FileDialog::new().set_title(tr_os("Move/Rename"));
         if let Some(dir) = path.parent().filter(|d| d.exists()) {
             fd = fd.set_directory(dir);
         }
@@ -3913,7 +4149,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             i.name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         } else {
             drop(i);
-            self.open(Dialog::Info { title: "Move/Rename".into(), text: i18n::trf("Cannot move %s to %s.", &[&from.display(), &target.display()]) });
+            self.open(Dialog::Info { title: "Move/Rename".into(), text: i18n::trf_os("Cannot move %s to %s.", &[&i18n::ltr(&from.display().to_string()), &i18n::ltr(&target.display().to_string())]) });
         }
     }
 
@@ -3998,7 +4234,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Info { title, .. } => (title.clone(), tpl(260.0, 70.0)),
             Dialog::AdvProxy { .. } => ("Advanced proxy settings".into(), tpl(268.0, 285.0)),
             Dialog::Category { orig, .. } => (if orig.is_some() { "Editing category properties" } else { "Adding a category to New Download Manager categories list" }.to_string(), tpl(322.0, 177.0)),
-            Dialog::CatDelete { .. } => (tr("Deleting a category from New Download Manager categories list"), tpl(260.0, 60.0)),
+            Dialog::CatDelete { .. } => ("Deleting a category from New Download Manager categories list".into(), tpl(260.0, 60.0)),
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
@@ -4008,7 +4244,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             // NDM puts its menu bar (menu 256) over both and the toolbar (260) over the results
             Dialog::Grabber { crawl: Some(_), .. } => ("NDM Site Grabber".into(), tpl(508.0, 286.0).map(|s| s + Vec2::new(0.0, GRAB_MENU + GRAB_TB))),
             Dialog::Grabber { step, adv, .. } => {
-                let title = i18n::trf("NDM Site Grabber. Step %d --- %s", &[&(*step + 1), &tr(GRAB_STEPS[*step as usize % 4])]);
+                let title = i18n::trf_os("NDM Site Grabber. Step %d --- %s", &[&(*step + 1), &tr_os(GRAB_STEPS[*step as usize % 4])]);
                 (title, tpl(406.0, if *adv && *step != 1 { 307.0 } else { 210.0 }).map(|s| s + Vec2::new(0.0, GRAB_MENU)))
             }
             Dialog::GrabStats { .. } => ("NDM Grabber Statistics".into(), tpl(111.0, 103.0)),
@@ -4162,7 +4398,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 }
                 d.group(64.0, 56.0, 244.0, 32.0, "");
-                d.check(69.0, 53.0, 200.0, 13.0, remember, &i18n::trf("Remember this path for \"%s\" category", &[&tr(&info.category)]));
+                d.check(69.0, 53.0, 200.0, 13.0, remember, &i18n::trf_os("Remember this path for \"%s\" category", &[&tr_os(&info.category)]));
                 let folder = Path::new(path.as_str()).parent().map(|f| f.display().to_string()).unwrap_or_default();
                 d.readonly(69.0, 69.0, 232.0, 14.0, &folder);
                 d.label_r(5.0, 93.0, 54.0, 10.0, "Description");
@@ -4274,7 +4510,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 match page {
                     0 => {
                         let status = match &i.status {
-                            Status::Error(e) => format!("{}: {e}", tr("Error")),
+                            Status::Error(e) => i18n::line(&format!("{}: {}", tr_os("Error"), i18n::tr_msg_os(e))),
                             Status::Connecting => tr("Connecting..."),
                             Status::Downloading => tr("Receiving data..."),
                             Status::Complete => tr("Complete"),
@@ -4287,7 +4523,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             _ => size3(done),
                         };
                         let limited = i.limit_kb > 0 || self.core.settings().limit_on;
-                        let speed_text = if running { format!("{}/{}{}", size3(speed as u64), tr("sec"), if limited { format!(" {}", tr("(Limited)")) } else { String::new() }) } else { String::new() };
+                        let speed_text = if running { i18n::line(&format!("{}/{}{}", size3_os(speed as u64), tr_os("sec"), if limited { format!(" {}", tr_os("(Limited)")) } else { String::new() })) } else { String::new() };
                         d.label(ox + 7.0, oy + 4.0, 329.0, 9.0, i.url.as_str());
                         for (y, k, vx, v) in [
                             (15.0, "Status", 53.0, status),
@@ -4310,7 +4546,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 .iter()
                                 .map(|n| {
                                     let rate: f64 = if running { i.segs.iter().filter(|s| s.owned && s.net == **n).map(|s| s.rate).sum() } else { 0.0 };
-                                    format!("{n} {}/{} ({}%)", size3(rate as u64), tr("sec"), nets[*n] * 100 / total)
+                                    i18n::line(&format!("{n} {}/{} ({}%)", size3_os(rate as u64), tr_os("sec"), nets[*n] * 100 / total))
                                 })
                                 .collect::<Vec<_>>()
                                 .join("   ");
@@ -4320,7 +4556,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     1 => {
                         d.label(ox + 7.0, oy + 7.0, 63.0, 9.0, "Transfer rate");
-                        d.label(ox + 75.0, oy + 7.0, 202.0, 9.0, if running { format!("{}/{}", size3(speed as u64), tr("sec")) } else { String::new() });
+                        d.label(ox + 75.0, oy + 7.0, 202.0, 9.0, if running { i18n::line(&format!("{}/{}", size3_os(speed as u64), tr_os("sec"))) } else { String::new() });
                         let mut on = i.limit_kb > 0;
                         let mut kb = if on { i.limit_kb.to_string() } else { "100".into() };
                         let toggled = d.check(ox + 7.0, oy + 20.0, 154.0, 10.0, &mut on, "Use Speed Limiter").changed();
@@ -4332,7 +4568,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                     }
                     _ => {
-                        d.label(ox + 7.0, oy + 3.0, 316.0, 9.0, format!("{} {}", tr("Save To:"), i.path().display()));
+                        d.label(ox + 7.0, oy + 3.0, 316.0, 9.0, i18n::line(&format!("{} {}", tr_os("Save To:"), i18n::ltr(&i.path().display().to_string()))));
                         let mut show = self.core.settings().show_complete;
                         if d.check(ox + 7.0, oy + 15.0, 169.0, 10.0, &mut show, "Show download complete dialog").changed() {
                             self.core.settings().show_complete = show;
@@ -4351,7 +4587,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.core.save();
                 }
                 let finished = i.status == Status::Complete;
-                let pause_label = if running { "Pause" } else { "Resume" };
+                let pause_label = ["Resume", "Pause"][running as usize];
                 if d.button(203.0, 126.0, 56.0, 15.0, pause_label, running || !finished) {
                     if running { job.stop() } else { self.core.start(&job) }
                 }
@@ -4361,7 +4597,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 if *details {
                     let r = d.rect(21.0, 143.0, 306.0, 9.0);
-                    d.ui.put(r, egui::Label::new("Start positions and download progress by connections"));
+                    d.ui.put(r, egui::Label::new(tr("Start positions and download progress by connections")));
                     let r = d.rect(7.0, 153.0, 338.0, 10.0);
                     let bars = self.res.bars.as_ref().map(|b| b.each_ref().map(|t| t.id()));
                     d.ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| segment_bar(ui, &i, r.height(), bars));
@@ -4382,14 +4618,17 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 let info = match sg {
                                     Some(s) if s.done() => tr("Disconnect."),
                                     Some(s) if s.net.is_empty() => tr(&s.info),
-                                    Some(s) => format!("{} ({})", tr(&s.info), s.net),
+                                    Some(s) => i18n::line(&format!("{} ({})", i18n::tr_msg_os(&s.info), i18n::ltr(&s.net))),
                                     None => String::new(),
                                 };
-                                let mut x = row.left();
+                                let rtl = i18n::is_rtl();
+                                let mut x = if rtl { row.right() } else { row.left() };
                                 for (c, text) in [format!("{:2}", k + 1), if got > 0 { size3(got) } else { String::new() }, info].into_iter().enumerate() {
-                                    let clip = egui::Rect::from_min_size(egui::pos2(x, row.top()), Vec2::new(cols[c].1 * dx - 4.0, row.height()));
-                                    ui.painter().with_clip_rect(clip).text(egui::pos2(x + 6.0, row.center().y), Align2::LEFT_CENTER, text, font.clone(), ink);
-                                    x += cols[c].1 * dx;
+                                    let w = cols[c].1 * dx;
+                                    let clip = egui::Rect::from_min_size(egui::pos2(if rtl { x - w + 4.0 } else { x }, row.top()), Vec2::new(w - 4.0, row.height()));
+                                    let (at, align) = if rtl { (x - 6.0, Align2::RIGHT_CENTER) } else { (x + 6.0, Align2::LEFT_CENTER) };
+                                    ui.painter().with_clip_rect(clip).text(egui::pos2(at, row.center().y), align, text, font.clone(), ink);
+                                    x += if rtl { -w } else { w };
                                 }
                             }
                         });
@@ -4406,7 +4645,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if d.combo(7.0, 18.0, 90.0, 14.0, "pview", &mut v, &views.each_ref().map(String::as_str), true) {
                     *view = views.iter().position(|x| *x == v).unwrap_or(0) as u8;
                 }
-                d.text(7.0, 34.0, 254.0, 27.0, tr("Note: \"Start view\" option doesn't relate to queue processing. When NDM is processing queues,  \"Download progress\" dialog always starts minimized in system tray"));
+                d.text(7.0, 34.0, 254.0, 27.0, "Note: \"Start view\" option doesn't relate to queue processing. When NDM is processing queues,  \"Download progress\" dialog always starts minimized in system tray");
                 d.hline(7.0, 66.0, 254.0);
                 d.check(7.0, 74.0, 254.0, 10.0, sl, "Show \"Speed Limiter\" tab");
                 d.check(7.0, 88.0, 189.0, 10.0, c, "Show \"Options on completion\" tab");
@@ -4428,7 +4667,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let r = d.rect(7.0, 7.0, 21.0, 20.0);
                     d.ui.put(r, egui::Image::new((t, Vec2::splat(32.0))));
                 }
-                d.text(34.0, 7.0, 262.0, 32.0, format!("{}\n{}", tr("Download complete"), i18n::trf("Downloaded %s (%I64d Bytes)", &[&human(i.done()), &i.done()])));
+                d.text(34.0, 7.0, 262.0, 32.0, format!("{}\n{}", tr_os("Download complete"), i18n::trf_os("Downloaded %s (%I64d Bytes)", &[&human_os(i.done()), &i.done()])));
                 d.label(7.0, 38.0, 289.0, 9.0, "Address");
                 d.readonly(7.0, 48.0, 289.0, 14.0, &i.url);
                 d.label(7.0, 66.0, 289.0, 9.0, "The file saved as");
@@ -4455,7 +4694,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::Delete { ids, files, dont_show } => {
                 let mut d = dlu::D::new(ui);
-                d.text(7.0, 6.0, 264.0, 18.0, tr("Are you sure you want to delete selected downloads from New Download Manager list of downloads?"));
+                d.text(7.0, 6.0, 264.0, 18.0, "Are you sure you want to delete selected downloads from New Download Manager list of downloads?");
                 d.check(12.0, 26.0, 259.0, 18.0, files, "Delete completely downloaded files from your hard disk as well. Be careful !");
                 d.check(12.0, 47.0, 247.0, 10.0, dont_show, "Don't show this dialog again");
                 let yes = d.button(76.0, 65.0, 50.0, 14.0, "Yes", true);
@@ -4510,7 +4749,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let sel_id = egui::Id::new("browser_sel");
                         let mut sel: Option<usize> = d2.ui.data(|m| m.get_temp(sel_id)).flatten().filter(|k| *k < s.browsers.len());
                         let icons: Vec<Option<egui::TextureId>> = s.browsers.iter().map(|b| self.exe_icon(ctx, &b.exe)).collect();
-                        d2.ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 20.0)), |ui| {
+                        d2.rows(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 20.0), |ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 for (k, b) in s.browsers.iter_mut().enumerate() {
                                     ui.horizontal(|ui| {
@@ -4522,7 +4761,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                         if ui.add_sized([w, 16.0], egui::SelectableLabel::new(sel == Some(k), b.name.as_str())).clicked() {
                                             sel = Some(k);
                                         }
-                                        ui.label(integration(b));
+                                        ui.label(tr(integration(b)));
                                     });
                                 }
                             });
@@ -4533,7 +4772,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             }
                         }
                         if d2.button(97.0, 173.0, 72.0, 14.0, "Add browser...", true) {
-                            if let Some(p) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() {
+                            if let Some(p) = rfd::FileDialog::new().add_filter(tr_os("Programs"), &["exe"]).pick_file() {
                                 let name = p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                                 s.browsers.push(core::Browser { name, exe: p.display().to_string(), on: true });
                                 sel = Some(s.browsers.len() - 1);
@@ -4598,9 +4837,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         let exts = s.categories.iter().find(|c| c.name == cat).map_or(String::new(), |c| c.exts.clone());
                         let exts = exts.as_str();
-                        d2.label(14.0, 74.0, 238.0, 10.0, i18n::trf("Automatically put in \"%s\" category the following file types:", &[&tr(&cat)]));
+                        d2.label(14.0, 74.0, 238.0, 10.0, i18n::trf_os("Automatically put in \"%s\" category the following file types:", &[&tr_os(&cat)]));
                         d2.readonly(14.0, 85.0, 241.0, 14.0, exts);
-                        d2.label(13.0, 106.0, 242.0, 10.0, i18n::trf("Default download directory for \"%s\" category", &[&tr(&cat)]));
+                        d2.label(13.0, 106.0, 242.0, 10.0, i18n::trf_os("Default download directory for \"%s\" category", &[&tr_os(&cat)]));
                         let mut dir = s.folder_for(&cat);
                         if d2.edit(14.0, 118.0, 187.0, 14.0, &mut dir, true).changed() {
                             if cat == GENERAL {
@@ -4616,10 +4855,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             }
                         }
                         // = the category's "Remember last save path" (template 204)
-                        let label = i18n::trf("Change folder for \"%s\" category on last selected", &[&tr(&cat)]);
+                        let label = i18n::trf_os("Change folder for \"%s\" category on last selected", &[&tr_os(&cat)]);
                         match s.categories.iter_mut().find(|c| c.name == cat) {
-                            Some(c) => { d2.at(15.0, 137.0, 240.0, 10.0, |ui| ui.checkbox(&mut c.remember, label)); }
-                            None => { d2.at(15.0, 137.0, 240.0, 10.0, |ui| ui.checkbox(&mut s.remember_general, label)); }
+                            Some(c) => { d2.at(15.0, 137.0, 240.0, 10.0, |ui| ui.add(dlu::checkbox(&mut c.remember, &label))); }
+                            None => { d2.at(15.0, 137.0, 240.0, 10.0, |ui| ui.add(dlu::checkbox(&mut s.remember_general, &label))); }
                         }
                         d2.check(15.0, 159.0, 240.0, 10.0, &mut s.set_date, "Set file creation date as provided by the server");
                         d2.group(7.0, 173.0, 253.0, 77.0, "Temporary directory");
@@ -4684,7 +4923,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let sel_id = egui::Id::new("srvconn_sel");
                         let mut sel: Option<usize> = d2.ui.data(|m| m.get_temp(sel_id)).flatten().filter(|k| *k < s.server_conns.len());
                         let mut edit = None;
-                        d2.ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(Vec2::new(2.0, 0.0)).with_min_y(list.min.y + 18.0)), |ui| {
+                        d2.rows(list.shrink2(Vec2::new(2.0, 0.0)).with_min_y(list.min.y + 18.0), |ui| {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             for (k, (m, n)) in s.server_conns.iter().enumerate() {
                                 ui.horizontal(|ui| {
@@ -4750,7 +4989,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let list = d2.listview(7.0, 28.0, 255.0, 172.0, &[("Server/path", 110.0), ("User name", 75.0), ("Password", 70.0)]);
                         let sel_id = egui::Id::new("login_sel");
                         let mut sel: Option<usize> = d2.ui.data(|m| m.get_temp(sel_id)).flatten();
-                        d2.ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(Vec2::new(2.0, 0.0)).with_min_y(list.min.y + 18.0)), |ui| {
+                        d2.rows(list.shrink2(Vec2::new(2.0, 0.0)).with_min_y(list.min.y + 18.0), |ui| {
                             for (k, l) in s.logins.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     let w = |n: f32| n * PAGE_DX - 6.0;
@@ -4835,10 +5074,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let list = d2.listview(15.0, 40.0, 244.0, 154.0, &[("Event", 120.0), ("Sound file", 124.0)]);
                         let sel_id = egui::Id::new("sound_sel");
                         let mut sel: Option<usize> = d2.ui.data(|m| m.get_temp(sel_id)).flatten();
-                        d2.ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 18.0)), |ui| {
+                        d2.rows(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 18.0), |ui| {
                             for (k, (on, path)) in s.sounds.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
-                                    ui.add_sized([120.0 * PAGE_DX - 6.0, 18.0], egui::Checkbox::new(on, core::SOUND_EVENTS[k]));
+                                    ui.add_sized([120.0 * PAGE_DX - 6.0, 18.0], dlu::checkbox(on, core::SOUND_EVENTS[k]));
                                     let name = Path::new(path.as_str()).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
                                     if ui.add_sized([124.0 * PAGE_DX - 10.0, 18.0], egui::SelectableLabel::new(sel == Some(k), name)).clicked() {
                                         sel = Some(k);
@@ -4848,7 +5087,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         });
                         if d2.button(63.0, 199.0, 50.0, 14.0, "Browse...", sel.is_some()) {
                             let k = sel.unwrap();
-                            if let Some(p) = rfd::FileDialog::new().add_filter(format!("{} (*.wav)", tr("Sound Files")), &["wav"]).pick_file() {
+                            if let Some(p) = rfd::FileDialog::new().add_filter(format!("{} (*.wav)", tr_os("Sound Files")), &["wav"]).pick_file() {
                                 let dir = core::store_path().with_file_name("Sounds");
                                 let copy = dir.join(p.file_name().unwrap_or_default());
                                 let kept = copy == p || (std::fs::create_dir_all(&dir).is_ok() && std::fs::copy(&p, &copy).is_ok());
@@ -4902,14 +5141,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.edit(146.0, 147.0, 52.0, 15.0, &mut s.proxy_user, m);
                         d2.password(201.0, 147.0, 55.0, 15.0, &mut s.proxy_pass, m);
                         d2.label(13.0, 164.0, 235.0, 10.0, "Use this proxy for the following protocols:");
-                        d2.at(13.0, 176.0, 28.0, 10.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_http, tr("http"))));
-                        d2.at(58.0, 176.0, 31.0, 10.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_https, tr("https"))));
-                        d2.at(109.0, 176.0, 24.0, 10.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_ftp, tr("ftp"))));
+                        d2.at(13.0, 176.0, 28.0, 10.0, |ui| ui.add_enabled(m, dlu::checkbox(&mut s.proxy_http, "http")));
+                        d2.at(58.0, 176.0, 31.0, 10.0, |ui| ui.add_enabled(m, dlu::checkbox(&mut s.proxy_https, "https")));
+                        d2.at(109.0, 176.0, 24.0, 10.0, |ui| ui.add_enabled(m, dlu::checkbox(&mut s.proxy_ftp, "ftp")));
                         if d2.button(149.0, 179.0, 107.0, 14.0, "Advanced...", m) {
                             adv = Some(s.adv.clone());
                         }
                         d2.group(13.0, 197.0, 248.0, 41.0, "");
-                        d2.at(18.0, 194.0, 238.0, 12.0, |ui| ui.add_enabled(m, egui::Checkbox::new(&mut s.proxy_bypass_on, tr("Do not use proxy server for addresses beginning with:"))));
+                        d2.at(18.0, 194.0, 238.0, 12.0, |ui| ui.add_enabled(m, dlu::checkbox(&mut s.proxy_bypass_on, "Do not use proxy server for addresses beginning with:")));
                         d2.edit(22.0, 208.0, 234.0, 17.0, &mut s.proxy_bypass, m && s.proxy_bypass_on);
                         d2.label(20.0, 227.0, 228.0, 10.0, "Separate names by spaces");
                         d2.hline(7.0, 241.0, 254.0);
@@ -5005,7 +5244,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     d.label_r(200.0, 60.0, 55.0, 10.0, grey("every"));
                     d.at(260.0, 60.0, 23.0, 10.0, |ui| ui.add_enabled(on, egui::DragValue::new(&mut s.quota_hours).range(1..=23)));
                     d.label(288.0, 60.0, 40.0, 10.0, grey("hours"));
-                    d.at(160.0, 78.5, 160.0, 10.0, |ui| ui.add_enabled(on, egui::Checkbox::new(&mut s.quota_warn, tr("Show warning before stopping downloads"))));
+                    d.at(160.0, 78.5, 160.0, 10.0, |ui| ui.add_enabled(on, dlu::checkbox(&mut s.quota_warn, "Show warning before stopping downloads")));
                 }
                 let builtin = self.core.settings().queue(queue.id).is_none_or(core::Queue::builtin);
                 // shown like NDM's time pickers ("11:00:00 PM"); stored as HH:MM
@@ -5019,7 +5258,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if !is_limits {
                 // the queue's name centred over the tabs; pages are laid out 2.0 px/DLU across (1.6 at 100%)
                 let r = d.rect(142.0, 3.0, 327.0, 9.0);
-                d.ui.put(r, egui::Label::new(format!("{}{}", tr(&queue.name), if running { " \u{25b6}" } else { "" })));
+                d.ui.put(r, egui::Label::new(i18n::line(&format!("{}{}", tr_os(&queue.name), if running { " \u{25b6}" } else { "" }))));
                 d.tabs(142.0, 15.5, 327.0, 246.0, tab, &["Schedule", "Files in the queue"]);
                 let mut d2 = dlu::D::new_offset(d.ui, 145.6, 27.0).with_dx(PAGE_DX);
                 if *tab == 0 {
@@ -5041,7 +5280,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     if periodic {
                         // synchronization runs daily, starting again every N hours after a pass
                         sched.daily = true;
-                        d2.at(7.0, 60.0, 90.0, 10.0, |ui| ui.add_enabled(on, egui::Checkbox::new(&mut sched.again_on, tr("Start again every"))));
+                        d2.at(7.0, 60.0, 90.0, 10.0, |ui| ui.add_enabled(on, dlu::checkbox(&mut sched.again_on, "Start again every")));
                         let en = on && sched.again_on;
                         d2.at(100.0, 59.0, 19.0, 14.0, |ui| ui.add_enabled(en, egui::DragValue::new(&mut sched.again_h).range(0..=999)));
                         d2.label(122.0, 62.0, 25.0, 8.0, "hours");
@@ -5060,7 +5299,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let pos = [(62.0, 78.0), (62.0, 88.0), (62.0, 98.0), (135.0, 78.0), (135.0, 88.0), (135.0, 98.0), (209.0, 78.0)];
                     for (k, (x, y)) in pos.iter().enumerate() {
                         let en = on && sched.daily;
-                        d2.at(*x, *y, 70.0, 10.0, |ui| ui.add_enabled(en, egui::Checkbox::new(&mut sched.days[k], days[k])));
+                        d2.at(*x, *y, 70.0, 10.0, |ui| ui.add_enabled(en, dlu::checkbox(&mut sched.days[k], days[k])));
                     }
                     d2.hline(8.0, 112.0, 265.0);
                     d2.check(8.0, 121.0, 99.0, 10.0, &mut sched.stop_on, "Stop download at");
@@ -5083,7 +5322,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     if d2.combo(194.0, 208.0, 79.0, 14.0, "offkind", &mut kind, &kinds, sched.off_done) {
                         sched.off_kind = kinds.iter().position(|k| *k == kind).unwrap_or(0) as u8;
                     }
-                    d2.at(19.0, 219.0, 174.0, 10.0, |ui| ui.add_enabled(sched.off_done, egui::Checkbox::new(&mut sched.off_force, tr("Force processes to terminate"))));
+                    d2.at(19.0, 219.0, 174.0, 10.0, |ui| ui.add_enabled(sched.off_done, dlu::checkbox(&mut sched.off_force, "Force processes to terminate")));
                     if !error.is_empty() {
                         d2.label(7.0, 220.0, 266.0, 9.0, RichText::new(error.as_str()).color(Color32::RED));
                     }
@@ -5104,7 +5343,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         })
                         .collect();
                     let list = d2.listview(8.0, 23.0, 264.0, 181.0, &[("File Name", 140.0), ("Size", 60.0), ("Status", 62.0)]);
-                    d2.ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
+                    d2.rows(list, |ui| {
                         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                             for (id, name, size, st) in &queued {
                                 ui.horizontal(|ui| {
@@ -5181,7 +5420,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.text(7.0, 26.0, 272.0, 18.0, "This file already exists in your download list. Would you like to add the duplicate?");
                 for (k, y, h) in [(1u8, 56.0, 10.0), (2, 73.0, 10.0), (0, 86.0, 18.0)] {
                     let label = DUPL[[3, 1, 2][k as usize]];
-                    if d.at(7.0, y, 272.0, h, |ui| ui.radio(*choice == k, label)).clicked() {
+                    if d.radio(7.0, y, 272.0, h, *choice == k, label) {
                         *choice = k;
                     }
                 }
@@ -5211,7 +5450,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.label(58.0, 13.0, 253.0, 9.0, i.name.as_str());
                 d.hline(7.0, 31.0, 304.0);
                 d.label(7.0, 36.0, 44.0, 9.0, "Type:");
-                d.label(58.0, 36.0, 253.0, 9.0, win::type_name(&core::ext(&i.name)));
+                d.label(58.0, 36.0, 253.0, 9.0, i18n::line(&win::type_name(&core::ext(&i.name))));
                 d.label(7.0, 48.0, 43.0, 9.0, "Status:");
                 d.label(58.0, 48.0, 253.0, 9.0, "Complete");
                 d.label(7.0, 60.0, 43.0, 9.0, "Size:");
@@ -5234,8 +5473,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.label_r(21.0, 205.0, 52.0, 9.0, "Password");
                 d.password(80.0, 203.0, 126.0, 13.0, pass, true);
                 d.hline(7.0, 220.0, 304.0);
-                d.label(7.0, 225.0, 160.0, 9.0, format!("{} {}", tr("Last try date:").trim_end(), date(i.last_try)));
-                d.label(7.0, 237.0, 160.0, 8.0, format!("{} {}", tr("Result: ").trim_end(), tr("Complete")));
+                d.label(7.0, 225.0, 160.0, 9.0, i18n::line(&format!("{} {}", tr_os("Last try date:").trim_end(), i18n::ltr(&date(i.last_try)))));
+                d.label(7.0, 237.0, 160.0, 8.0, i18n::line(&format!("{} {}", tr_os("Result: ").trim_end(), tr_os("Complete"))));
                 if d.button(172.0, 227.0, 50.0, 14.0, "Open", true) {
                     explore(i.path());
                 }
@@ -5277,7 +5516,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     *error = if cat.name.is_empty() {
                         "Please fill in the \"Category name\" field.".into()
                     } else if taken {
-                        format!("The \"{}\" category already exists.", cat.name)
+                        i18n::trf_os("The \"%s\" category already exists.", &[&cat.name])
                     } else {
                         String::new()
                     };
@@ -5289,7 +5528,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::CatDelete { name } => {
                 let mut d = dlu::D::new(ui);
-                d.text(7.0, 6.0, 246.0, 20.0, format!("Do you really want to delete \"{name}\" category from the categories list?"));
+                d.text(7.0, 6.0, 246.0, 20.0, i18n::trf_os("Do you really want to delete \"%s\" category from the categories list?", &[&name]));
                 let yes = d.button(70.0, 38.0, 50.0, 14.0, "Yes", true);
                 if yes {
                     let mut s = self.core.settings();
@@ -5342,14 +5581,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.check(13.0, 145.0, 52.0, 12.0, &mut adv.socks_on, "Use Socks");
                 let on = adv.socks_on;
                 row(&mut d, 148.0, on, &mut adv.socks_host, &mut adv.socks_port, &mut adv.socks_user, &mut adv.socks_pass);
-                if d.at(13.0, 186.0, 42.0, 10.0, |ui| ui.add_enabled(on, egui::RadioButton::new(adv.socks5, tr("Socks 5")))).clicked() {
+                if d.at(13.0, 186.0, 42.0, 10.0, |ui| ui.add_enabled(on, dlu::radio_button(adv.socks5, "Socks 5"))).clicked() {
                     adv.socks5 = true;
                 }
-                if d.at(13.0, 199.0, 42.0, 10.0, |ui| ui.add_enabled(on, egui::RadioButton::new(!adv.socks5, tr("Socks 4")))).clicked() {
+                if d.at(13.0, 199.0, 42.0, 10.0, |ui| ui.add_enabled(on, dlu::radio_button(!adv.socks5, "Socks 4"))).clicked() {
                     adv.socks5 = false;
                 }
                 let mut dns = !adv.local_dns;
-                d.at(69.0, 186.0, 50.0, 10.0, |ui| ui.add_enabled(on && adv.socks5, egui::Checkbox::new(&mut dns, tr("Proxy DNS"))));
+                d.at(69.0, 186.0, 50.0, 10.0, |ui| ui.add_enabled(on && adv.socks5, dlu::checkbox(&mut dns, "Proxy DNS")));
                 adv.local_dns = !dns;
                 d.text(14.0, 213.0, 237.0, 19.0, "Note: New Download Manager will use socks only for the protocols that are NOT checked above");
                 if d.button(13.0, 240.0, 63.0, 14.0, "Get system", true) {
@@ -5443,17 +5682,17 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let list = d.listview(7.0, 7.0, 416.0, 59.0, &[("Browser", 110.0), ("Path", 230.0), ("Type of integration", 74.0)]);
                 let rows: Vec<core::Browser> = self.dialogs.iter().find_map(|(_, x)| if let Dialog::Options { s, .. } = x { Some(s.browsers.clone()) } else { None })
                     .unwrap_or_else(|| self.core.settings().browsers.clone()).into_iter().filter(|b| b.name == *name).collect();
-                d.ui.scope_builder(egui::UiBuilder::new().max_rect(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 20.0)), |ui| {
+                d.rows(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 20.0), |ui| {
                     for b in &rows {
                         ui.horizontal(|ui| {
                             ui.add_sized([110.0 * dlu::DX - 8.0, 16.0], egui::Label::new(b.name.as_str()).truncate());
                             ui.add_sized([230.0 * dlu::DX - 8.0, 16.0], egui::Label::new(b.exe.as_str()).truncate());
-                            ui.label(integration(b));
+                            ui.label(tr(integration(b)));
                         });
                     }
                 });
                 if d.button(135.0, 73.0, 67.0, 14.0, "Add version...", true) {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter(tr_os("Programs"), &["exe"]).pick_file() {
                         self.browser_add.push(core::Browser { name: name.clone(), exe: p.display().to_string(), on: true });
                     }
                 }
@@ -5465,12 +5704,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let mut d = dlu::D::new(ui);
                 d.label(8.0, 3.0, 466.0, 12.0, RichText::new(b.name.as_str()).strong());
                 d.group(6.0, 18.0, 473.0, 138.0, "");
-                d.text(14.0, 28.0, 458.0, 60.0, if page.starts_with("about:") {
-                    // ponytail: unsigned add-ons only load temporarily in release Firefox; signing on AMO makes it permanent
-                    FIREFOX_GUIDE
-                } else {
-                    "To capture downloads from this browser, open its extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select this folder:"
-                });
+                // ponytail: unsigned add-ons only load temporarily in release Firefox; signing on AMO makes it permanent
+                d.text(14.0, 28.0, 458.0, 60.0, GUIDES[!page.starts_with("about:") as usize]);
                 d.readonly(14.0, 92.0, 458.0, 14.0, &dir);
                 if d.button(14.0, 162.0, 90.0, 14.0, "Open extensions page", !page.is_empty()) {
                     let mut c = std::process::Command::new(&b.exe);
@@ -5488,19 +5723,19 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.hline(6.0, 6.0, 306.0);
                 d.check(7.0, 13.0, 304.0, 10.0, &mut k.prevent, "Use the following key(s) to prevent downloading with New Download Manager for any links:");
                 let p = k.prevent;
-                d.at(89.0, 26.0, 34.0, 10.0, |ui| ui.add_enabled(p, egui::Checkbox::new(&mut k.alt_p, tr("Alt"))));
-                d.at(127.0, 26.0, 35.0, 10.0, |ui| ui.add_enabled(p, egui::Checkbox::new(&mut k.shift_p, tr("Shift"))));
-                d.at(165.0, 26.0, 35.0, 10.0, |ui| ui.add_enabled(p, egui::Checkbox::new(&mut k.ctrl_p, tr("Ctrl"))));
-                d.at(203.0, 25.0, 41.0, 10.0, |ui| ui.add_enabled(p, egui::Checkbox::new(&mut k.del_p, tr("Del"))));
+                d.at(89.0, 26.0, 34.0, 10.0, |ui| ui.add_enabled(p, dlu::checkbox(&mut k.alt_p, "Alt")));
+                d.at(127.0, 26.0, 35.0, 10.0, |ui| ui.add_enabled(p, dlu::checkbox(&mut k.shift_p, "Shift")));
+                d.at(165.0, 26.0, 35.0, 10.0, |ui| ui.add_enabled(p, dlu::checkbox(&mut k.ctrl_p, "Ctrl")));
+                d.at(203.0, 25.0, 41.0, 10.0, |ui| ui.add_enabled(p, dlu::checkbox(&mut k.del_p, "Del")));
                 d.hline(6.0, 41.0, 306.0);
                 d.check(7.0, 50.0, 304.0, 10.0, &mut k.force, "Use the following key(s) to force downloading with New Download Manager for any links:");
                 let f = k.force;
-                d.at(89.0, 64.0, 34.0, 10.0, |ui| ui.add_enabled(f, egui::Checkbox::new(&mut k.alt_f, tr("Alt"))));
-                d.at(127.0, 64.0, 35.0, 10.0, |ui| ui.add_enabled(f, egui::Checkbox::new(&mut k.shift_f, tr("Shift"))));
-                d.at(165.0, 64.0, 35.0, 10.0, |ui| ui.add_enabled(f, egui::Checkbox::new(&mut k.ctrl_f, tr("Ctrl"))));
-                d.at(203.0, 64.0, 41.0, 10.0, |ui| ui.add_enabled(f, egui::Checkbox::new(&mut k.ins_f, tr("Ins"))));
+                d.at(89.0, 64.0, 34.0, 10.0, |ui| ui.add_enabled(f, dlu::checkbox(&mut k.alt_f, "Alt")));
+                d.at(127.0, 64.0, 35.0, 10.0, |ui| ui.add_enabled(f, dlu::checkbox(&mut k.shift_f, "Shift")));
+                d.at(165.0, 64.0, 35.0, 10.0, |ui| ui.add_enabled(f, dlu::checkbox(&mut k.ctrl_f, "Ctrl")));
+                d.at(203.0, 64.0, 41.0, 10.0, |ui| ui.add_enabled(f, dlu::checkbox(&mut k.ins_f, "Ins")));
                 d.text(7.0, 76.0, 304.0, 27.0, "Note: Sometimes after you click on a download link, a web page will load telling that the download starts in X seconds. In this case you will need to uncheck the following option to force downloading.");
-                d.at(45.0, 104.0, 235.0, 17.0, |ui| ui.add_enabled(f, egui::Checkbox::new(&mut k.check_mouse, tr("Check for left mouse button clicked on a link along with the special key(s) pressed to force downloading the link"))));
+                d.at(45.0, 104.0, 235.0, 17.0, |ui| ui.add_enabled(f, dlu::checkbox(&mut k.check_mouse, "Check for left mouse button clicked on a link along with the special key(s) pressed to force downloading the link")));
                 d.text(7.0, 130.0, 304.0, 50.0, "Note 2: Sometimes when you click on a link, your browser requests other files AT THE SAME TIME like Java scripts, web pages, pictures, etc. When you press and hold down a special key, New Download Manager intercepts these files, and the browser may not request the necessary file because it will not run a Javascript, which has been intercepted by New Download Manager erroneously. If you want to intercept and download only the necessary files with New Download Manager, please turn on the option below:");
                 d.check(45.0, 183.0, 266.0, 17.0, &mut k.skip_html, "While holding down a special key DO NOT take over the downloads which are web-pages, pictures, scripts and etc.");
                 d.hline(6.0, 205.0, 306.0);
@@ -5560,8 +5795,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             for (k, (t, on)) in types.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.checkbox(on, tr(""));
-                                    let size = min.get(t.as_str()).map(|kb| format!("  ({} {kb} KB)", tr("Min. size"))).unwrap_or_default();
-                                    if ui.add(egui::SelectableLabel::new(*sel == Some(k), format!("{t}{size}"))).clicked() {
+                                    let size = min.get(t.as_str()).map(|kb| format!("  ({} {kb} {})", tr_os("Min. size"), tr_os("KB"))).unwrap_or_default();
+                                    if ui.add(egui::SelectableLabel::new(*sel == Some(k), i18n::line(&format!("{}{size}", i18n::ltr(t))))).clicked() {
                                         *sel = Some(k);
                                     }
                                 });
@@ -5691,7 +5926,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 for (k, n) in nics.iter().enumerate() {
                     let mut on = !off.contains(&n.name);
                     let ips = n.ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>().join(", ");
-                    d.at(15.0, 34.0 + 12.0 * k as f32, 210.0, 10.0, |ui| ui.checkbox(&mut on, format!("{}   {ips}", n.name)));
+                    d.at(15.0, 34.0 + 12.0 * k as f32, 210.0, 10.0, |ui| ui.add(dlu::checkbox(&mut on, &format!("{}   {ips}", n.name))));
                     if on {
                         off.retain(|o| *o != n.name);
                     } else if !off.contains(&n.name) {
@@ -5770,7 +6005,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 match res {
                     Some(Ok(Some(rel))) => self.open(Dialog::NewVersion { rel, get: None }),
                     Some(Ok(None)) if !*quiet => self.open(Dialog::Info { title: "Quick Update".into(), text: "You are using the latest version of New Download Manager. Please check back again for updates at a later time.".into() }),
-                    Some(Err(e)) if !*quiet => self.open(Dialog::Info { title: "Quick Update".into(), text: e }),
+                    Some(Err(e)) if !*quiet => self.open(Dialog::Info { title: "Quick Update".into(), text: i18n::tr_msg_os(&e) }),
                     Some(_) => {}
                     None => return true,
                 }
@@ -5791,7 +6026,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
                             ui.label(RichText::new(tr("A new version is available")).size(19.0).strong().color(v.strong_text_color()));
-                            ui.label(RichText::new(format!("{} {} \u{2192} {}", tr("Version"), env!("CARGO_PKG_VERSION"), rel.version)).size(13.0).color(accent));
+                            ui.label(RichText::new(i18n::line(&format!("{} {} \u{2192} {}", tr_os("Version"), env!("CARGO_PKG_VERSION"), rel.version))).size(13.0).color(accent));
                         });
                     });
                     ui.add_space(12.0);
@@ -5846,7 +6081,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 keep = false;
                             }
                             Some(Err(e)) => {
-                                self.open(Dialog::Info { title: "Quick Update".into(), text: format!("{1}{0}{e}", if e.is_empty() { "" } else { "\r\n\r\n" }, tr("NDM cannot download the update file.\r\nYou can download a new version of NDM from NDM home site and install it over your current version manually")) });
+                                self.open(Dialog::Info { title: "Quick Update".into(), text: format!("{1}{0}{2}", if e.is_empty() { "" } else { "\r\n\r\n" }, tr_os("NDM cannot download the update file.\r\nYou can download a new version of NDM from NDM home site and install it over your current version manually"), i18n::tr_msg_os(&e)) });
                                 keep = false;
                             }
                             None => ui.ctx().request_repaint_after(Duration::from_millis(100)),
@@ -5889,7 +6124,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 d.label(7.0, 38.0, 248.0, 10.0, "Command line parameters");
                 d.edit(7.0, 48.0, 299.0, 14.0, args, true);
-                d.text(7.0, 68.0, 365.0, 142.0, format!("{}\n\n{}", tr("If you would like to run antiviral software on download completion, you should type or browse the complete path to its executable file. If NDM knows about necessary parameters for a given executable file name, it will set them automatically. Otherwise, you will have to set them manually in \"Command line parameters\" according to antiviral software documentation. The scanned file among different parameters should be written as\r\n[File]\r\n(you should type square brackets as well). If no parameters are set, NDM will execute antiviral software appending the complete path of a downloaded file."), tr("Note that all modern antiviral software have \"real-time protection\" feature that checks all operations with files on your computer, and it includes all files downloaded in NDM. Thus, you need to add antiviral software scanner to NDM settings only when real-time protection is turned off in antiviral software settings.\r\nAlso, in some cases, real time protection may significantly slow down the assembly of files made by NDM. Then you need to add ndm.exe process to exceptions according to antiviral software documentation, and set up antiviral checking on this dialog.")));
+                d.text(7.0, 68.0, 365.0, 142.0, format!("{}\n\n{}", tr_os("If you would like to run antiviral software on download completion, you should type or browse the complete path to its executable file. If NDM knows about necessary parameters for a given executable file name, it will set them automatically. Otherwise, you will have to set them manually in \"Command line parameters\" according to antiviral software documentation. The scanned file among different parameters should be written as\r\n[File]\r\n(you should type square brackets as well). If no parameters are set, NDM will execute antiviral software appending the complete path of a downloaded file."), tr_os("Note that all modern antiviral software have \"real-time protection\" feature that checks all operations with files on your computer, and it includes all files downloaded in NDM. Thus, you need to add antiviral software scanner to NDM settings only when real-time protection is turned off in antiviral software settings.\r\nAlso, in some cases, real time protection may significantly slow down the assembly of files made by NDM. Then you need to add ndm.exe process to exceptions according to antiviral software documentation, and set up antiviral checking on this dialog.")));
                 let ok = d.button(110.0, 214.0, 50.0, 14.0, "OK", true);
                 if ok {
                     let v = (exe.trim().to_string(), args.trim().to_string());
@@ -5984,7 +6219,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 }
                             }
                             ui.add_space(12.0);
-                            if ui.link(RichText::new(format!("{} \u{2197}", tr("NDM on GitHub"))).size(12.5).color(link)).clicked() {
+                            if ui.link(RichText::new(i18n::line(&format!("{} \u{2197}", tr_os("NDM on GitHub")))).size(12.5).color(link)).clicked() {
                                 go = Some(format!("https://github.com/{UPDATE_REPO}"));
                             }
                         });
@@ -6119,13 +6354,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                     ui.add_space(12.0);
                                     ui.horizontal(|ui| {
                                         if let Some(j) = i.checked_sub(1) {
-                                            if ui.add(egui::Link::new(RichText::new(format!("\u{2039} {}", tr(&topics[j].1))).size(13.5).color(link))).on_hover_cursor(hand).clicked() {
+                                            if ui.add(egui::Link::new(RichText::new(i18n::line(&format!("\u{2039} {}", tr_os(&topics[j].1)))).size(13.5).color(link))).on_hover_cursor(hand).clicked() {
                                                 go = Some(topics[j].0.clone());
                                             }
                                         }
                                         if let Some(j) = Some(i + 1).filter(|j| *j < topics.len()) {
                                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                                if ui.add(egui::Link::new(RichText::new(format!("{} \u{203A}", tr(&topics[j].1))).size(13.5).color(link))).on_hover_cursor(hand).clicked() {
+                                                if ui.add(egui::Link::new(RichText::new(i18n::line(&format!("{} \u{203A}", tr_os(&topics[j].1)))).size(13.5).color(link))).on_hover_cursor(hand).clicked() {
                                                     go = Some(topics[j].0.clone());
                                                 }
                                             });
@@ -6168,7 +6403,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::WaitLink { name } => {
                 let mut d = dlu::D::new(ui);
-                d.text(7.0, 5.0, 226.0, 17.0, format!("{}\n{name}", tr("NDM is waiting for the new address to resume the file:")));
+                d.text(7.0, 5.0, 226.0, 17.0, format!("{}\n{name}", tr_os("NDM is waiting for the new address to resume the file:")));
                 if d.button(66.0, 25.0, 107.0, 14.0, "Stop waiting", true) {
                     self.refreshing = None;
                 }
@@ -6209,7 +6444,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     if taken {
                         // 20615: another project already has this name
                         *proj = p.map(Box::new);
-                        self.open(Dialog::Info { title: "Saving the project of NDM Grabber".into(), text: i18n::trf("The project with \"%s\" name already exists. Please select another name.", &[&n]) });
+                        self.open(Dialog::Info { title: "Saving the project of NDM Grabber".into(), text: i18n::trf_os("The project with \"%s\" name already exists. Please select another name.", &[&n]) });
                         return true;
                     }
                     if p.is_some() {
@@ -6280,7 +6515,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     for (k, day) in days.iter().enumerate() {
                         let (x, y) = if k < 4 { (275.0, [52.0, 63.0, 73.0, 83.0][k]) } else { (353.0, [52.0, 63.0, 73.0][k - 4]) };
                         let daily = sc.daily;
-                        d.at(x, y, 72.0, 10.0, |ui| ui.add_enabled(daily, egui::Checkbox::new(&mut sc.days[k], tr(day))));
+                        d.at(x, y, 72.0, 10.0, |ui| ui.add_enabled(daily, dlu::checkbox(&mut sc.days[k], day)));
                     }
                 }
                 d.hline(217.0, 94.0, 197.0);
@@ -6297,7 +6532,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     sc.off_kind = kinds.iter().position(|k| *k == kind).unwrap_or(0) as u8;
                 }
                 let off = sc.off_done;
-                d.at(23.0, 200.0, 158.0, 10.0, |ui| ui.add_enabled(off, egui::Checkbox::new(&mut sc.off_force, tr("Force processes to terminate"))));
+                d.at(23.0, 200.0, 158.0, 10.0, |ui| ui.add_enabled(off, dlu::checkbox(&mut sc.off_force, "Force processes to terminate")));
                 d.check(212.0, 146.0, 213.0, 10.0, &mut sc.open_on, "Open the following file when done:");
                 d.edit(211.0, 158.0, 198.0, 14.0, &mut sc.open_file, sc.open_on);
                 if d.button(412.0, 158.0, 15.0, 14.0, "...", sc.open_on) {
@@ -6330,7 +6565,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     d.ui.put(r, egui::Image::new((t, Vec2::splat(32.0))));
                 }
                 d.label(40.0, 9.0, 223.0, 10.0, "Type your user name and password.");
-                d.label(40.0, 28.0, 225.0, 10.0, format!("{} {realm}", tr("Realm:")));
+                d.label(40.0, 28.0, 225.0, 10.0, i18n::line(&format!("{} {}", tr_os("Realm:"), i18n::ltr(realm))));
                 d.label(40.0, 48.0, 73.0, 10.0, "User name:");
                 d.edit(117.0, 46.0, 146.0, 14.0, user, true);
                 d.label(40.0, 69.0, 72.0, 10.0, "Password:");
@@ -6376,7 +6611,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             }
             Dialog::Batch { url, from, to, width, letters, lf, lt, auth, login, pass } => {
                 let mut d = dlu::D::new(ui);
-                d.text(7.0, 4.0, 302.0, 37.0, tr("It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg"));
+                d.text(7.0, 4.0, 302.0, 37.0, "It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg");
                 d.label(7.0, 47.0, 30.0, 10.0, "Address");
                 d.edit(39.0, 44.0, 270.0, 14.0, url, true);
                 d.group(7.0, 64.0, 302.0, 55.0, "Replace asterisk to");
@@ -6483,7 +6718,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let saved = self.core.settings().grab_projects.iter().any(|p| p.opts.name == opts.name.trim());
                 let full = ui.max_rect();
                 let cmd = {
-                    let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), GRAB_MENU))));
+                    let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), GRAB_MENU))).layout(menu_layout()));
                     self.grab_menu(&mut bar)
                 };
                 match cmd {
@@ -6530,7 +6765,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     None => drop(d.ui.painter().rect_filled(pic, 0.0, Color32::from_rgb(28, 93, 178))),
                 }
                 d.ui.painter().rect_stroke(pic, 0.0, egui::Stroke::new(1.0_f32, Color32::BLACK), egui::StrokeKind::Inside);
-                let adv_label = if *adv { format!("<< {}", tr("Advanced")) } else { format!("{} >>", tr("Advanced")) };
+                let adv_label = i18n::line(&if *adv { format!("<< {}", tr_os("Advanced")) } else { format!("{} >>", tr_os("Advanced")) });
                 // NDM's own English where its language files still carry older words
                 let en = |new: &str, old: &str| if i18n::current().is_empty() { new.to_string() } else { tr(old) };
                 match *step {
@@ -6588,7 +6823,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         let m2 = *save_mode == 2;
                         d.edit(130.0, 89.0, 256.0, 14.0, folder, m2);
-                        d.at(130.0, 107.0, 198.0, 10.0, |ui| ui.add_enabled(m2, egui::Checkbox::new(&mut opts.subfolders, tr("Use original relative subfolders"))));
+                        d.at(130.0, 107.0, 198.0, 10.0, |ui| ui.add_enabled(m2, dlu::checkbox(&mut opts.subfolders, "Use original relative subfolders")));
                         if d.button(331.0, 106.0, 55.0, 14.0, "Browse...", m2) {
                             if let Some(p) = rfd::FileDialog::new().set_directory(folder.as_str()).pick_folder() {
                                 *folder = p.display().to_string();
@@ -6621,7 +6856,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         if d.check(109.0, 91.0, 240.0, 10.0, &mut ignore, "Ignore popup windows").changed() {
                             opts.popups = !ignore;
                         }
-                        d.at(109.0, 104.0, 240.0, 10.0, |ui| ui.add_enabled(ws, egui::Checkbox::new(&mut opts.no_parent, tr("Don't explore parent directories"))));
+                        d.at(109.0, 104.0, 240.0, 10.0, |ui| ui.add_enabled(ws, dlu::checkbox(&mut opts.no_parent, "Don't explore parent directories")));
                         d.check(109.0, 117.0, 240.0, 10.0, &mut opts.main_domain, "Explore all sites within the main domain");
                         d.check(109.0, 130.0, 240.0, 10.0, &mut opts.js, "Process JavaScript");
                         if link(&mut d, 141.0, 274.0, "Use this option carefully. What is the risk?", Color32::GRAY) {
@@ -6646,7 +6881,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         self.grab_filter(&mut d, 46.0, &mut opts.exclude, true);
                         d.check(106.0, 69.0, 237.0, 10.0, &mut opts.files_same_site, "Search files on this site only");
                         let sub = opts.subfolders && *save_mode == 2;
-                        d.at(106.0, 87.0, 294.0, 10.0, |ui| ui.add_enabled(!sub, egui::Checkbox::new(&mut opts.hide_dups, tr("Hide duplicate files found in different locations"))));
+                        d.at(106.0, 87.0, 294.0, 10.0, |ui| ui.add_enabled(!sub, dlu::checkbox(&mut opts.hide_dups, "Hide duplicate files found in different locations")));
                         d.check(106.0, 105.0, 262.0, 10.0, &mut opts.start_all, "Start downloading all matched files at once");
                         d.text(106.0, 116.0, 292.0, 34.0, "You can explore the site at first, check the files that you need, and download them in the main Grabber window, or add them to the main list of NDM. This option downloads all explored files immediately.");
                         if d.button(305.0, 153.0, 73.0, 14.0, &adv_label, true) {
@@ -6872,7 +7107,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             ui.horizontal(|ui| {
                                 // File Name can't be hidden
                                 ui.add_enabled(*c != 0, egui::Checkbox::without_text(vis));
-                                if ui.add_sized([ui.available_width(), 16.0], egui::SelectableLabel::new(*sel == k, COLS[*c as usize].1)).clicked() {
+                                if ui.add_sized([ui.available_width(), 16.0], egui::SelectableLabel::new(*sel == k, tr(COLS[*c as usize].1))).clicked() {
                                     (*sel, *width) = (k, w.to_string());
                                 }
                             });
@@ -6953,7 +7188,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let mut d = dlu::D::new(ui);
                 d.ui.put(d.rect(7.0, 6.0, 20.0, 20.0), egui::Image::new((icon.id(), Vec2::splat(32.0))));
                 d.at(33.0, 3.0, 183.0, 16.0, |ui| ui.label(RichText::new(TITLE.trim_end_matches(" 1.0")).size(14.0).strong()));
-                d.label(32.0, 19.0, 208.0, 8.0, format!("{} {}", tr("Version:"), env!("CARGO_PKG_VERSION")));
+                d.label(32.0, 19.0, 208.0, 8.0, i18n::line(&format!("{} {}", tr_os("Version:"), env!("CARGO_PKG_VERSION"))));
                 if d.button(75.0, 31.0, 99.0, 14.0, "Check for Update", true) {
                     self.check_updates(ctx, false);
                 }
@@ -6978,7 +7213,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                     if let Some((t, tint)) = pics[b] {
                                         ui.painter().image(t, egui::Rect::from_min_size(r.0.min + Vec2::new(2.0, 2.0), Vec2::splat(18.0)), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                                     }
-                                    tr(TB_BUTTONS[b].1)
+                                    i18n::tr_label(TB_BUTTONS[b].1)
                                 }
                                 Err(_) => tr("Separator"),
                             };
@@ -6996,13 +7231,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let r = d.listview(182.0, 17.0, 120.0, 100.0, &[]);
                 d.ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink(2.0)), |ui| list(ui, layout, cur));
                 let before = layout.clone();
-                if d.button(131.0, 42.0, 44.0, 14.0, &format!("{} ->", tr("Add")), avail.is_some_and(|a| a < left.len())) {
+                if d.button(131.0, 42.0, 44.0, 14.0, &i18n::line(&format!("{} ->", tr_os("Add"))), avail.is_some_and(|a| a < left.len())) {
                     // inserted before the selected current button, like comctl32
                     let at = cur.map_or(layout.len(), |c| c.min(layout.len()));
                     layout.insert(at, left[avail.unwrap()]);
                     (*avail, *cur) = (None, Some(at));
                 }
-                if d.button(131.0, 62.0, 44.0, 14.0, &format!("<- {}", tr("Remove")), cur.is_some_and(|c| c < layout.len())) {
+                if d.button(131.0, 62.0, 44.0, 14.0, &i18n::line(&format!("<- {}", tr_os("Remove"))), cur.is_some_and(|c| c < layout.len())) {
                     layout.remove(cur.unwrap());
                     *cur = None;
                 }
@@ -7046,7 +7281,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     d.ui.painter().image(t.id(), egui::Rect::from_min_size(at, t.size_vec2() / ctx.pixels_per_point()), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                 }
                 d.label(55.0, 29.0, 168.0, 12.0, RichText::new(tr("Did you know...")).color(Color32::BLACK));
-                d.text(28.0, 57.0, 196.0, 66.0, RichText::new(text.as_str()).color(Color32::BLACK));
+                // black on the tip's white panel (in reading order: the helper wraps it)
+                let ink = d.ui.visuals().override_text_color;
+                d.ui.visuals_mut().override_text_color = Some(Color32::BLACK);
+                d.text(28.0, 57.0, 196.0, 66.0, text.as_str());
+                d.ui.visuals_mut().override_text_color = ink;
                 let mut on = self.core.settings().tips_startup;
                 if d.check(12.0, 146.0, 101.0, 10.0, &mut on, "Show Tips on StartUp").changed() {
                     self.core.settings().tips_startup = on;
@@ -7064,7 +7303,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     fn next_tip(&self) -> String {
         let tips = i18n::tips();
         if tips.is_empty() {
-            return tr("Tips file does not exist in the prescribed directory");
+            return tr_os("Tips file does not exist in the prescribed directory");
         }
         let mut s = self.core.settings();
         let t = tips[s.tip_next % tips.len()].clone();
@@ -7084,7 +7323,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         grabber::Opts { name: format!("project_{n}"), start, levels: 2, no_parent: true, masks, main_domain: true, hide_dups: true, size: [1, 10], units: [0, 1], ..Default::default() }
     }
 
-    /// The grabber's menu bar.
+    /// The grabber's menu bar (in a `menu_layout` Ui).
     fn grab_menu(&mut self, ui: &mut egui::Ui) -> Option<GrabCmd> {
         let (mut cmd, mut load, mut settings) = (None, false, false);
         let recent: Vec<String> = {
@@ -7183,7 +7422,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
     /// which here takes masks typed into a small popup. `exclude`: the first entry is "Don't use exclude filter".
     fn grab_filter(&mut self, d: &mut dlu::D, y: f32, masks: &mut String, exclude: bool) {
         let label = |m: &str| match GRAB_FILTERS.iter().find(|f| f.1 == m) {
-            Some(f) => format!("{}  ( {} )", tr(f.0), f.1),
+            Some(f) => i18n::line(&format!("{}  ( {} )", tr_os(f.0), f.1)),
             None if m.is_empty() => tr("Don't use exclude filter"),
             None => format!("( {m} )"),
         };
@@ -7283,7 +7522,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let saved = self.core.settings().grab_projects.iter().any(|p| p.opts.name == opts.name.trim());
         let full = ui.max_rect();
         let cmd = {
-            let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), GRAB_MENU))));
+            let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(full.min, Vec2::new(full.width(), GRAB_MENU))).layout(menu_layout()));
             self.grab_menu(&mut bar)
         };
         let (mut keep, mut back, mut again) = (true, false, false);
@@ -7361,7 +7600,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let mut nodes: Vec<(u8, usize, Option<egui::TextureId>, String)> = vec![(0, 0, pic_eye, tr("Thumbnails View")), (0, 1, if *node == 1 { fold_open } else { fold }, tr("All Files")), (0, 2, page_icon, tr("Link View"))];
         nodes.extend(pages.iter().enumerate().map(|(k, p)| (1, 10 + k, page_icon, short(p))));
         nodes.push((0, 3, fold_open, tr("Folder View")));
-        nodes.push((1, 4, fold, format!("*.{domain} {}", tr("sites"))));
+        nodes.push((1, 4, fold, i18n::line(&format!("{} {}", i18n::ltr(&format!("*.{domain}")), tr_os("sites")))));
         nodes.push((1, 5, fold, tr("Other sites")));
         let tree = d.listview(7.0, 7.0, 101.0, 244.0, &[]);
         d.ui.scope_builder(egui::UiBuilder::new().max_rect(tree.shrink(2.0)), |ui| {
@@ -7405,7 +7644,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         };
         let rows: Vec<(usize, String, String)> = c.state.lock().unwrap().files.iter().enumerate().filter(|(_, f)| shown(f)).map(|(k, f)| (k, f.name.clone(), core::ext(&f.name))).collect();
         let icons: Vec<Option<egui::TextureId>> = rows.iter().map(|r| self.icon(ctx, &r.2)).collect();
-        let types: Vec<String> = rows.iter().map(|r| self.type_names.entry(r.2.clone()).or_insert_with(|| win::type_name(&r.2)).clone()).collect();
+        let types: Vec<String> = rows.iter().map(|r| self.type_names.entry(r.2.clone()).or_insert_with(|| i18n::line(&win::type_name(&r.2))).clone()).collect();
         let font = egui::TextStyle::Body.resolve(d.ui.style());
         let ink = d.ui.visuals().text_color();
         let line = dlu::pal(d.ui).line;
@@ -7512,6 +7751,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        PAINTED.store(true, Relaxed);
         no_zoom(ctx);
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if self.hwnd.load(Relaxed) == 0 {
@@ -7551,7 +7791,7 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                     win::hide(self.hwnd.load(Relaxed));
                     #[cfg(not(windows))]
-                    hide_linux(ctx);
+                    hide_main(ctx);
                     return;
                 }
                 Close::Minimize => {
@@ -7600,11 +7840,11 @@ impl eframe::App for App {
                     TRAYED.store(true, Relaxed);
                 }
                 // Linux: to the tray once it is up (it starts on its own thread); without one it stays minimized
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 {
                     let tray = LINUX_TRAY.load(Relaxed);
                     if tray {
-                        hide_linux(ctx);
+                        hide_main(ctx);
                     }
                     if tray || n > 20 {
                         win::keep_hidden(native, false);
@@ -7613,15 +7853,23 @@ impl eframe::App for App {
                         ctx.request_repaint_after(Duration::from_millis(100));
                     }
                 }
+                // macOS: to the menu bar item
+                #[cfg(target_os = "macos")]
+                {
+                    if self.tray.is_some() {
+                        hide_main(ctx);
+                    }
+                    TRAYED.store(true, Relaxed);
+                }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         if LINUX_TRAY.load(Relaxed) {
             // the tray menu's Speed Limiter tick follows the setting (its item lives on the GTK thread)
             static LIMIT_SHOWN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
             let on = self.core.settings().limit_on;
             if LIMIT_SHOWN.swap(on as u8, Relaxed) != on as u8 {
-                win::gtk_spawn(move || LIMIT_ITEM.with(|l| l.borrow().as_ref().map(|l| l.set_checked(on))).unwrap_or_default());
+                win::gtk_spawn(move || LIMIT_ITEM.with(|l| l.borrow().as_ref().map(|(l, _)| l.set_checked(on))).unwrap_or_default());
             }
         }
         // a link dropped on the drop target, or its double click, brings a hidden main window back
@@ -7668,7 +7916,7 @@ impl eframe::App for App {
                     let mut c = std::process::Command::new(&exe);
                     win::clean_env(&mut c);
                     if let Err(e) = c.args(virus_args(&args, &j.info().path())).spawn() {
-                        self.open(Dialog::Info { title: "Virus checking".into(), text: i18n::trf("Can not start virus checking program.\n%s", &[&e]) });
+                        self.open(Dialog::Info { title: "Virus checking".into(), text: i18n::trf_os("Can not start virus checking program.\n%s", &[&e]) });
                     }
                 }
                 if self.core.settings().show_complete {
@@ -7864,10 +8112,11 @@ fn close_action(tray: bool, busy: bool) -> Close {
     }
 }
 
-/// Hides the main window on Linux; Wayland can't hide a window, so there it is minimized.
+/// Hides the main window on Linux and macOS; Wayland can't hide a window, so there it is minimized.
 #[cfg(not(windows))]
-fn hide_linux(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(if win::prefer_x11() { ViewportCommand::Visible(false) } else { ViewportCommand::Minimized(true) });
+fn hide_main(ctx: &egui::Context) {
+    let hide = cfg!(target_os = "macos") || win::prefer_x11();
+    ctx.send_viewport_cmd(if hide { ViewportCommand::Visible(false) } else { ViewportCommand::Minimized(true) });
 }
 
 /// NDM's windows are laid out in dialog units and break when zoomed, so the UI never zooms.
