@@ -8,6 +8,17 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Mutex, OnceLock};
 
+use objc2::rc::Retained;
+use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
+// NSFilenamesPboardType: what winit's main window takes (files), so NDM hands those on
+#[allow(deprecated)]
+use objc2_app_kit::{
+    NSBitmapImageRep, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace, NSDragOperation, NSEvent, NSFilenamesPboardType, NSFloatingWindowLevel, NSGraphicsContext, NSImage, NSPanel, NSPasteboard,
+    NSPasteboardTypeString, NSPasteboardTypeURL, NSResponder, NSScreen, NSView, NSWindowCollectionBehavior, NSWindowStyleMask, NSBackingStoreType, NSWorkspace,
+};
+use objc2_foundation::{NSArray, NSObject, NSPoint, NSRect, NSSize, NSString, NSUInteger};
+
 pub type Rgba = (usize, usize, Vec<u8>);
 pub use crate::posix::{clip_seq, decimal_sep, is_host_launch, pac_proxy, running};
 
@@ -56,13 +67,71 @@ pub fn keep_hidden(_window: isize, _on: bool) {}
 
 // ---------- file types and icons ----------
 
-/// File type pictures come from AppKit, which NDM doesn't use: the list shows none.
-pub fn shell_icon(_ext: &str, _folder: bool) -> Option<Rgba> {
-    None
+/// The Finder's picture for a file type ("/" = a folder), 32 pixels.
+pub fn shell_icon(ext: &str, folder: bool) -> Option<Rgba> {
+    let kind = if folder { "public.folder" } else if ext.is_empty() { "public.data" } else { ext };
+    #[allow(deprecated)] // iconForContentType needs UniformTypeIdentifiers; this takes extensions and UTIs
+    let img = NSWorkspace::sharedWorkspace().iconForFileType(&NSString::from_str(kind));
+    image_rgba(&img, 32)
 }
 
-pub fn exe_icon(_path: &Path) -> Option<Rgba> {
-    None
+/// A program's icon (an .app, or the app bundle a program sits in).
+pub fn exe_icon(path: &Path) -> Option<Rgba> {
+    let app = path.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).unwrap_or(path);
+    if !app.exists() {
+        return None;
+    }
+    let img = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&app.to_string_lossy()));
+    image_rgba(&img, 32)
+}
+
+/// An NSImage drawn at `px` x `px` pixels, as straight (not premultiplied) RGBA rows from the top.
+fn image_rgba(img: &NSImage, px: usize) -> Option<Rgba> {
+    let rep = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(NSBitmapImageRep::alloc(), std::ptr::null_mut(), px as isize, px as isize, 8, 4, true, false, NSDeviceRGBColorSpace, (px * 4) as isize, 32) }?;
+    let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&ctx));
+    let all = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(px as f64, px as f64));
+    img.drawInRect_fromRect_operation_fraction(all, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), NSCompositingOperation::Copy, 1.0);
+    ctx.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let data = rep.bitmapData();
+    if data.is_null() {
+        return None;
+    }
+    let row = rep.bytesPerRow() as usize;
+    let bytes = unsafe { std::slice::from_raw_parts(data, row * px) };
+    let mut out = Vec::with_capacity(px * px * 4);
+    for y in 0..px {
+        for p in bytes[y * row..y * row + px * 4].chunks_exact(4) {
+            let a = p[3] as u32;
+            let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a / 2) / a).min(255) as u8 };
+            out.extend([un(p[0]), un(p[1]), un(p[2]), p[3]]);
+        }
+    }
+    (out.iter().skip(3).step_by(4).any(|a| *a != 0)).then_some((px, px, out))
+}
+
+/// An NSImage of straight RGBA pixels, shown at `size` points.
+fn image_of((w, h, px): &Rgba, size: f64) -> Option<Retained<NSImage>> {
+    let rep = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(NSBitmapImageRep::alloc(), std::ptr::null_mut(), *w as isize, *h as isize, 8, 4, true, false, NSDeviceRGBColorSpace, (*w * 4) as isize, 32) }?;
+    let data = rep.bitmapData();
+    if data.is_null() || px.len() < w * h * 4 {
+        return None;
+    }
+    let row = rep.bytesPerRow() as usize;
+    for y in 0..*h {
+        let dst = unsafe { std::slice::from_raw_parts_mut(data.add(y * row), w * 4) };
+        for (d, s) in dst.chunks_exact_mut(4).zip(px[y * w * 4..(y + 1) * w * 4].chunks_exact(4)) {
+            let a = s[3] as u32;
+            let pre = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+            d.copy_from_slice(&[pre(s[0]), pre(s[1]), pre(s[2]), s[3]]);
+        }
+    }
+    rep.setSize(NSSize::new(size, size));
+    let img = NSImage::initWithSize(NSImage::alloc(), NSSize::new(size, size));
+    img.addRepresentation(&rep);
+    Some(img)
 }
 
 /// "ZIP file" for an extension.
@@ -401,13 +470,14 @@ pub fn power_off(kind: u8, _force: bool) {
 
 // ---------- drops ----------
 
-/// Links for the UI to take (`take_drops`): macOS has no drop target window, and the main window takes
-/// dropped files only (winit), so this stays empty.
+/// Links dropped on the main window or the drop target, for the UI to take (`take_drops`).
 static DROPS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Repaints the UI (set by `accept_drops`).
 static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
-/// The UI should bring the main window back (a second start).
+/// The UI should bring the main window back (a second start, a drop, a double click on the drop target).
 static SHOW_MAIN: AtomicBool = AtomicBool::new(false);
+static DROP_SHOWN: AtomicBool = AtomicBool::new(false);
+thread_local!(static DROP_WIN: std::cell::RefCell<Option<Retained<NSPanel>>> = const { std::cell::RefCell::new(None) });
 
 pub fn take_drops() -> Vec<String> {
     std::mem::take(&mut DROPS.lock().unwrap())
@@ -417,23 +487,267 @@ pub fn take_show() -> bool {
     SHOW_MAIN.swap(false, Relaxed)
 }
 
-/// A second start asked for the window: `take_show` hands it to the UI.
-pub fn show_main() {
-    SHOW_MAIN.store(true, Relaxed);
+fn wake_ui(show: bool) {
+    if show {
+        SHOW_MAIN.store(true, Relaxed);
+    }
     if let Some(w) = WAKE.get() {
         w();
     }
 }
 
-pub fn accept_drops(_window: isize, wake: impl Fn() + Send + Sync + 'static) {
-    let _ = WAKE.set(Box::new(wake));
+/// A second start asked for the window: `take_show` hands it to the UI.
+pub fn show_main() {
+    wake_ui(true);
 }
 
-/// No floating drop target on macOS (the menu hides its item).
-pub fn drop_target(_show: bool, _picture: &Rgba) {}
+/// Every http, https and ftp address in dropped text, once each.
+fn dropped_links(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in text.split_whitespace().map(|w| w.trim_end_matches([',', '.', ';', ')', ']', '>', '"', '\''])) {
+        if ["http://", "https://", "ftp://"].iter().any(|s| w.to_ascii_lowercase().starts_with(s)) && !out.iter().any(|o| o == w) {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
+/// The links a drag carries: a link's address (public.url) or the addresses in dragged text.
+fn pasteboard_links(pb: &NSPasteboard) -> Vec<String> {
+    let mut text = String::new();
+    for t in unsafe { [NSPasteboardTypeURL, NSPasteboardTypeString] } {
+        if let Some(s) = pb.stringForType(t) {
+            text.push_str(&s.to_string());
+            text.push('\n');
+        }
+    }
+    dropped_links(&text)
+}
+
+/// Finder files: winit takes those (dropped files).
+#[allow(deprecated)]
+fn has_files(pb: &NSPasteboard) -> bool {
+    pb.propertyListForType(unsafe { NSFilenamesPboardType }).is_some()
+}
+
+fn drag_pasteboard(sender: *mut AnyObject) -> Option<Retained<NSPasteboard>> {
+    if sender.is_null() {
+        return None;
+    }
+    unsafe { msg_send![&*sender, draggingPasteboard] }
+}
+
+#[allow(deprecated)]
+fn drag_types() -> Retained<NSArray<NSString>> {
+    unsafe { NSArray::from_slice(&[NSFilenamesPboardType, NSPasteboardTypeURL, NSPasteboardTypeString]) }
+}
+
+/// winit's own drag handlers on the main window's delegate (files), which links go around.
+static WINIT_ENTERED: OnceLock<Imp> = OnceLock::new();
+static WINIT_PERFORM: OnceLock<Imp> = OnceLock::new();
+type WinitDrag = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool;
+
+unsafe extern "C-unwind" fn main_entered(this: *mut AnyObject, sel: Sel, sender: *mut AnyObject) -> NSUInteger {
+    if let Some(pb) = drag_pasteboard(sender).filter(|pb| !has_files(pb)) {
+        return if pasteboard_links(&pb).is_empty() { 0 } else { NSDragOperation::Copy.0 };
+    }
+    match WINIT_ENTERED.get() {
+        Some(f) => {
+            let f: WinitDrag = std::mem::transmute(*f);
+            if f(this, sel, sender).as_bool() { NSDragOperation::Copy.0 } else { 0 }
+        }
+        None => 0,
+    }
+}
+
+unsafe extern "C-unwind" fn main_perform(this: *mut AnyObject, sel: Sel, sender: *mut AnyObject) -> Bool {
+    if let Some(pb) = drag_pasteboard(sender).filter(|pb| !has_files(pb)) {
+        let links = pasteboard_links(&pb);
+        if links.is_empty() {
+            return Bool::NO;
+        }
+        DROPS.lock().unwrap().extend(links);
+        wake_ui(false);
+        return Bool::YES;
+    }
+    match WINIT_PERFORM.get() {
+        Some(f) => {
+            let f: WinitDrag = std::mem::transmute(*f);
+            f(this, sel, sender)
+        }
+        None => Bool::NO,
+    }
+}
+
+/// `window` is the main window's NSView (0: only the repaint, set before the window exists). winit's
+/// window takes dropped files only; NDM registers it for links and text too and puts its own handlers in
+/// front of winit's on the window's delegate, handing files on to winit.
+pub fn accept_drops(window: isize, wake: impl Fn() + Send + Sync + 'static) {
+    let _ = WAKE.set(Box::new(wake));
+    if window == 0 || WINIT_ENTERED.get().is_some() {
+        return;
+    }
+    let view = unsafe { &*(window as *const NSView) };
+    let Some(delegate) = view.window().and_then(|w| {
+        w.registerForDraggedTypes(&drag_types());
+        w.delegate()
+    }) else {
+        eprintln!("link drops on the main window: no window delegate");
+        return;
+    };
+    let obj: &AnyObject = (*delegate).as_ref();
+    let cls = obj.class() as *const AnyClass as *mut AnyClass;
+    unsafe {
+        let entered: Imp = std::mem::transmute(main_entered as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> NSUInteger);
+        let perform: Imp = std::mem::transmute(main_perform as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool);
+        if let Some(old) = objc2::ffi::class_replaceMethod(cls, sel!(draggingEntered:), entered, c"Q@:@".as_ptr()) {
+            let _ = WINIT_ENTERED.set(old);
+        }
+        if let Some(old) = objc2::ffi::class_replaceMethod(cls, sel!(performDragOperation:), perform, c"B@:@".as_ptr()) {
+            let _ = WINIT_PERFORM.set(old);
+        }
+    }
+    if WINIT_ENTERED.get().is_none() || WINIT_PERFORM.get().is_none() {
+        eprintln!("link drops on the main window: the window's delegate ({}) has no drag handlers", obj.class().name().to_string_lossy());
+    }
+}
+
+define_class!(
+    /// The drop target's picture: links dropped on it are downloaded; drag it to move it, double click
+    /// for the main window, right click to close it.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NDMDropTargetView"]
+    #[ivars = Retained<NSImage>]
+    struct DropView;
+
+    impl DropView {
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let all = self.bounds();
+            self.ivars().drawInRect_fromRect_operation_fraction(all, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), NSCompositingOperation::SourceOver, 1.0);
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            if event.clickCount() >= 2 {
+                wake_ui(true);
+            } else if let Some(w) = self.window() {
+                w.performWindowDragWithEvent(event);
+            }
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, _event: &NSEvent) {
+            // close it; "Show drop target" brings it back
+            if let Some(w) = self.window() {
+                w.orderOut(None);
+            }
+            DROP_SHOWN.store(false, Relaxed);
+            wake_ui(false);
+        }
+
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, sender: *mut AnyObject) -> NSUInteger {
+            match drag_pasteboard(sender) {
+                Some(pb) if !pasteboard_links(&pb).is_empty() => NSDragOperation::Copy.0,
+                _ => 0,
+            }
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, sender: *mut AnyObject) -> Bool {
+            let links = drag_pasteboard(sender).map(|pb| pasteboard_links(&pb)).unwrap_or_default();
+            if links.is_empty() {
+                return Bool::NO;
+            }
+            DROPS.lock().unwrap().extend(links);
+            wake_ui(true);
+            Bool::YES
+        }
+    }
+);
+
+/// Show or hide the drop target: a floating picture over every window and Space, bottom right of the
+/// screen, that links can be dragged onto.
+pub fn drop_target(show: bool, picture: &Rgba) {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    DROP_WIN.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            if !show {
+                return;
+            }
+            *cell = make_drop_target(mtm, picture);
+        }
+        let Some(panel) = cell.as_ref() else { return };
+        if show {
+            panel.orderFrontRegardless();
+        } else {
+            panel.orderOut(None);
+        }
+        DROP_SHOWN.store(show, Relaxed);
+    });
+}
+
+fn make_drop_target(mtm: MainThreadMarker, picture: &Rgba) -> Option<Retained<NSPanel>> {
+    const SIZE: f64 = 64.0;
+    let image = image_of(picture, SIZE)?;
+    let area = NSScreen::mainScreen(mtm).map(|s| s.visibleFrame())?;
+    let at = NSPoint::new(area.origin.x + area.size.width - SIZE - 40.0, area.origin.y + 120.0);
+    let frame = NSRect::new(at, NSSize::new(SIZE, SIZE));
+    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+    let panel = NSPanel::initWithContentRect_styleMask_backing_defer(NSPanel::alloc(mtm), frame, style, NSBackingStoreType::Buffered, false);
+    unsafe { panel.setReleasedWhenClosed(false) };
+    panel.setOpaque(false);
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    panel.setHasShadow(false);
+    panel.setLevel(NSFloatingWindowLevel);
+    panel.setFloatingPanel(true);
+    panel.setBecomesKeyOnlyIfNeeded(true);
+    panel.setHidesOnDeactivate(false);
+    panel.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::Stationary | NSWindowCollectionBehavior::IgnoresCycle);
+    let view = DropView::alloc(mtm).set_ivars(image);
+    let view: Retained<DropView> = unsafe { msg_send![super(view), initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), frame.size)] };
+    view.registerForDraggedTypes(&drag_types());
+    panel.setContentView(Some(&view));
+    Some(panel)
+}
 
 pub fn drop_target_visible() -> bool {
-    false
+    DROP_SHOWN.load(Relaxed)
+}
+
+#[test]
+fn file_type_icons() {
+    for (ext, folder) in [("pdf", false), ("zip", false), ("", false), ("/", true)] {
+        let (w, h, px) = shell_icon(ext, folder).unwrap_or_else(|| panic!("no icon for {ext:?}"));
+        assert_eq!((w, h, px.len()), (32, 32, 32 * 32 * 4));
+        assert!(px.chunks_exact(4).filter(|p| p[3] > 200).count() > 100, "{ext:?}: mostly see-through");
+    }
+    assert!(exe_icon(Path::new("/System/Applications/TextEdit.app")).or_else(|| exe_icon(Path::new("/Applications/Safari.app"))).is_some());
+    // NDM's own picture survives the trip into an NSImage (the drop target) and back
+    let red = (2, 2, [255u8, 0, 0, 255].repeat(4));
+    let (_, _, px) = image_rgba(&image_of(&red, 2.0).unwrap(), 4).unwrap();
+    assert!(px.chunks_exact(4).all(|p| p[0] > 240 && p[1] < 16 && p[3] == 255), "{px:?}");
+}
+
+#[test]
+fn links_from_a_drag() {
+    let pb = NSPasteboard::pasteboardWithUniqueName();
+    pb.clearContents();
+    pb.setString_forType(&NSString::from_str("https://example.com/a.zip"), unsafe { NSPasteboardTypeURL });
+    pb.setString_forType(&NSString::from_str("https://example.com/a.zip"), unsafe { NSPasteboardTypeString });
+    assert_eq!(pasteboard_links(&pb), ["https://example.com/a.zip"]);
+    assert!(!has_files(&pb));
+    pb.clearContents();
+    pb.setString_forType(&NSString::from_str("see http://a.example/x and ftp://b.example/y, or not:this"), unsafe { NSPasteboardTypeString });
+    assert_eq!(pasteboard_links(&pb), ["http://a.example/x", "ftp://b.example/y"]);
 }
 
 // ---------- networks ----------

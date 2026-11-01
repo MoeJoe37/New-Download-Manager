@@ -360,6 +360,8 @@ pub struct Settings {
     pub drop_target: bool,
     /// When updates were last checked.
     pub update_checked: i64,
+    /// Downloads -> Set yt-dlp: when NDM last looked for a newer yt-dlp (`ytdlp::keep_updated`).
+    pub ytdlp_checked: i64,
     pub prog_sl_tab: bool,
     pub prog_c_tab: bool,
     pub prog_tab_btns: bool,
@@ -609,6 +611,7 @@ impl Default for Settings {
             grab_adv: true,
             drop_target: false,
             update_checked: 0,
+            ytdlp_checked: 0,
             prog_sl_tab: true,
             prog_c_tab: true,
             prog_tab_btns: true,

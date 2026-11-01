@@ -290,6 +290,29 @@ pub fn system_proxy() -> (bool, String, String) {
     (r == 0 && on != 0, text("ProxyServer"), text("ProxyOverride"))
 }
 
+/// Adds `dir` to the user's Path (HKCU\Environment) unless it is there, and tells running programs (new
+/// terminals and Explorer pick it up).
+pub fn add_user_path(dir: &std::path::Path) {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE};
+    let (key, val) = (wide("Environment"), wide("Path"));
+    let (mut buf, mut len) = (vec![0u16; 32768], 65536u32);
+    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+    let path = if r == 0 { String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(0)]) } else { String::new() };
+    let want = dir.display().to_string();
+    if path.split(';').any(|p| p.trim().trim_end_matches('\\').eq_ignore_ascii_case(want.trim_end_matches('\\'))) {
+        return;
+    }
+    let new = if path.trim().is_empty() { want } else { format!("{};{want}", path.trim_end_matches(';')) };
+    let v = wide(&new);
+    unsafe {
+        if RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), REG_EXPAND_SZ, v.as_ptr().cast(), v.len() as u32 * 2) == 0 {
+            let env = wide("Environment");
+            SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, env.as_ptr() as isize, SMTO_ABORTIFHUNG, 3000, std::ptr::null_mut());
+        }
+    }
+}
+
 // ---------- Windows Dial Up / VPN (RAS, rasapi32) ----------
 
 fn from_wide(s: &[u16]) -> String {

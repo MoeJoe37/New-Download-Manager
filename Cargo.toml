@@ -1,6 +1,6 @@
 [package]
 name = "ndm"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 
 [dependencies]
@@ -53,6 +53,13 @@ gtk = "0.18"
 winit = "0.30"
 # links dropped on the main window (XDND; winit takes dropped files only). Already built for winit.
 x11rb = "0.13"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# AppKit: file icons, links dropped on the main window and the drop target (mac.rs). The versions tray-icon
+# already builds on.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSGeometry", "NSObject", "NSEnumerator"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSPanel", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "NSWorkspace", "NSDragging", "NSPasteboard", "NSEvent", "NSColor", "NSScreen"] }
 
 [profile.release]
 opt-level = 3

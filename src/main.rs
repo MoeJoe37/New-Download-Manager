@@ -1659,6 +1659,8 @@ enum Dialog {
     FileProps { id: u64, url: String, desc: String, referer: String, login: String, pass: String },
     /// File Properties -> Checksum...: the file's SHA-256, SHA-1 and MD5, and a checksum to compare them with.
     Checksum { name: String, run: Arc<checksum::Run>, expect: String },
+    /// Downloads -> Set yt-dlp: downloading it (bytes so far, of, the version installed or the error).
+    YtDlp { got: Arc<std::sync::atomic::AtomicU64>, total: Arc<std::sync::atomic::AtomicU64>, done: Arc<Mutex<Option<Result<String, String>>>> },
     /// NDM categories (template 204). `orig` = name of the edited category, None when adding.
     Category { orig: Option<String>, cat: core::Category, folder: String, error: String },
     /// "Do you really want to delete ... category" confirmation.
@@ -2110,6 +2112,8 @@ impl App {
         }
         let c = ctx.clone();
         core.spawn_background(move || c.request_repaint());
+        // NDM's own yt-dlp (Downloads -> Set yt-dlp) stays up to date
+        ytdlp::keep_updated(core.clone());
         let (c, h) = (ctx.clone(), hwnd.clone());
         core.spawn_server(tx, move || {
             // only the download's dialog shows; the main window stays in the tray (win::pump)
@@ -2471,6 +2475,25 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             c.request_repaint();
         });
         self.open(Dialog::Update { slot, quiet });
+    }
+
+    /// Downloads -> Set yt-dlp: NDM's own copy, downloaded (or brought up to date) on a thread.
+    fn set_ytdlp(&mut self, ctx: &egui::Context) {
+        if self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::YtDlp { .. })) {
+            return;
+        }
+        let (got, total, done) = (Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(Mutex::new(None)));
+        let (agent, g, t, d, c) = (self.core.agent("https://github.com/"), got.clone(), total.clone(), done.clone(), ctx.clone());
+        let core = self.core.clone();
+        std::thread::spawn(move || {
+            let r = ytdlp::install(&agent, &g, &t);
+            if r.is_ok() {
+                core.settings().ytdlp_checked = chrono::Local::now().timestamp();
+            }
+            *d.lock().unwrap() = Some(r);
+            c.request_repaint();
+        });
+        self.open(Dialog::YtDlp { got, total, done });
     }
 
     fn open_find(&mut self) {
@@ -2908,15 +2931,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.close_menu();
                     self.export_extension();
                 }
-                // macOS has no floating drop target
-                if cfg!(not(target_os = "macos")) {
-                    let mut dt = self.core.settings().drop_target;
-                    if ui.checkbox(&mut dt, tr("Show drop target")).clicked() {
-                        self.core.settings().drop_target = dt;
-                        ui.close_menu();
-                    }
-                    ui.separator();
+                let mut dt = self.core.settings().drop_target;
+                if ui.checkbox(&mut dt, tr("Show drop target")).clicked() {
+                    self.core.settings().drop_target = dt;
+                    ui.close_menu();
                 }
+                ui.separator();
                 ui.menu_button(tr("Export"), |ui| {
                     for (t, ef2) in [("To NDM export file", true), ("To text file", false)] {
                         if ui.button(tr(t)).clicked() {
@@ -3016,6 +3036,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         ui.close_menu();
                     }
                 });
+                ui.separator();
+                if ui.button(tr("Set yt-dlp")).on_hover_text(tr("Downloads yt-dlp for YouTube and other video sites, adds it to PATH and keeps it up to date")).clicked() {
+                    self.set_ytdlp(ctx);
+                    ui.close_menu();
+                }
                 ui.separator();
                 if ui.button(tr("Options")).clicked() {
                     self.options(0);
@@ -4294,6 +4319,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
             Dialog::Checksum { .. } => ("Checksum".into(), tpl(300.0, 134.0)),
+            Dialog::YtDlp { .. } => ("Set yt-dlp".into(), tpl(186.0, 34.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
             Dialog::Scale { .. } => ("Custom scale".into(), tpl(232.0, 100.0)),
             Dialog::Tip { .. } => ("Tip of the Day".into(), tpl(253.0, 164.0)),
@@ -6091,6 +6117,25 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.text(7.0, 7.0, 246.0, h, text.as_str());
                 !d.button(105.0, h + 12.0, 50.0, 14.0, "OK", true)
             }
+            Dialog::YtDlp { got, total, done } => {
+                let mut d = dlu::D::new(ui);
+                let (g, t) = (got.load(Relaxed), total.load(Relaxed));
+                let amount = if t > 0 { format!("{} / {}", human(g), human(t)) } else if g > 0 { human(g) } else { String::new() };
+                d.label(7.0, 4.0, 110.0, 9.0, "Downloading yt-dlp");
+                d.label_r(118.0, 4.0, 61.0, 9.0, RichText::new(i18n::ltr(&amount)));
+                let frac = if t > 0 { g as f32 / t as f32 } else { (d.ui.input(|i| i.time) as f32 * 0.5).fract() };
+                d.progress(7.0, 16.0, 172.0, 11.0, frac);
+                let res = done.lock().unwrap().take();
+                match res {
+                    Some(Ok(v)) => self.open(Dialog::Info { title: "Set yt-dlp".into(), text: i18n::trf_os("yt-dlp %s is ready. NDM downloads videos from YouTube and other video sites with it, and keeps it up to date.", &[&v]) }),
+                    Some(Err(e)) => self.open(Dialog::Info { title: "Set yt-dlp".into(), text: format!("{}\r\n\r\n{}", tr_os("NDM cannot download yt-dlp. Check your connection and try again."), i18n::tr_msg_os(&e)) }),
+                    None => {
+                        ui.ctx().request_repaint_after(Duration::from_millis(100));
+                        return true;
+                    }
+                }
+                false
+            }
             Dialog::Update { slot, quiet } => {
                 let mut d = dlu::D::new(ui);
                 d.label(7.0, 4.0, 172.0, 9.0, "Checking for new version");
@@ -7868,7 +7913,7 @@ impl eframe::App for App {
                 win::accept_drops(h.hwnd.get(), move || c.request_repaint());
             }
         }
-        // Linux: links dropped on the main window (X11; Wayland's own windows take none)
+        // Linux and macOS: links dropped on the main window (X11; Wayland's own windows take none)
         #[cfg(not(windows))]
         {
             static XDND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -7878,6 +7923,9 @@ impl eframe::App for App {
                     let xid = match raw {
                         RawWindowHandle::Xlib(h) => h.window as isize,
                         RawWindowHandle::Xcb(h) => h.window.get() as isize,
+                        // macOS: the window's view; links dropped on it come through mac::accept_drops
+                        #[cfg(target_os = "macos")]
+                        RawWindowHandle::AppKit(h) => h.ns_view.as_ptr() as isize,
                         _ => 0,
                     };
                     MAIN_XID.store(xid, Relaxed);

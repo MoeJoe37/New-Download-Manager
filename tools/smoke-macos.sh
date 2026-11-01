@@ -27,6 +27,10 @@ start() { # label, command...
         kill -0 "$pid" 2>/dev/null || break
         sleep 1
     done
+    # a few seconds of frames: the window's link drops and, when on, the drop target are set up
+    sleep 5
+    kill -0 "$pid" 2>/dev/null || { echo "-- NDM ended by itself"; ok=1; }
+    if grep -q "link drops on the main window" /tmp/ndm-smoke.log; then ok=1; fi
     pkill -x ndm 2>/dev/null
     sleep 2
     if [ -e "$data/crash.log" ]; then echo "-- crash.log:"; cat "$data/crash.log"; ok=1; fi
@@ -36,6 +40,25 @@ start() { # label, command...
 
 failed=0
 start "Apple Silicon" "$app/Contents/MacOS/ndm" || failed=1
+# again with the floating drop target shown (Tasks -> Show drop target)
+if [ -f "$data/state.json" ]; then
+    python3 - "$data/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+def on(o):
+    if isinstance(o, dict):
+        if "drop_target" in o:
+            o["drop_target"] = True
+        for v in o.values():
+            on(v)
+on(d)
+json.dump(d, open(p, "w"))
+PY
+    start "Apple Silicon, drop target shown" "$app/Contents/MacOS/ndm" || failed=1
+else
+    echo "FAIL: no state.json after the first start"; failed=1
+fi
 if arch -x86_64 /usr/bin/true 2>/dev/null; then
     start "Intel (Rosetta)" arch -x86_64 "$app/Contents/MacOS/ndm" || failed=1
 else

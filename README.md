@@ -54,7 +54,8 @@
 - HLS (.m3u8) and DASH (.mpd), including AES-128, byte ranges, multi-period and live streams
 - Video and audio joined into one MP4 or WebM without any extra program
 - YouTube, Vimeo, TikTok, Instagram, X, Reddit, Twitch, SoundCloud and other video sites through
-  [yt-dlp](https://github.com/yt-dlp/yt-dlp) (next to NDM or on PATH; with ffmpeg, best video and audio in one MP4).
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp): *Downloads → Set yt-dlp* downloads it, adds it to PATH and keeps it
+  up to date (with ffmpeg, best video and audio in one MP4).
   Paste the page's address, or right-click the page → *Download this video with New Download Manager*
 
 **Organizing**
@@ -124,7 +125,7 @@ Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager
 **macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first
 time, right-click (or Control-click) NDM in Applications and choose **Open**, then **Open** again; after that
 it starts normally. (Or run `xattr -dr com.apple.quarantine /Applications/NDM.app` once in Terminal.) Its
-icon sits in the menu bar while it runs. Load the browser extension from
+icon sits in the menu bar while it runs; links can be dropped on its window or on the drop target. Load the browser extension from
 `~/Library/Application Support/NewDownloadManager/extension`, the copy NDM keeps there so updates don't move
 it (*Options → General → Reintegrate All* shows the steps for each browser).
 
