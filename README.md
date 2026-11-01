@@ -36,19 +36,26 @@
 - http, https and ftp (passive and active); mms, rtmp and rtsp through ffmpeg
 - Sign-in: Basic, Digest, NTLM / Negotiate (your Windows account, or your Kerberos ticket on Linux), saved site logins
 - Proxies: Windows' settings, auto-configuration scripts, HTTP, HTTPS, FTP and SOCKS 4/5
-- Speed limiter, download limits per period, per-server connection limits
+- Speed limiter (also only between set hours), download limits per period, per-server connection limits
+- Failed downloads in a queue are tried again after a growing wait (15 s, 30 s, 1 min... up to 10 min)
+- File Properties → **Checksum...**: the file's SHA-256, SHA-1 and MD5, checked against one you paste
 
 **Browser integration**
 - Extension for Chrome, Edge, Brave, Opera, Vivaldi and Firefox: downloads go to NDM, not the browser,
   and NDM starts in the notification area if it isn't running
 - Right-click *Download with New Download Manager* and *Download all links*
 - Download panel on video and audio players
+- Files a page makes itself (Telegram Web's videos and music come from its service worker) are fetched
+  inside the page and handed to NDM piece by piece, so they arrive whole
 - Keys to force or prevent a download, file-type and site exceptions
 - Optional system-wide capture of plain http downloads from any program
 
 **Video and audio streams**
 - HLS (.m3u8) and DASH (.mpd), including AES-128, byte ranges, multi-period and live streams
 - Video and audio joined into one MP4 or WebM without any extra program
+- YouTube, Vimeo, TikTok, Instagram, X, Reddit, Twitch, SoundCloud and other video sites through
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp) (next to NDM or on PATH; with ffmpeg, best video and audio in one MP4).
+  Paste the page's address, or right-click the page → *Download this video with New Download Manager*
 
 **Organizing**
 - Categories with their own folders, queues with a scheduler (start / stop times, days, retries)
@@ -64,7 +71,7 @@
 - Dark mode and three looks: Modern, Classic and **NDM Style**, NDM's own modern design for every window
 - Custom scale for the toolbar, the categories pane and the text (View → Custom scale...)
 - Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
-- Clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
+- Filter box above the list, clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
 - Import and export of download lists, built-in help, automatic update check
 - English, Spanish, French and Arabic (right to left: every window is mirrored), and any language you add
   (View → Language, see [Translating](#translating))

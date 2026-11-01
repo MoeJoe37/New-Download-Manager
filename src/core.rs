@@ -243,6 +243,11 @@ pub struct Settings {
     pub logins: Vec<Login>,
     /// "Always turn on Speed Limiter on startup".
     pub limit_startup: bool,
+    /// Speed Limiter settings: on by itself only between these times ("HH:MM", may run past midnight),
+    /// off outside them (a manual change holds until the next of the two times).
+    pub limit_sched: bool,
+    pub limit_from: String,
+    pub limit_to: String,
     /// Main list columns as, in display order (View -> Customize URL List).
     pub columns: Vec<(u8, u16)>,
     /// List context menu "On Double click": open the file instead of showing properties.
@@ -538,6 +543,9 @@ impl Default for Settings {
             language: String::new(),
             logins: Vec::new(),
             limit_startup: false,
+            limit_sched: false,
+            limit_from: "08:00".into(),
+            limit_to: "23:00".into(),
             columns: DEFAULT_COLUMNS.to_vec(),
             dbl_open: false,
             dupl_action: 0,
@@ -749,6 +757,11 @@ pub struct Incoming {
 }
 
 /// Command-line arguments as an `Incoming` (None when there are none).
+/// Whether `t` is in [from, to); a window that ends before it starts runs past midnight.
+pub fn in_window(t: chrono::NaiveTime, from: chrono::NaiveTime, to: chrono::NaiveTime) -> bool {
+    if from <= to { from <= t && t < to } else { t >= from || t < to }
+}
+
 pub fn cli_args(args: &[String]) -> Option<Incoming> {
     let mut inc = Incoming { cli: true, force: true, ..Default::default() };
     let mut it = args.iter();
@@ -798,6 +811,10 @@ pub struct Core {
     next_id: AtomicU64,
     /// Per queue: the days its start / stop time last fired.
     fired: Mutex<HashMap<u32, (Option<NaiveDate>, Option<NaiveDate>)>>,
+    /// The Speed Limiter's time window as last seen (`tick_limit`): it switches only when this changes.
+    limit_window: Mutex<Option<bool>>,
+    /// Files the browser extension is handing over from their pages (`feed`): download id -> its .part file.
+    fed: Mutex<HashMap<u64, std::fs::File>>,
     /// Synchronization: files checked in the current pass (job id -> queue); next pass per queue.
     synced: Mutex<HashMap<u64, u32>>,
     again: Mutex<HashMap<u32, Instant>>,
@@ -891,6 +908,8 @@ impl Core {
             limiter: Arc::new(Limiter::default()),
             next_id: AtomicU64::new(saved.next_id.max(1)),
             fired: Mutex::default(),
+            limit_window: Mutex::default(),
+            fed: Mutex::default(),
             synced: Mutex::default(),
             again: Mutex::default(),
             checking: Arc::default(),
@@ -1014,7 +1033,11 @@ impl Core {
 
     /// Queue-added downloads with an unknown name get one (and a category) from the URL.
     pub fn add(&self, mut info: Info) -> Arc<Job> {
-        if info.name.is_empty() {
+        if info.name.is_empty() && crate::ytdlp::is_video_page(&info.url) {
+            // a video page: the video's category; yt-dlp names the file from its title when it starts
+            info.category = self.settings().category_for("video.mp4", &info.url);
+            info.folder = self.settings().folder_for(&info.category);
+        } else if info.name.is_empty() {
             let name = engine::sanitize(&engine::url_name(&info.url));
             if name != "download" {
                 info.category = self.settings().category_for(&name, &info.url);
@@ -1300,6 +1323,12 @@ impl Core {
                 if j.running() || failed || status == Status::Complete {
                     continue;
                 }
+                // a failed one waits before its next try (it still counts as pending)
+                let waiting = matches!(status, Status::Error(_)) && j.failed_at.lock().unwrap().is_some_and(|t| t.elapsed() < engine::retry_wait(j.fails.load(Relaxed)));
+                if waiting {
+                    pending = true;
+                    continue;
+                }
                 pending = true;
                 if active < max {
                     self.start(j);
@@ -1323,6 +1352,104 @@ impl Core {
             if j.ended.swap(false, Relaxed) {
                 self.sound(if j.info().status == Status::Complete { 0 } else { 1 });
             }
+        }
+    }
+
+    /// A file the browser extension fetches inside its web page and hands over in pieces (POST /feed): when
+    /// the server sends NDM something else than the browser gets (a page's service worker makes the file,
+    /// Telegram Web for one). `op=start` (body: the download as `Incoming`) adds it to the list and answers
+    /// {"id"}; `op=data&id&at` writes a piece at `at`; `op=end&id&ok` finishes it (ok=0: the browser stopped).
+    pub fn feed(&self, path: &str, body: &[u8]) -> Result<String, String> {
+        let q: HashMap<String, String> = url::form_urlencoded::parse(path.split_once('?').map_or("", |p| p.1).as_bytes()).into_owned().collect();
+        let num = |k: &str| q.get(k).and_then(|v| v.parse::<u64>().ok());
+        match q.get("op").map(String::as_str) {
+            Some("start") => {
+                let inc: Incoming = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+                let mut i = self.new_info(&inc.url);
+                let name = engine::sanitize(inc.filename.replace('\\', "/").rsplit('/').next().unwrap_or(""));
+                let name = if name.is_empty() { engine::sanitize(&engine::url_name(&inc.url)) } else { name };
+                {
+                    let s = self.settings();
+                    i.category = s.category_for(&name, &inc.url);
+                    i.folder = s.folder_for(&i.category);
+                }
+                i.name = self.unique_name(&i.folder, &name);
+                (i.referrer, i.fed, i.status) = (inc.referrer.clone(), true, Status::Downloading);
+                i.size = Some(inc.size).filter(|s| *s > 0);
+                i.last_try = Local::now().timestamp();
+                i.segs = vec![engine::Seg { start: 0, next: 0, stop: i.size, info: "Receiving data...".into(), ..Default::default() }];
+                let part = i.part();
+                if let Some(d) = part.parent() {
+                    std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+                }
+                let f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+                let id = i.id;
+                self.add(i);
+                self.fed.lock().unwrap().insert(id, f);
+                Ok(serde_json::json!({ "id": id }).to_string())
+            }
+            Some("data") => {
+                use std::io::{Seek, SeekFrom, Write};
+                let (id, at) = (num("id").ok_or("no id")?, num("at").ok_or("no at")?);
+                let mut fed = self.fed.lock().unwrap();
+                let f = fed.get_mut(&id).ok_or("no such download")?;
+                f.seek(SeekFrom::Start(at)).and_then(|_| f.write_all(body)).map_err(|e| e.to_string())?;
+                if let Some(j) = self.find(id) {
+                    let mut i = j.info();
+                    if let Some(s) = i.segs.first_mut() {
+                        s.next = s.next.max(at + body.len() as u64);
+                    }
+                }
+                Ok(String::new())
+            }
+            Some("end") => {
+                let id = num("id").ok_or("no id")?;
+                let f = self.fed.lock().unwrap().remove(&id).ok_or("no such download")?;
+                let len = f.metadata().map_or(0, |m| m.len());
+                drop(f);
+                let j = self.find(id).ok_or("no such download")?;
+                let ok = num("ok") == Some(1) && len > 0;
+                {
+                    let mut i = j.info();
+                    let (part, path) = (i.part(), i.path());
+                    let moved = ok && (std::fs::rename(&part, &path).is_ok() || (std::fs::copy(&part, &path).is_ok() && std::fs::remove_file(&part).is_ok()));
+                    if moved {
+                        i.size = Some(len);
+                        i.segs = vec![engine::Seg { start: 0, next: len, stop: Some(len), ..Default::default() }];
+                        i.status = Status::Complete;
+                    } else {
+                        i.status = Status::Error(crate::i18n::tr_os("The browser stopped sending the file: download it again from its page."));
+                        for s in &mut i.segs {
+                            s.info.clear();
+                        }
+                    }
+                }
+                j.ended.store(true, Relaxed); // the complete / failed sound
+                self.save();
+                Ok(String::new())
+            }
+            _ => Err("unknown op".into()),
+        }
+    }
+
+    /// The Speed Limiter's hours: on when the window opens, off when it closes.
+    fn tick_limit(&self) {
+        let (on, from, to) = {
+            let s = self.settings();
+            (s.limit_sched, s.limit_from.clone(), s.limit_to.clone())
+        };
+        let parse = |t: &str| chrono::NaiveTime::parse_from_str(t.trim(), "%H:%M").ok();
+        let (Some(a), Some(b), true) = (parse(&from), parse(&to), on) else {
+            *self.limit_window.lock().unwrap() = None;
+            return;
+        };
+        let inside = in_window(Local::now().time(), a, b);
+        let mut last = self.limit_window.lock().unwrap();
+        if *last != Some(inside) {
+            *last = Some(inside);
+            drop(last);
+            self.settings().limit_on = inside;
+            self.apply_settings();
         }
     }
 
@@ -1599,6 +1726,7 @@ impl Core {
                 core.tick_queue();
                 core.tick_sounds();
                 core.tick_lanes();
+                core.tick_limit();
                 if last_save.elapsed() > Duration::from_secs(5) {
                     core.save();
                     last_save = Instant::now();
@@ -1679,6 +1807,15 @@ impl Core {
                     notify();
                     continue;
                 }
+                if let Some((path, body, _)) = req.as_ref().filter(|(path, ..)| path.starts_with("/feed?")) {
+                    // a file the extension fetches inside its page, in pieces (`feed`)
+                    match core.feed(path, body) {
+                        Ok(r) => reply("200 OK", &r),
+                        Err(e) => reply("404 Not Found", &serde_json::json!({ "error": e }).to_string()),
+                    }
+                    notify();
+                    continue;
+                }
                 if req.as_ref().is_some_and(|(path, ..)| path == "/config") {
                     // what the extension shows: context menu items (334) and download panel exceptions (370)
                     let c = {
@@ -1731,7 +1868,8 @@ impl Core {
                     if let Err(e) = &same {
                         eprintln!("left to the browser: {} ({e})", inc.url);
                     }
-                    let _ = (&s).write_all(format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\nX-NDM: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", if same.is_ok() { "200 OK" } else { "204 No Content" }).as_bytes());
+                    // 409: the server sends NDM something else; the extension may fetch it in the page (`feed`)
+                    let _ = (&s).write_all(format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\nX-NDM: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", if same.is_ok() { "200 OK" } else { "409 Conflict" }).as_bytes());
                     if same.is_ok() {
                         let _ = tx.send(inc);
                         notify();
@@ -1820,11 +1958,12 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
     }
     let origin_ok = h.get("origin").is_none_or(|o| o.starts_with("chrome-extension://") || o.starts_with("moz-extension://"));
     let path = line.strip_prefix("POST ")?.split(' ').next()?.to_string();
-    if !["/add", "/config", "/cookies", "/show"].contains(&path.as_str()) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
+    if !["/add", "/config", "/cookies", "/show", "/feed"].contains(&path.split('?').next().unwrap_or("")) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
         return None;
     }
-    let len: usize = h.get("content-length").map_or(Some(0), |l| l.parse().ok())?;
-    let mut body = vec![0; len.min(1 << 20)];
+    // the extension sends at most 512 KB at a time (`feed`): a bigger body is refused, not cut short
+    let len: usize = h.get("content-length").map_or(Some(0), |l| l.parse().ok()).filter(|l| *l <= 1 << 20)?;
+    let mut body = vec![0; len];
     r.read_exact(&mut body).ok()?;
     Some((path, body, h.get("user-agent").cloned().unwrap_or_default()))
 }

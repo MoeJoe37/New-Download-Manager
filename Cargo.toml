@@ -1,6 +1,6 @@
 [package]
 name = "ndm"
-version = "2.0.1"
+version = "2.1.0"
 edition = "2021"
 
 [dependencies]
@@ -9,6 +9,10 @@ eframe = { version = "0.31", features = ["wgpu"] }
 egui_extras = "0.31"
 ab_glyph = "0.2"
 ureq = { version = "2", default-features = false, features = ["tls", "socks-proxy"] }
+# File Properties -> Checksum: SHA-256, SHA-1 and MD5 of a downloaded file (also MD5 for digest login off Windows)
+sha2 = "0.10"
+sha1 = "0.10"
+md5 = { package = "md-5", version = "0.10" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
@@ -31,11 +35,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 wgpu = { version = "24", default-features = false, features = ["dx12"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_Media_Audio", "Win32_System_DataExchange", "Win32_Globalization", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_Networking_WinInet", "Win32_UI_Controls_Dialogs", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Ole", "Win32_System_Com", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_NetworkManagement_Rras", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_IO"] }
 
-# AES-128 (HLS) and MD5 (digest login), which Windows' CNG does on Windows
+# AES-128 (HLS), which Windows' CNG does on Windows
 [target.'cfg(not(windows))'.dependencies]
 aes = "0.8"
 cbc = "0.1"
-md5 = { package = "md-5", version = "0.10" }
 # NTLM (Windows does it in SSPI)
 md4 = "0.10"
 # PAC scripts (Windows runs them in WinHTTP)

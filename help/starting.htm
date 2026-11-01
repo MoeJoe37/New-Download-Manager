@@ -11,7 +11,7 @@
 <li>Click <b>Load unpacked</b> and choose the <b>extension</b> folder in NDM's folder. In Firefox, click <b>Load Temporary Add-on</b> and choose manifest.json in that folder. On Linux, see <a href="linux.htm#Extension">The browser extension</a>.</li>
 </ol>
 <p><b>Tasks → Export extension...</b> saves a copy of the extension to a folder you choose, to load in any browser, with these steps.</p>
-<p>Before taking over a download, NDM makes sure the server sends it the same file the browser is getting. Files a page makes itself (Telegram Web's, for example), expired links and login pages stay with the browser, which downloads them as usual.</p>
+<p>Before taking over a download, NDM makes sure the server sends it the same file the browser is getting. When it doesn't (files a page makes itself, like Telegram Web's videos and music, or links that only work inside the page), the extension fetches the file inside the page and hands it to NDM piece by piece, so it still arrives whole and shows in NDM's list. If that isn't possible either, the browser keeps the download.</p>
 <ul>
 <li>Only the file types in <a href="options.htm#FileTypes">Options → File types</a> are taken over. Sites and addresses on the exception lists stay with the browser.</li>
 <li>Hold <kbd>Del</kbd> while clicking a link to let the browser download it, or <kbd>Ins</kbd> to give it to NDM whatever its type. <b>Keys...</b> on the General page of Options changes these keys.</li>

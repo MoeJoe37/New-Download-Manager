@@ -37,6 +37,8 @@ NOT_UI = re.compile(
     r"|^(NAME,TYPE|AppleInterfaceStyle|NameHasOwner|ShowItems|httpProxy|Read|DejaVu Sans|Negotiate|Proxy Settings|Brave Browser"
     r"|Microsoft Edge (Beta|Dev)|BaseURL|Representation|Segment(Base|List|Template|URL)|Period|Initialization)$"
     r"|^POSIX path|^tell application|\d\d:\d\d:\d\d GMT"
+    # yt-dlp's arguments and output, the extension's feed protocol (src/ytdlp.rs, core.rs `feed`)
+    r"|^download:ndm |^ERROR: $|^ndm $|^no (at|id)$|^no such download$|^unknown op$|^%\("
 )
 
 
@@ -50,7 +52,7 @@ def unescape(s):
 EXTRA = ["By " + n for n in ["Order Of Addition", "File Name", "Size", "Status", "Time Left", "Transfer Rate", "Last Try Date", "Description", "Save Path",
                              "Referer", "Parent Web Page"]]
 # UI words the filters above take for tokens: the OK button, units, the words around number fields
-EXTRA += ["OK", "KB", "MB", "GB", "URL", "sec", "min", "seconds", "hours", "every", "times", "sites"]
+EXTRA += ["OK", "KB", "MB", "GB", "URL", "sec", "min", "seconds", "hours", "every", "times", "sites", "and"]
 # the queues NDM makes (core.rs), shown by name; the date format (main.rs `date`, chrono's %-codes)
 EXTRA += ["Main download queue", "Synchronization queue", "%b %d %H:%M:%S %Y"]
 

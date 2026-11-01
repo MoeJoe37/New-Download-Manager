@@ -1,4 +1,5 @@
 #![windows_subsystem = "windows"]
+mod checksum;
 mod core;
 mod dlu;
 mod engine;
@@ -7,6 +8,7 @@ mod i18n;
 mod net;
 mod remux;
 mod stream;
+mod ytdlp;
 use i18n::{tr, tr_os};
 #[cfg(unix)]
 mod posix;
@@ -1655,6 +1657,8 @@ enum Dialog {
     Duplicate { inc: Incoming, old: u64, choice: u8, remember: bool },
     /// File Properties (template 135) for a finished download.
     FileProps { id: u64, url: String, desc: String, referer: String, login: String, pass: String },
+    /// File Properties -> Checksum...: the file's SHA-256, SHA-1 and MD5, and a checksum to compare them with.
+    Checksum { name: String, run: Arc<checksum::Run>, expect: String },
     /// NDM categories (template 204). `orig` = name of the edited category, None when adding.
     Category { orig: Option<String>, cat: core::Category, folder: String, error: String },
     /// "Do you really want to delete ... category" confirmation.
@@ -1719,7 +1723,7 @@ enum Dialog {
     /// Tip of the Day (template 105, CTipDlg): the tip shown.
     Tip { text: String },
     /// Speed Limiter settings (template 337).
-    Limiter { kb: String, startup: bool },
+    Limiter { kb: String, startup: bool, sched: bool, from: String, to: String },
     /// Columns (template 209): in display order.
     Columns { list: Vec<(u8, bool, u16)>, sel: usize, width: String },
     /// "Max. connections number for a server" (template 226); `orig` = edited row of the exceptions.
@@ -1743,6 +1747,8 @@ struct App {
     sort: (Col, bool),
     /// Titles of this frame's dialogs that NDM keeps light in dark mode (their title bars).
     light_titles: Vec<String>,
+    /// The filter box over the download list: rows whose name, address or description has this text.
+    filter: String,
     /// Find Next starts at this row of the list, and the row to scroll to.
     find_pos: usize,
     scroll_to: Option<usize>,
@@ -2140,6 +2146,7 @@ impl App {
             anchor: None,
             sort: (Col::Added, true),
             light_titles: Vec::new(),
+            filter: String::new(),
             find_pos: 0,
             scroll_to: None,
             show_cats: true,
@@ -2771,6 +2778,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 Cat::Grabber(Some(_)) => grab_urls.contains(r.url.as_str()),
                 Cat::Queue(q) => r.queued && q.is_none_or(|q| r.queue == q),
             })
+            .filter(|r| {
+                let f = self.filter.trim().to_lowercase();
+                f.is_empty() || [&r.name, &r.url, &r.desc].iter().any(|t| t.to_lowercase().contains(&f))
+            })
             .collect();
         let (col, asc) = self.sort;
         rows.sort_by(|a, b| {
@@ -2999,7 +3010,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.separator();
                     if ui.button(tr("Settings...")).clicked() {
                         let s = self.core.settings();
-                        let d = Dialog::Limiter { kb: s.limit_kb.to_string(), startup: s.limit_startup };
+                        let d = Dialog::Limiter { kb: s.limit_kb.to_string(), startup: s.limit_startup, sched: s.limit_sched, from: s.limit_from.clone(), to: s.limit_to.clone() };
                         drop(s);
                         self.open(d);
                         ui.close_menu();
@@ -4266,7 +4277,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::WaitLink { .. } => (TITLE.into(), tpl(240.0, 46.0)),
             Dialog::DialUp => ("Dial up".into(), tpl(186.0, 55.0)),
             Dialog::Help { .. } => ("New Download Manager Help".into(), None),
-            Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 89.0)),
+            Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 107.0)),
             Dialog::Update { .. } => ("Quick Update".into(), tpl(186.0, 34.0)),
             Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), Some(Vec2::new(520.0, 420.0))),
             Dialog::Virus { .. } => ("Virus checking".into(), tpl(379.0, 235.0)),
@@ -4282,6 +4293,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::CatDelete { .. } => ("Deleting a category from New Download Manager categories list".into(), tpl(260.0, 60.0)),
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
+            Dialog::Checksum { .. } => ("Checksum".into(), tpl(300.0, 134.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
             Dialog::Scale { .. } => ("Custom scale".into(), tpl(232.0, 100.0)),
             Dialog::Tip { .. } => ("Tip of the Day".into(), tpl(253.0, 164.0)),
@@ -5499,7 +5511,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.label(7.0, 48.0, 43.0, 9.0, "Status:");
                 d.label(58.0, 48.0, 253.0, 9.0, "Complete");
                 d.label(7.0, 60.0, 43.0, 9.0, "Size:");
-                d.label(58.0, 60.0, 253.0, 9.0, i.size.map(|s| format!("{} ({s} Bytes)", human(s))).unwrap_or_default());
+                d.label(58.0, 60.0, 196.0, 9.0, i.size.map(|s| i18n::line(&format!("{} ({s} {})", human_os(s), tr_os("Bytes")))).unwrap_or_default());
+                // the file's checksums, to compare with the one the site publishes
+                let file = i.path();
+                if d.button(261.0, 57.0, 50.0, 14.0, "Checksum...", file.is_file()) {
+                    self.open(Dialog::Checksum { name: i.name.clone(), run: checksum::start(file), expect: String::new() });
+                }
                 d.label(7.0, 77.0, 45.0, 9.0, "Save To:");
                 d.readonly(58.0, 74.0, 197.0, 14.0, &i.path().display().to_string());
                 d.button(261.0, 74.0, 50.0, 14.0, "Browse...", false);
@@ -5529,6 +5546,41 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     (n.url, n.description, n.referrer) = (join_login(url, login, pass), desc.clone(), referer.clone());
                 }
                 !ok
+            }
+            Dialog::Checksum { name, run, expect } => {
+                let mut d = dlu::D::new(ui);
+                d.label(7.0, 7.0, 286.0, 9.0, name.as_str());
+                let done = run.result.lock().unwrap().as_ref().map(|r| r.as_ref().map(|s| (s.sha256.clone(), s.sha1.clone(), s.md5.clone())).map_err(Clone::clone));
+                let busy = match &done {
+                    None => i18n::trf_os("Computing... %d%%", &[&(run.done.load(Relaxed) * 100 / run.total.max(1))]),
+                    Some(Err(e)) => e.clone(),
+                    Some(Ok(_)) => String::new(),
+                };
+                let sums = done.as_ref().and_then(|r| r.as_ref().ok()).cloned();
+                for (k, (label, v)) in [("SHA-256:", sums.as_ref().map(|s| s.0.clone())), ("SHA-1:", sums.as_ref().map(|s| s.1.clone())), ("MD5:", sums.as_ref().map(|s| s.2.clone()))].into_iter().enumerate() {
+                    let y = 21.0 + k as f32 * 16.0;
+                    d.label(7.0, y + 3.0, 40.0, 9.0, label);
+                    // an edit box, so the value can be selected and copied
+                    let mut text = v.unwrap_or_else(|| busy.clone());
+                    d.edit(50.0, y, 243.0, 14.0, &mut text, sums.is_some());
+                }
+                d.label(7.0, 73.0, 286.0, 9.0, "Checksum from the download page (paste it to compare):");
+                d.edit(7.0, 84.0, 286.0, 14.0, expect, true);
+                if let (Some((a, b, c)), false) = (&sums, expect.trim().is_empty()) {
+                    let s = checksum::Sums { sha256: a.clone(), sha1: b.clone(), md5: c.clone() };
+                    let (text, ok) = match checksum::compare(&s, expect) {
+                        Some((kind, true)) => (i18n::trf_os("The %s checksums match: the file is intact.", &[&kind]), Some(true)),
+                        Some((kind, false)) => (i18n::trf_os("The %s checksums don't match: the file is damaged or isn't the one published.", &[&kind]), Some(false)),
+                        None => (tr_os("That isn't a SHA-256, SHA-1 or MD5 checksum."), None),
+                    };
+                    let th = dlu::theme(d.ui.visuals().dark_mode);
+                    let ink = match ok { Some(true) => th.success, Some(false) => th.danger, None => th.muted };
+                    d.label(7.0, 102.0, 286.0, 9.0, RichText::new(tr(&text)).color(ink));
+                }
+                if done.is_none() {
+                    d.ui.ctx().request_repaint_after(Duration::from_millis(150));
+                }
+                !d.button(243.0, 116.0, 50.0, 14.0, "Close", true)
             }
             Dialog::Category { orig, cat, folder, error } => {
                 let mut d = dlu::D::new(ui);
@@ -7124,23 +7176,30 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 true
             }
-            Dialog::Limiter { kb, startup } => {
+            Dialog::Limiter { kb, startup, sched, from, to } => {
                 let mut d = dlu::D::new(ui);
                 d.label_r(7.0, 7.0, 170.0, 9.0, "Maximum download speed for one file");
                 d.edit(183.0, 4.0, 33.0, 14.0, kb, true);
                 d.label(224.0, 7.0, 65.0, 9.0, "KBytes/sec");
                 d.text(7.0, 23.0, 288.0, 26.0, "Note: Internet servers may break connection when the speed is too limited! Thus it's not recommended to use Speed Limiter to download from servers that do not support \"resume\" feature.");
                 d.check(7.0, 52.0, 288.0, 10.0, startup, "Always turn on Speed Limiter on New Download Manager startup");
+                // its hours: on from .. to, off the rest of the day
+                d.check(7.0, 69.0, 170.0, 10.0, sched, "Turn on Speed Limiter only between");
+                d.edit(181.0, 67.0, 30.0, 14.0, from, *sched);
+                d.label(214.0, 69.0, 18.0, 9.0, "and");
+                d.edit(234.0, 67.0, 30.0, 14.0, to, *sched);
                 let v = kb.trim().parse::<u64>().ok().filter(|v| *v > 0);
-                let ok = d.button(189.0, 68.0, 50.0, 14.0, "OK", v.is_some());
+                let times = !*sched || [&*from, &*to].iter().all(|t| sched_time(t).is_some());
+                let ok = d.button(189.0, 86.0, 50.0, 14.0, "OK", v.is_some() && times);
                 if ok {
+                    let hm = |t: &str| sched_time(t).map_or_else(|| t.to_string(), |t| t.format("%H:%M").to_string());
                     let mut s = self.core.settings();
-                    (s.limit_kb, s.limit_startup) = (v.unwrap(), *startup);
+                    (s.limit_kb, s.limit_startup, s.limit_sched, s.limit_from, s.limit_to) = (v.unwrap(), *startup, *sched, hm(from), hm(to));
                     drop(s);
                     self.core.apply_settings();
                     self.core.save();
                 }
-                !(ok || d.button(245.0, 68.0, 50.0, 14.0, "Cancel", true))
+                !(ok || d.button(245.0, 86.0, 50.0, 14.0, "Cancel", true))
             }
             Dialog::Columns { list, sel, width } => {
                 let mut d = dlu::D::new(ui);
@@ -8072,6 +8131,16 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(central).show(ctx, |ui| {
             // View -> Custom scale: the list's text
             let px = { let s = self.core.settings(); s.list_font_px * s.scale_text };
+            // the filter box: the list narrows to the downloads with the text in their name, address or description
+            ui.with_layout(menu_layout(), |ui| {
+                ui.add_space(if dlu::ndm() { 6.0 } else { 2.0 });
+                let edit = egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Filter the list")).desired_width(240.0);
+                let r = ui.add(edit);
+                if !self.filter.is_empty() && (ui.small_button("\u{2716}").on_hover_text(tr("Clear")).clicked() || (r.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)))) {
+                    self.filter.clear();
+                }
+            });
+            ui.add_space(3.0);
             ui.style_mut().text_styles.insert(egui::TextStyle::Body, FontId::new(px, egui::FontFamily::Name("list".into())));
             list.show(ui, |ui| self.table(ui, &rows));
         });

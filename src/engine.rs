@@ -43,6 +43,12 @@ pub enum Status {
     Error(String),
 }
 
+/// How long a queue waits before it tries a download again after `fails` failures in a row: 15 s, then twice
+/// as long each time, at most 10 minutes (a server that is down or busy gets time to come back).
+pub fn retry_wait(fails: u32) -> Duration {
+    Duration::from_secs((15u64 << fails.saturating_sub(1).min(6)).min(600))
+}
+
 /// Byte range [start, stop). `next` is the next byte to fetch; `stop` None = length unknown.
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct Seg {
@@ -104,6 +110,9 @@ pub struct Info {
     pub modified: String,
     /// The server labels the file a web page (text/html): then a part labelled so is no sign of trouble.
     pub page: bool,
+    /// The browser extension fetched the file inside its web page and handed it over (a file the page makes
+    /// itself, as Telegram Web does): NDM can't download it again from the address.
+    pub fed: bool,
     /// Temporary directory for the .part file (Options -> Save to); "" = next to the file.
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
@@ -185,6 +194,8 @@ pub struct Job {
     pub ignore_date: AtomicBool,
     /// Failed runs in a row; the queue retries up to its "Number of retries" (template 306).
     pub fails: AtomicU32,
+    /// When the last run failed: the queue waits longer after each failure before it tries again.
+    pub failed_at: Mutex<Option<Instant>>,
     /// "Download over several network connections at once": (network, its agent), set by the core
     /// before each start. Connection c goes over lanes[c % n]; empty = the job's agent.
     pub lanes: Mutex<Vec<(String, ureq::Agent)>>,
@@ -924,6 +935,9 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
     if crate::stream::is_manifest(url) {
         return crate::stream::probe(agent, url, referrer, cookies);
     }
+    if crate::ytdlp::is_video_page(url) {
+        return crate::ytdlp::probe(url, referrer, cookies);
+    }
     if crate::stream::is_media_url(url) {
         // a live mms / rtmp / rtsp stream: no size until it is recorded
         return Ok(Probe { name: sanitize(&url_name(url)), size: None, ranges: false, modified: String::new(), stream: true });
@@ -944,7 +958,7 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
 /// Web), an expired or one-time link, a login page. The browser's `mime` and `size` (0: unknown) and file name
 /// are compared with what the server sends NDM; Err says why the browser should keep the download.
 pub fn same_file(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str, mime: &str, size: u64, filename: &str) -> Result<(), String> {
-    if crate::stream::is_manifest(url) || crate::stream::is_media_url(url) || is_ftp(url) {
+    if crate::stream::is_manifest(url) || crate::stream::is_media_url(url) || crate::ytdlp::is_video_page(url) || is_ftp(url) {
         return Ok(());
     }
     let r = call(request(agent, url, referrer, cookies).set("Range", "bytes=0-0"))?;
@@ -1046,6 +1060,7 @@ impl Job {
             set_date: AtomicBool::new(false),
             ignore_date: AtomicBool::new(false),
             fails: AtomicU32::new(0),
+            failed_at: Mutex::new(None),
             lanes: Mutex::new(vec![]),
             net_bytes: Mutex::default(),
             multi_ok: AtomicBool::new(false),
@@ -1106,6 +1121,7 @@ impl Job {
                 Status::Error(_) => job.fails.fetch_add(1, Relaxed),
                 _ => job.fails.swap(0, Relaxed),
             };
+            *job.failed_at.lock().unwrap() = matches!(i.status, Status::Error(_)).then(Instant::now);
             for s in &mut i.segs {
                 s.info.clear();
                 s.owned = false;
@@ -1134,8 +1150,14 @@ impl Job {
             i.last_try = chrono::Local::now().timestamp();
             (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.probed)
         };
+        if self.info().fed {
+            return Err(crate::i18n::tr_os("This file came from its web page through the browser: download it again from the page."));
+        }
         if crate::stream::is_media_url(&url) {
             return crate::stream::run_media(self);
+        }
+        if crate::ytdlp::is_video_page(&url) {
+            return crate::ytdlp::run(self);
         }
         if crate::stream::is_manifest(&url) || self.info().stream {
             return crate::stream::run(self, agent, global);
@@ -1662,6 +1684,12 @@ mod tests {
             }
         });
         base
+    }
+
+    #[test]
+    fn retries_wait_longer() {
+        let w: Vec<u64> = (1..=9).map(|n| retry_wait(n).as_secs()).collect();
+        assert_eq!(w, [15, 30, 60, 120, 240, 480, 600, 600, 600]);
     }
 
     #[test]

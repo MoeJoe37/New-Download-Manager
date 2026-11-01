@@ -45,7 +45,8 @@ async function browserProxy() {
   return v.proxyType === 'autoConfig' && v.autoConfigUrl ? `pac:${v.autoConfigUrl}` : '';
 }
 
-// true: the app took it, false: the app declined it, null: the app couldn't be reached (even after starting it).
+// true: the app took it, false: the app declined it, 'page': the server sends the app another file than the
+// browser gets (see `feed`), null: the app couldn't be reached (even after starting it).
 // With extra.check the app first makes sure the server sends it the same file the browser gets (size, type);
 // pages that make their files themselves (a service worker, as Telegram Web does), expired one-time links and
 // login pages give the app something else, and those stay with the browser.
@@ -55,14 +56,84 @@ async function post(url, extra) {
   for (let i = 0; i < 40; i++) {
     try {
       const r = await ndm('/add', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body });
-      return r.status === 200;
+      return r.status === 200 ? true : r.status === 409 ? 'page' : false;
     } catch {}
     if (i === 0) await launch();
     await new Promise(r => setTimeout(r, 250)); // up to 10 s for the app to start
   }
   return null;
 }
-const send = async (url, extra) => !!(await post(url, extra));
+const send = async (url, extra) => (await post(url, extra)) === true;
+
+// The tab whose page started a download: the one showing its referrer, else one on the file's site.
+async function pageTab(item) {
+  const tabs = await chrome.tabs.query({}).catch(() => []);
+  const origin = u => { try { return new URL(u).origin; } catch { return ''; } };
+  const ref = item.referrer || '', site = origin(item.finalUrl || item.url);
+  return tabs.find(t => ref && t.url === ref) || tabs.find(t => t.active && origin(t.url) === site)
+    || tabs.find(t => origin(t.url) === site) || tabs.find(t => ref && origin(t.url) === origin(ref));
+}
+
+// A download the server won't give the app (a page that makes its files itself, as Telegram Web's service
+// worker does): content.js fetches it inside that page and this passes the pieces to the app. Resolves true
+// once the app has it in its list (the browser's copy can go), false to leave it to the browser.
+async function feed(item) {
+  const tab = await pageTab(item);
+  if (!tab) return false;
+  const url = item.finalUrl || item.url;
+  let port;
+  try {
+    port = chrome.tabs.connect(tab.id, { name: 'ndm-feed', frameId: 0 });
+  } catch {
+    return false;
+  }
+  const head = { 'X-NDM': '1' };
+  return new Promise(resolve => {
+    let id = null, over = false;
+    const finish = ok => {
+      if (id === null || over) return;
+      over = true;
+      ndm(`/feed?op=end&id=${id}&ok=${ok ? 1 : 0}`, { method: 'POST', headers: head }).catch(() => {});
+    };
+    const timer = setTimeout(() => { port.disconnect(); resolve(false); }, 15000);
+    port.onDisconnect.addListener(() => { clearTimeout(timer); finish(false); resolve(false); });
+    port.onMessage.addListener(async m => {
+      if (m.kind === 'no') {
+        clearTimeout(timer);
+        port.disconnect();
+        return resolve(false);
+      }
+      if (m.kind === 'yes') {
+        clearTimeout(timer);
+        try {
+          const body = JSON.stringify({ url, filename: (item.filename || '').split(/[\\/]/).pop(), size: m.size, mime: item.mime || '', referrer: item.referrer || '' });
+          id = (await (await ndm('/feed?op=start', { method: 'POST', headers: { ...head, 'Content-Type': 'application/json' }, body })).json()).id;
+        } catch {
+          port.disconnect();
+          return resolve(false);
+        }
+        resolve(true);
+        return port.postMessage({ kind: 'go' });
+      }
+      if (m.kind === 'data') {
+        const bin = Uint8Array.from(atob(m.data), c => c.charCodeAt(0));
+        try {
+          const r = await ndm(`/feed?op=data&id=${id}&at=${m.at}`, { method: 'POST', headers: { ...head, 'Content-Type': 'application/octet-stream' }, body: bin });
+          if (!r.ok) throw new Error(String(r.status));
+        } catch {
+          finish(false);
+          return port.disconnect();
+        }
+        return port.postMessage({ kind: 'more' });
+      }
+      if (m.kind === 'end' || m.kind === 'fail') {
+        finish(m.kind === 'end');
+        port.disconnect();
+      }
+    });
+    port.postMessage({ kind: 'fetch', url, size: item.totalBytes > 0 ? item.totalBytes : 0 });
+  });
+}
 
 // Special keys held in the page, reported by content.js.
 let held = [];
@@ -99,9 +170,14 @@ async function handle(item, suggest) {
     size, check: true,
     // force keys without the link-click check: take over whatever starts while they are held
     force: !!k && !k.check_mouse && keysHeld(k, 'force') && !(k.skip_html && PAGE_LIKE.test(item.mime || '')) });
+  // the server sends the app another file: the page hands it over, if it can
+  if (taken === 'page' && await feed(item)) {
+    await chrome.downloads.cancel(item.id).catch(() => {});
+    return chrome.downloads.erase({ id: item.id });
+  }
   if (taken !== true) {
-    // declined (the app's file types and exceptions, or the server doesn't send the app the same file), or the
-    // app can't be reached: the browser downloads it as usual
+    // declined (the app's file types and exceptions, or the server doesn't send the app the same file and the
+    // page can't hand it over), or the app can't be reached: the browser downloads it as usual
     suggest();
     return chrome.downloads.resume(item.id).catch(() => {});
   }
@@ -109,6 +185,11 @@ async function handle(item, suggest) {
   await chrome.downloads.cancel(item.id).catch(() => {});
   chrome.downloads.erase({ id: item.id });
 }
+
+// Sites that play videos in their own player: the app hands the page to yt-dlp (src/ytdlp.rs, SITES).
+const VIDEO_SITES = ['youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 'dai.ly', 'twitch.tv', 'tiktok.com', 'instagram.com',
+  'facebook.com', 'fb.watch', 'x.com', 'twitter.com', 'reddit.com', 'v.redd.it', 'soundcloud.com', 'bilibili.com',
+  'rumble.com', 'streamable.com', 'ok.ru', 'vk.com', 'bandcamp.com', 'mixcloud.com'];
 
 // The app's Options decide the context menu items and the panel exceptions (370).
 let config = { menu_dl: true, menu_all: true, panel_skip: '', keys: null }, configAt = 0, menus = '';
@@ -124,12 +205,19 @@ async function refreshConfig() {
   await chrome.contextMenus.removeAll();
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm', title: 'Download with New Download Manager', contexts: ['link', 'video', 'audio', 'image'] });
   if (config.menu_all) chrome.contextMenus.create({ id: 'ndm-all', title: 'Download all links with New Download Manager', contexts: ['page', 'selection'] });
+  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-video', title: 'Download this video with New Download Manager', contexts: ['page', 'video', 'audio'],
+    documentUrlPatterns: VIDEO_SITES.flatMap(h => [`*://${h}/*`, `*://*.${h}/*`]) });
   return config;
 }
 chrome.runtime.onInstalled.addListener(refreshConfig);
 chrome.runtime.onStartup.addListener(refreshConfig);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === 'ndm-video') {
+    // the page itself: the app's yt-dlp finds its video
+    send(info.pageUrl || tab?.url, { referrer: '', force: true });
+    return;
+  }
   if (info.menuItemId === 'ndm-all') {
     const links = await chrome.tabs.sendMessage(tab.id, { kind: 'links' }).catch(() => []);
     if (links?.length) send(tab.url, { referrer: tab.url, links, force: true });
