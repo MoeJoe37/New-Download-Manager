@@ -177,17 +177,26 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
   host.addEventListener('mouseleave', () => (hideTimer = setTimeout(hide, 1500)));
 
   // Show over a media element when the pointer is on it, or when it starts playing.
-  document.addEventListener('mouseover', e => {
+  // the pointer's moves (a few times a second), not only entering an element: a pointer already resting on
+  // the player when the page loads (YouTube's) never enters it
+  let lastCheck = 0;
+  const pointer = e => {
+    if (e.timeStamp - lastCheck < 120) return;
+    lastCheck = e.timeStamp;
     const el = [...document.querySelectorAll('video,audio')].find(v => {
       const r = v.getBoundingClientRect();
       return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
     });
-    if (el) show(el);
-    else if (target && !host.matches(':hover')) {
+    if (el) {
+      if (el !== target || host.style.display === 'none') show(el);
+      else clearTimeout(hideTimer);
+    } else if (target && !host.matches(':hover') && host.style.display !== 'none') {
       clearTimeout(hideTimer);
       hideTimer = setTimeout(hide, 1500);
     }
-  }, true);
+  };
+  document.addEventListener('mouseover', pointer, true);
+  document.addEventListener('mousemove', pointer, { capture: true, passive: true });
   document.addEventListener('play', e => e.target.matches && e.target.matches('video,audio') && show(e.target), true);
   window.addEventListener('scroll', place, true);
   window.addEventListener('resize', place);

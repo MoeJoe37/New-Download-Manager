@@ -6,7 +6,8 @@
 <style>
   :root { color-scheme: light dark; --fg: #1f2328; --muted: #656d76; --line: #d0d7de; --accent: #1f6feb; --bg: #fff; --chip: #f6f8fa; }
   @media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --muted: #9198a1; --line: #3d444d; --accent: #4493f8; --bg: #1e1e1e; --chip: #2a2a2a; } }
-  body { font: 14px/1.45 system-ui, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 16px 18px; min-width: 380px; }
+  body { font: 14px/1.45 system-ui, "Segoe UI", sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 32px 16px; }
+  main { max-width: 560px; margin: 0 auto; }
   h1 { font-size: 15px; margin: 0 0 12px; }
   label.row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
   label.row input { margin-top: 3px; accent-color: var(--accent); }
@@ -20,6 +21,7 @@
 </style>
 </head>
 <body>
+<main>
 <h1>New Download Manager</h1>
 <label class="row"><input type="checkbox" id="panel">
   <span>Show the download panel over videos and audio<br>
@@ -28,6 +30,7 @@
 <h2>Hidden on these sites</h2>
 <ul id="sites"></ul>
 <p class="note">Which file types the browser hands to New Download Manager, the right-click menu items and more are set in the app: Options → General.</p>
+</main>
 <script src="options.js"></script>
 </body>
 </html>

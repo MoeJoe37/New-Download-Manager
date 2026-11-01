@@ -233,16 +233,21 @@ async function refreshConfig() {
   // the toolbar button's own menu: the download panel on or off, and the extension's options
   chrome.contextMenus.create({ id: 'ndm-panel', type: 'checkbox', checked: !panel_off, title: 'Show the download panel over videos', contexts: ['action'] });
   chrome.contextMenus.create({ id: 'ndm-options', title: 'Extension options...', contexts: ['action'] });
-  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm', title: 'Download with New Download Manager', contexts: ['link', 'video', 'audio', 'image'] });
+  // one item wherever the user right-clicks: a link or picture, a video or audio player (the file, or the
+  // page for yt-dlp when the player streams it in pieces), or a video site's page ("page" applies only
+  // where nothing more specific does)
+  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm', title: 'Download with New Download Manager', contexts: ['link', 'image'] });
+  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-media', title: 'Download this video with New Download Manager', contexts: ['video'] });
+  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-audio', title: 'Download this audio with New Download Manager', contexts: ['audio'] });
   if (config.menu_all) chrome.contextMenus.create({ id: 'ndm-all', title: 'Download all links with New Download Manager', contexts: ['page', 'selection'] });
-  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-video', title: 'Download this video with New Download Manager', contexts: ['page', 'video', 'audio'],
+  if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-video', title: 'Download this video with New Download Manager', contexts: ['page'],
     documentUrlPatterns: VIDEO_SITES.flatMap(h => [`*://${h}/*`, `*://*.${h}/*`]) });
   return config;
 }
 chrome.runtime.onInstalled.addListener(refreshConfig);
 chrome.runtime.onStartup.addListener(refreshConfig);
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+async function onMenu(info, tab) {
   if (info.menuItemId === 'ndm-panel') {
     await chrome.storage.local.set({ panel_off: !info.checked });
     menus = '';
@@ -254,7 +259,14 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
   if (info.menuItemId === 'ndm-video') {
     // the page itself: the app's yt-dlp finds its video
-    send(info.pageUrl || tab?.url, { referrer: '', force: true });
+    send(info.pageUrl || tab?.url, { referrer: '', force: true, video: true });
+    return;
+  }
+  if (info.menuItemId === 'ndm-media' || info.menuItemId === 'ndm-audio') {
+    // a player: its file when it plays one from an address, else (a stream in pieces, a video site) the page
+    const page = info.pageUrl || tab?.url || '';
+    if (/^https?:/i.test(info.srcUrl || '') && !isVideoSite(page)) send(info.srcUrl, { referrer: page, force: true });
+    else send(page, { referrer: '', force: true, video: true });
     return;
   }
   if (info.menuItemId === 'ndm-all') {
@@ -263,7 +275,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     return;
   }
   send(info.linkUrl || info.srcUrl, { referrer: tab?.url || '', force: true });
-});
+}
+chrome.contextMenus.onClicked.addListener(onMenu);
 
 // ---- Video grabber: remember media responses per tab (session storage survives worker restarts) ----
 const key = tabId => `media:${tabId}`;

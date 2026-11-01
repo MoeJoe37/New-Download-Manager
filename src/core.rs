@@ -1029,6 +1029,47 @@ impl Core {
     }
 
     /// Name not used by any other download heading to the same folder.
+    /// A finished download whose name doesn't say what it is (no extension, a script's, one no category
+    /// has): its first bytes do. It takes that extension and category, and moves to the category's folder
+    /// when it was in the General folder. True when it changed.
+    pub fn classify(&self, job: &engine::Job) -> bool {
+        let (path, name, folder, url, category) = {
+            let i = job.info();
+            (i.path(), i.name.clone(), i.folder.clone(), i.url.clone(), i.category.clone())
+        };
+        let known = self.settings().category_for(&name, &url) != GENERAL;
+        if known || !path.is_file() {
+            return false;
+        }
+        let Some(ext) = engine::sniff(&path) else { return false };
+        let typed = engine::typed_name(&name, Some(ext));
+        let new_cat = self.settings().category_for(&typed, &url);
+        if typed == name && new_cat == category {
+            return false;
+        }
+        let general = self.settings().folder_for(GENERAL);
+        let in_general = Path::new(&folder) == Path::new(&general);
+        let dir = if new_cat != GENERAL && in_general { self.settings().folder_for(&new_cat) } else { folder.clone() };
+        let new_name = if typed == name && dir == folder { name.clone() } else { self.unique_name(&dir, &typed) };
+        let to = Path::new(&dir).join(&new_name);
+        if to != path {
+            let moved = std::fs::create_dir_all(&dir).and_then(|_| std::fs::rename(&path, &to));
+            if moved.is_err() {
+                // another drive: keep the folder, the name still says what it is
+                let here = Path::new(&folder).join(self.unique_name(&folder, &typed));
+                if std::fs::rename(&path, &here).is_err() {
+                    return false;
+                }
+                let mut i = job.info();
+                (i.name, i.category) = (here.file_name().unwrap_or_default().to_string_lossy().to_string(), new_cat);
+                return true;
+            }
+        }
+        let mut i = job.info();
+        (i.name, i.folder, i.category) = (new_name, dir, new_cat);
+        true
+    }
+
     pub fn unique_name(&self, folder: &str, name: &str) -> String {
         let jobs = self.jobs();
         engine::unique_name(folder, name, &|n| jobs.iter().any(|j| {
@@ -2042,6 +2083,37 @@ mod tests {
         assert_eq!(s.with_login("http://cdn.files.example.com/a.zip"), "http://u:p%20w@cdn.files.example.com/a.zip");
         assert_eq!(s.with_login("http://other.com/a.zip"), "http://other.com/a.zip");
         assert_eq!(s.with_login("http://x:y@files.example.com/a.zip"), "http://x:y@files.example.com/a.zip");
+    }
+
+    /// A finished file whose name didn't say what it is (YouTube's "watch", a "get.php"): named, filed and
+    /// moved by its contents; a known one is left alone.
+    #[test]
+    fn finished_files_are_typed() {
+        let dir = std::env::temp_dir().join(format!("ndm-classify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let core = Core::load();
+        core.settings().base_dir = dir.display().to_string();
+        core.settings().cat_dirs.clear();
+        let job = |name: &str, bytes: &[u8]| {
+            std::fs::write(dir.join(name), bytes).unwrap();
+            engine::Job::new(engine::Info { name: name.into(), folder: dir.display().to_string(), category: GENERAL.into(), url: "https://x.com/watch?v=1".into(), ..Default::default() })
+        };
+        let mp4 = b"\0\0\0\x18ftypisom\0\0\0\0rest";
+        let j = job("watch", mp4);
+        assert!(core.classify(&j));
+        let i = j.info().clone();
+        assert_eq!((i.name.as_str(), i.category.as_str()), ("watch.mp4", "Video"));
+        assert_eq!(Path::new(&i.folder), dir.join("Video"));
+        assert_eq!(std::fs::read(dir.join("Video/watch.mp4")).unwrap(), mp4);
+        let j = job("get.php", b"%PDF-1.7 ...");
+        assert!(core.classify(&j));
+        assert_eq!(j.info().name, "get.pdf");
+        let j = job("notes.zip", b"PK\x03\x04");
+        assert!(!core.classify(&j), "a known type stays");
+        let j = job("readme", b"plain text");
+        assert!(!core.classify(&j), "unknown contents stay");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

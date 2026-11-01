@@ -798,3 +798,4 @@ yt-dlp failed=فشل yt-dlp
 yt-dlp finished without a file=انتهى yt-dlp دون إنشاء ملف
 yt-dlp finished without the audio stream=انتهى yt-dlp دون تنزيل الصوت
 yt-dlp finished without the video stream=انتهى yt-dlp دون تنزيل الفيديو
+yt-dlp gave no formats=لم يجد yt-dlp أي صيغة

@@ -802,3 +802,4 @@ yt-dlp failed=yt-dlp a échoué
 yt-dlp finished without a file=yt-dlp s'est terminé sans créer de fichier
 yt-dlp finished without the audio stream=yt-dlp s'est terminé sans télécharger le son
 yt-dlp finished without the video stream=yt-dlp s'est terminé sans télécharger la vidéo
+yt-dlp gave no formats=yt-dlp n'a trouvé aucun format

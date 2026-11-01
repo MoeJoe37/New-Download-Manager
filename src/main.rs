@@ -4607,14 +4607,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 // same bar again; a step that can't tell how far it is runs to and fro
                 let post = i.post.clone().filter(|_| running);
                 let bar = match &post {
-                    Some((_, f)) if *f >= 0.0 => *f,
-                    Some(_) => {
-                        ui.ctx().request_repaint_after(Duration::from_millis(50));
-                        let t = (ui.input(|x| x.time) * 0.6).fract() as f32;
-                        if t < 0.5 { t * 2.0 } else { 2.0 - t * 2.0 }
-                    }
+                    Some((_, f)) => f.max(0.0),
                     None => frac.unwrap_or(0.0) as f32,
                 };
+                // the step's time left, from how fast it has gone so far
+                let post_left = post.as_ref().zip(i.post_since).and_then(|((_, f), t)| {
+                    let gone = t.elapsed().as_secs_f32();
+                    (*f > 0.02 && gone > 1.0).then(|| (gone * (1.0 - f) / f) as u64)
+                });
                 if post.is_some() {
                     ui.ctx().request_repaint_after(Duration::from_millis(200));
                 }
@@ -4656,7 +4656,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         };
                         let limited = i.limit_kb > 0 || self.core.settings().limit_on;
                         // processing: nothing is coming in, so no rate or time left
-                        let left = if post.is_some() { None } else { left };
+                        let left = if post.is_some() { post_left.map(time_left) } else { left };
                         let speed_text = if running && post.is_none() { i18n::line(&format!("{}/{}{}", size3_os(speed as u64), tr_os("sec"), if limited { format!(" {}", tr_os("(Limited)")) } else { String::new() })) } else { String::new() };
                         d.label(ox + 7.0, oy + 4.0, 329.0, 9.0, i.url.as_str());
                         for (y, k, vx, v) in [
@@ -8113,6 +8113,10 @@ impl eframe::App for App {
         }
         for j in self.core.jobs() {
             if j.just_completed.swap(false, Relaxed) {
+                // a file whose name didn't say what it is: named and filed by its contents
+                if self.core.classify(&j) {
+                    self.core.save();
+                }
                 let id = j.info().id;
                 self.dialogs.retain(|(_, d)| !matches!(d, Dialog::Progress { id: i, .. } if *i == id));
                 let (exe, args) = { let s = self.core.settings(); (s.virus_exe.clone(), s.virus_args.clone()) };

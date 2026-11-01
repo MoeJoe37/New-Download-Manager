@@ -117,6 +117,9 @@ pub struct Info {
     /// far along, 0..1; below 0 = can't tell. Shown in the same bar as the download.
     #[serde(skip)]
     pub post: Option<(String, f32)>,
+    /// When the step in `post` began (its time left).
+    #[serde(skip)]
+    pub post_since: Option<Instant>,
     /// A page whose video yt-dlp gets, on any site (the extension's download panel); pages of the sites
     /// yt-dlp is known for go to it anyway (`ytdlp::is_video_page`).
     pub ytdlp: bool,
@@ -997,7 +1000,119 @@ fn probe_of(r: &ureq::Response) -> Probe {
     let ranges = r.status() == 206 && total.is_some();
     let size = if ranges { total } else { r.header("Content-Length").and_then(|l| l.trim().parse().ok()) };
     let name = r.header("Content-Disposition").and_then(disposition_name).unwrap_or_else(|| url_name(r.get_url()));
-    Probe { name: sanitize(&name), size, ranges, modified: r.header("Last-Modified").unwrap_or_default().to_string(), stream: false }
+    let name = typed_name(&sanitize(&name), r.header("Content-Type").and_then(mime_ext));
+    Probe { name, size, ranges, modified: r.header("Last-Modified").unwrap_or_default().to_string(), stream: false }
+}
+
+/// The file type a Content-Type names, as an extension (None: not a type NDM files by).
+pub fn mime_ext(ct: &str) -> Option<&'static str> {
+    let m = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    Some(match m.as_str() {
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/x-matroska" => "mkv",
+        "video/quicktime" => "mov",
+        "video/x-msvideo" => "avi",
+        "video/x-flv" => "flv",
+        "video/mp2t" => "ts",
+        "video/3gpp" => "3gp",
+        "video/x-ms-wmv" => "wmv",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/mp4" | "audio/x-m4a" | "audio/aac" => "m4a",
+        "audio/ogg" => "ogg",
+        "audio/opus" => "opus",
+        "audio/flac" | "audio/x-flac" => "flac",
+        "audio/wav" | "audio/x-wav" | "audio/vnd.wave" => "wav",
+        "application/pdf" => "pdf",
+        "application/zip" | "application/x-zip-compressed" => "zip",
+        "application/x-rar-compressed" | "application/vnd.rar" => "rar",
+        "application/x-7z-compressed" => "7z",
+        "application/gzip" | "application/x-gzip" => "gz",
+        "application/x-tar" => "tar",
+        "application/x-iso9660-image" => "iso",
+        "application/x-msdownload" | "application/x-msdos-program" | "application/vnd.microsoft.portable-executable" => "exe",
+        "application/x-msi" | "application/x-ms-installer" => "msi",
+        "application/vnd.android.package-archive" => "apk",
+        "application/x-apple-diskimage" => "dmg",
+        "application/vnd.debian.binary-package" => "deb",
+        "application/x-rpm" => "rpm",
+        "application/epub+zip" => "epub",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        "application/vnd.ms-powerpoint" => "ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    })
+}
+
+/// A name that says what the file is: one with no extension, or a script's (download.php, get.aspx...),
+/// takes the type's extension.
+pub fn typed_name(name: &str, ext: Option<&str>) -> String {
+    let Some(ext) = ext else { return name.to_string() };
+    let (stem, cur) = name.rsplit_once('.').filter(|(s, e)| !s.is_empty() && e.len() <= 5 && !e.contains(' ')).unwrap_or((name, ""));
+    let script = ["", "php", "asp", "aspx", "jsp", "cgi", "do", "ashx", "pl", "py", "action", "bin", "dat", "tmp"].contains(&cur.to_ascii_lowercase().as_str());
+    if !script || cur.eq_ignore_ascii_case(ext) {
+        return name.to_string();
+    }
+    format!("{stem}.{ext}")
+}
+
+/// What a file is from its first bytes, as an extension (None: can't tell).
+pub fn sniff(path: &Path) -> Option<&'static str> {
+    let mut head = vec![0u8; 512];
+    let n = File::open(path).and_then(|mut f| f.read(&mut head)).ok()?;
+    let d = &head[..n];
+    let at = |i: usize, sig: &[u8]| d.get(i..i + sig.len()) == Some(sig);
+    Some(if at(4, b"ftyp") {
+        match d.get(8..12) {
+            Some(b"M4A ") | Some(b"M4B ") => "m4a",
+            Some(b"qt  ") => "mov",
+            Some(b) if b.starts_with(b"3g") => "3gp",
+            _ => "mp4",
+        }
+    } else if at(0, &[0x1A, 0x45, 0xDF, 0xA3]) {
+        if d.windows(4).any(|w| w == b"webm") { "webm" } else { "mkv" }
+    } else if at(0, b"ID3") || (d.len() > 1 && d[0] == 0xFF && matches!(d[1], 0xFB | 0xF3 | 0xF2)) {
+        "mp3"
+    } else if at(0, b"OggS") {
+        "ogg"
+    } else if at(0, b"fLaC") {
+        "flac"
+    } else if at(0, b"RIFF") && at(8, b"WAVE") {
+        "wav"
+    } else if at(0, b"RIFF") && at(8, b"AVI ") {
+        "avi"
+    } else if at(0, b"FLV") {
+        "flv"
+    } else if at(0, b"%PDF") {
+        "pdf"
+    } else if at(0, b"PK\x03\x04") {
+        "zip"
+    } else if at(0, b"Rar!") {
+        "rar"
+    } else if at(0, &[b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C]) {
+        "7z"
+    } else if at(0, &[0x1F, 0x8B]) {
+        "gz"
+    } else if at(0, b"MZ") {
+        "exe"
+    } else if at(0, b"\x89PNG") {
+        "png"
+    } else if at(0, &[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else if at(0, b"GIF8") {
+        "gif"
+    } else if d.len() > 188 && d[0] == 0x47 && d[188] == 0x47 {
+        "ts"
+    } else {
+        return None;
+    })
 }
 
 fn strip_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
@@ -1105,7 +1220,11 @@ impl Job {
 
     /// Shows what NDM does with the data after the download (see `Info::post`); `frac` below 0 = unknown.
     pub fn set_post(&self, label: &str, frac: f32) {
-        self.info().post = Some((label.to_string(), frac.min(1.0)));
+        let mut i = self.info();
+        if i.post.as_ref().is_none_or(|p| p.0 != label) {
+            i.post_since = Some(Instant::now());
+        }
+        i.post = Some((label.to_string(), frac.min(1.0)));
     }
 
     /// The finished file copied from the temporary directory to its folder on another drive, then the
@@ -1857,6 +1976,34 @@ mod tests {
 
     /// The finished file copied out of a temporary directory on another drive: in place, the temporary
     /// copy gone, and no processing left showing.
+    #[test]
+    fn file_types() {
+        assert_eq!(mime_ext("video/mp4; codecs=avc1"), Some("mp4"));
+        assert_eq!(mime_ext("text/html"), None);
+        assert_eq!(typed_name("watch", Some("mp4")), "watch.mp4");
+        assert_eq!(typed_name("download.php", Some("zip")), "download.zip");
+        assert_eq!(typed_name("setup.exe", Some("zip")), "setup.exe", "a real extension stays");
+        assert_eq!(typed_name("v 1.2 final", Some("pdf")), "v 1.2 final.pdf");
+        assert_eq!(typed_name("a.zip", None), "a.zip");
+        let dir = std::env::temp_dir().join(format!("ndm-sniff-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        for (bytes, want) in [
+            (b"\0\0\0\x18ftypisom\0\0\0\0".to_vec(), Some("mp4")),
+            (b"\0\0\0\x18ftypM4A \0\0\0\0".to_vec(), Some("m4a")),
+            ([&[0x1A, 0x45, 0xDF, 0xA3][..], b"\x9fB\x82\x84webm"].concat(), Some("webm")),
+            (b"ID3\x04\0".to_vec(), Some("mp3")),
+            (b"%PDF-1.7".to_vec(), Some("pdf")),
+            (b"PK\x03\x04rest".to_vec(), Some("zip")),
+            (b"MZ\x90\0".to_vec(), Some("exe")),
+            (b"just some text".to_vec(), None),
+        ] {
+            let p = dir.join("f");
+            fs::write(&p, &bytes).unwrap();
+            assert_eq!(sniff(&p), want, "{bytes:?}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn copy_out_moves_the_file() {
         let dir = std::env::temp_dir().join(format!("ndm-copyout-{}", std::process::id()));

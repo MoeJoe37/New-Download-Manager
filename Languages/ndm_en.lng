@@ -847,3 +847,4 @@ yt-dlp failed=yt-dlp failed
 yt-dlp finished without a file=yt-dlp finished without a file
 yt-dlp finished without the audio stream=yt-dlp finished without the audio stream
 yt-dlp finished without the video stream=yt-dlp finished without the video stream
+yt-dlp gave no formats=yt-dlp gave no formats

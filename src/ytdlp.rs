@@ -108,6 +108,32 @@ const MERGED: &str = "bv*+ba/b";
 const VIDEO_ONLY: &str = "bv*[acodec=none][ext=mp4]/bv*[acodec=none][ext=webm]";
 /// The single file with both, when a site has no separate streams.
 const SINGLE: &str = "b";
+/// Without ffmpeg: the best video-only stream and the audio NDM can join it with (MP4 and M4A, else WebM
+/// and WebM), else the single file.
+const PAIR: &str = "bv*[acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/bv*[acodec=none][ext=webm]+ba[vcodec=none][ext=webm]/b";
+
+/// What yt-dlp's look-up (-J) picked: the video and audio streams' format ids, or the single file's, and
+/// their size when the site tells it (0: unknown).
+struct Picked {
+    pair: Option<(String, String)>,
+    single: String,
+    size: u64,
+}
+
+impl Picked {
+    fn of(json: &[u8]) -> Option<Picked> {
+        let v: serde_json::Value = serde_json::from_slice(json).ok()?;
+        let size = |f: &serde_json::Value| f.get("filesize").and_then(|s| s.as_f64()).or_else(|| f.get("filesize_approx").and_then(|s| s.as_f64())).unwrap_or(0.0) as u64;
+        let id = |f: &serde_json::Value| f.get("format_id").and_then(|s| s.as_str()).map(str::to_string);
+        match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
+            Some(r) => {
+                let known = r.iter().all(|f| size(f) > 0);
+                Some(Picked { pair: Some((id(&r[0])?, id(&r[1])?)), single: String::new(), size: if known { r.iter().map(size).sum() } else { 0 } })
+            }
+            None => Some(Picked { pair: None, single: id(&v)?, size: size(&v) }),
+        }
+    }
+}
 
 /// The video's file name (title and type) and size, if yt-dlp knows it.
 pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
@@ -140,11 +166,11 @@ enum Got {
 
 /// One yt-dlp run with format `fmt` into `out` (an output template); its progress goes on the job's bar
 /// after `before` bytes of earlier runs. Returns the bytes this run fetched.
-fn fetch_video(job: &Job, p: &Path, url: &str, args: &[String], fmt: &str, out: &str, before: u64) -> Result<(Got, u64), String> {
+fn fetch_video(job: &Job, p: &Path, source: &[String], args: &[String], fmt: &str, out: &str, before: u64, expected: u64) -> Result<(Got, u64), String> {
     let mut child = command(p)
         .args(args)
         .args(["-f", fmt, "--newline", "--continue", "--progress-template", "download:ndm %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s", "-o", out])
-        .arg(url)
+        .args(source)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -167,7 +193,8 @@ fn fetch_video(job: &Job, p: &Path, url: &str, args: &[String], fmt: &str, out: 
             while !done_reading.load(Relaxed) {
                 if let Some((out, expected)) = merging.lock().unwrap().clone() {
                     let have = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-                    job.set_post("Joining video and audio...", (have as f64 / expected.max(1) as f64).min(0.99) as f32);
+                    let label = job.info().post.as_ref().map(|p| p.0.clone()).unwrap_or_else(|| "Processing...".into());
+                    job.set_post(&label, (have as f64 / expected.max(1) as f64).min(0.99) as f32);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
@@ -180,21 +207,16 @@ fn fetch_video(job: &Job, p: &Path, url: &str, args: &[String], fmt: &str, out: 
                     base += part_total.max(last);
                 }
                 (last, part_total) = (done, total);
-                let all = before + base + total.max(done);
+                // the size known from the look-up (video and audio) until the streams say more
+                let all = (before + base + total.max(done)).max(expected);
                 let mut i = job.info();
                 i.post = None;
                 i.size = Some(all).filter(|s| *s > 0);
                 i.segs = vec![Seg { start: 0, next: before + base + done, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
-            } else if let Some(rest) = line.strip_prefix("[Merger] ") {
-                let out = rest.split('"').nth(1).map(PathBuf::from).map(|p| {
-                    let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
-                    p.with_extension(format!("temp.{ext}"))
-                });
-                job.set_post("Joining video and audio...", -1.0);
-                *merging.lock().unwrap() = out.map(|o| (o, base + part_total.max(last)));
-            } else if line.starts_with("[Fixup") || line.starts_with("[VideoRemuxer]") || line.starts_with("[VideoConvertor]") {
-                *merging.lock().unwrap() = None;
-                job.set_post("Processing...", -1.0);
+            } else if let Some((label, out, expected)) = post_step(&line, base + part_total.max(last)) {
+                // after the download, ffmpeg (through yt-dlp) writes "<name>.temp.<ext>": the bar follows it
+                job.set_post(label, 0.0);
+                *merging.lock().unwrap() = out.map(|o| (o, expected));
             }
             if job.stopping() {
                 let _ = child.kill();
@@ -212,6 +234,30 @@ fn fetch_video(job: &Job, p: &Path, url: &str, args: &[String], fmt: &str, out: 
     Ok((if stopped { Got::Stopped } else if ok { Got::Done } else { Got::Failed(last_error(&errors)) }, fetched))
 }
 
+/// A yt-dlp line that starts a step after the download: its label, the file ffmpeg writes meanwhile
+/// ("<name>.temp.<ext>") and the size that file grows to. `fetched`: the bytes downloaded (video and audio).
+fn post_step(line: &str, fetched: u64) -> Option<(&'static str, Option<PathBuf>, u64)> {
+    let tag = line.strip_prefix('[')?.split(']').next()?;
+    let quoted = || line.split('"').nth(1).map(PathBuf::from);
+    let temp = |p: PathBuf| {
+        let ext = p.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+        p.with_extension(format!("temp.{ext}"))
+    };
+    match tag {
+        "Merger" => Some(("Joining video and audio...", quoted().map(temp), fetched)),
+        t if t.starts_with("Fixup") => {
+            let file = quoted()?;
+            let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(fetched);
+            Some(("Processing...", Some(temp(file)), size))
+        }
+        "VideoRemuxer" | "VideoConvertor" | "ExtractAudio" => {
+            let file = line.split("Destination: ").nth(1).map(|d| PathBuf::from(d.trim()));
+            Some(("Processing...", file.map(temp), fetched))
+        }
+        _ => None,
+    }
+}
+
 /// "%" starts a field in yt-dlp's output templates.
 fn template(p: &Path) -> String {
     p.display().to_string().replace('%', "%%")
@@ -220,10 +266,6 @@ fn template(p: &Path) -> String {
 /// The file a run with output template "<stem>.<tag>.%(ext)s" left (the formats are MP4, M4A or WebM).
 fn left(dir: &Path, stem: &str, tag: &str) -> Option<PathBuf> {
     ["mp4", "m4a", "webm"].iter().map(|e| dir.join(format!("{stem}.{tag}.{e}"))).find(|p| p.is_file())
-}
-
-fn not_available(e: &str) -> bool {
-    e.contains("Requested format is not available")
 }
 
 /// Downloads the video into the job's file; progress from yt-dlp's own lines. Stop ends yt-dlp (its .part
@@ -267,50 +309,56 @@ pub fn run(job: &Job) -> Result<bool, String> {
         if ff.is_absolute() {
             args.extend(["--ffmpeg-location".into(), ff.display().to_string()]);
         }
-        let (got, _) = fetch_video(job, &p, &url, &args, MERGED, &template(&dest), 0)?;
+        let (got, _) = fetch_video(job, &p, std::slice::from_ref(&url), &args, MERGED, &template(&dest), 0, 0)?;
         return finish(got);
     }
-    // no ffmpeg: the video stream, then the audio stream, joined here; a site without separate streams
-    // gives its single file
+    // no ffmpeg: one look-up (-J) that picks the best video stream and the audio that goes with it, then
+    // both downloaded from that look-up (no second look-up between them) and joined here; a site without
+    // separate streams gives its single file
     let dir = dest.parent().map(Path::to_path_buf).unwrap_or_default();
     let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
-    let single = |before: u64| fetch_video(job, &p, &url, &args, SINGLE, &template(&dest), before).map(|g| g.0);
-    let (got, fetched) = fetch_video(job, &p, &url, &args, VIDEO_ONLY, &format!("{}.ndm-video.%(ext)s", template(&dir.join(&stem))), 0)?;
-    match got {
-        Got::Failed(e) if not_available(&e) => return finish(single(0)?),
-        Got::Done => {}
-        other => return finish(other),
+    let looked = command(&p).args(&args).args(["-J", "-f", PAIR]).arg(&url).output().map_err(|e| e.to_string())?;
+    if !looked.status.success() {
+        return Err(last_error(&String::from_utf8_lossy(&looked.stderr)));
     }
-    let video = left(&dir, &stem, "ndm-video").ok_or("yt-dlp finished without the video stream")?;
-    // yt-dlp looks the video up again for its sound: the bar says so rather than sit at 100 %
-    job.set_post("Getting the audio...", -1.0);
-    let audio_fmt = if video.extension().is_some_and(|e| e == "webm") { "ba[vcodec=none][ext=webm]" } else { "ba[vcodec=none][ext=m4a]" };
-    let (got, _) = fetch_video(job, &p, &url, &args, audio_fmt, &format!("{}.ndm-audio.%(ext)s", template(&dir.join(&stem))), fetched)?;
-    match got {
-        Got::Failed(e) if not_available(&e) => {
-            let _ = std::fs::remove_file(&video);
-            return finish(single(0)?);
+    let picked = Picked::of(&looked.stdout).ok_or("yt-dlp gave no formats")?;
+    let json = dir.join(format!("{stem}.ndm-info.json"));
+    std::fs::write(&json, &looked.stdout).map_err(|e| e.to_string())?;
+    let source = ["--load-info-json".to_string(), json.display().to_string()];
+    let result = (|| -> Result<bool, String> {
+        let Some((v, a)) = picked.pair else {
+            let (got, _) = fetch_video(job, &p, &source, &args, &picked.single, &template(&dest), 0, picked.size)?;
+            return finish(got);
+        };
+        let (got, fetched) = fetch_video(job, &p, &source, &args, &v, &format!("{}.ndm-video.%(ext)s", template(&dir.join(&stem))), 0, picked.size)?;
+        if !matches!(got, Got::Done) {
+            return finish(got);
         }
-        Got::Done => {}
-        other => return finish(other),
-    }
-    let audio = left(&dir, &stem, "ndm-audio").ok_or("yt-dlp finished without the audio stream")?;
-    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    let expected = size(&video) + size(&audio);
-    let joined = crate::stream::with_post(job, "Joining video and audio...", std::slice::from_ref(&dest), expected, || crate::stream::join_files(&video, &audio, &dest));
-    match joined {
-        Ok(true) => {
-            let _ = std::fs::remove_file(&video);
-            let _ = std::fs::remove_file(&audio);
+        let video = left(&dir, &stem, "ndm-video").ok_or("yt-dlp finished without the video stream")?;
+        let (got, _) = fetch_video(job, &p, &source, &args, &a, &format!("{}.ndm-audio.%(ext)s", template(&dir.join(&stem))), fetched, picked.size)?;
+        if !matches!(got, Got::Done) {
+            return finish(got);
         }
-        // couldn't join them: the video as the file, its sound beside it
-        _ => {
-            std::fs::rename(&video, &dest).map_err(|e| e.to_string())?;
-            let ext = audio.extension().unwrap_or_default().to_string_lossy().to_string();
-            let _ = std::fs::rename(&audio, dir.join(format!("{stem}.audio.{ext}")));
+        let audio = left(&dir, &stem, "ndm-audio").ok_or("yt-dlp finished without the audio stream")?;
+        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let expected = size(&video) + size(&audio);
+        let joined = crate::stream::with_post(job, "Joining video and audio...", std::slice::from_ref(&dest), expected, || crate::stream::join_files(&video, &audio, &dest));
+        match joined {
+            Ok(true) => {
+                let _ = std::fs::remove_file(&video);
+                let _ = std::fs::remove_file(&audio);
+            }
+            // couldn't join them: the video as the file, its sound beside it
+            _ => {
+                std::fs::rename(&video, &dest).map_err(|e| e.to_string())?;
+                let ext = audio.extension().unwrap_or_default().to_string_lossy().to_string();
+                let _ = std::fs::rename(&audio, dir.join(format!("{stem}.audio.{ext}")));
+            }
         }
-    }
-    finish(Got::Done)
+        finish(Got::Done)
+    })();
+    let _ = std::fs::remove_file(&json);
+    result
 }
 
 // ---------- Downloads -> Set yt-dlp ----------
