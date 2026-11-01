@@ -22,9 +22,9 @@
 })();
 
 // A video's own page, for yt-dlp: on feeds (TikTok's For You, Instagram, X, Facebook, Reddit...) the address
-// bar shows the feed, which yt-dlp can't take, while the post holding the player links to the video's page.
-// The link nearest the player that is a video's address, else the page's own (og:url, canonical), else the
-// address bar. Shared by the download panel and the right-click menu.
+// bar shows the feed, which yt-dlp can't take. The page comes from the post holding the player and nothing
+// beyond it: never a link from elsewhere on the page (a notification, the next post), which would download
+// another video. Shared by the download panel and the right-click menu.
 const VIDEO_URL = [
   /tiktok\.com\/@[^/?#]+\/(video|photo)\/\d+/, /vm\.tiktok\.com\/\w+/, /instagram\.com\/([^/?#]+\/)?(p|reels?|tv)\/[\w-]+/,
   /(twitter|x)\.com\/[^/?#]+\/status\/\d+/, /facebook\.com\/(watch\/?\?v=|reel\/|[^/?#]+\/videos\/|share\/[rv]\/|video\.php)/, /fb\.watch\//,
@@ -35,13 +35,46 @@ const VIDEO_URL = [
   /linkedin\.com\/(posts|feed\/update)\//, /tumblr\.com\/.+\/\d+/, /9gag\.com\/gag\//, /imgur\.com\/(gallery|a)\//, /kick\.com\/[^/?#]+\/(videos|clips)\//,
 ];
 const isVideoUrl = u => VIDEO_URL.some(p => p.test(u || ''));
+// page furniture: a container holding it is the page, no longer the player's post
+const FURNITURE = 'nav,[role="navigation"],main,[role="main"]';
+// the containers around `el` that are still its post: up to (not including) the first that also holds another
+// player or the page's furniture
+function postOf(el) {
+  const mine = el?.closest?.('video,audio') || el;
+  const levels = [];
+  for (let n = el; n && n.nodeType === 1 && n !== document.body && n !== document.documentElement && levels.length < 16; n = n.parentElement) {
+    if (n.matches(FURNITURE) || n.querySelector(FURNITURE)) break;
+    const other = [...n.querySelectorAll('video,audio')].some(v => v !== mine && !v.contains(mine) && !mine?.contains?.(v));
+    if (other) break;
+    levels.push(n);
+  }
+  return levels;
+}
+// TikTok's player carries its video's number in its id ("xgwrapper-0-7312345678901234567"): the page is
+// tiktok.com/@<author>/video/<number> (yt-dlp takes it without the author too)
+function tiktokPage(levels) {
+  if (!/(^|\.)tiktok\.com$/.test(location.hostname)) return null;
+  for (const n of levels) {
+    const holder = [n, ...n.querySelectorAll('[id*="xgwrapper"],[id*="-video-"],[data-video-id]')].find(e => /\d{15,21}/.test((e.id || '') + (e.dataset?.videoId || '')));
+    const id = holder && ((holder.id || '') + ' ' + (holder.dataset?.videoId || '')).match(/(\d{15,21})/)[1];
+    if (id) {
+      const post = levels[levels.length - 1];
+      const author = [...post.querySelectorAll('a[href*="/@"]')].map(a => a.href.match(/tiktok\.com\/@([\w.-]+)\/?(?:[?#]|$)/)).find(Boolean);
+      return `https://www.tiktok.com/@${author ? author[1] : ''}/video/${id}`;
+    }
+  }
+  return null;
+}
 function videoPage(el) {
   if (isVideoUrl(location.href)) return location.href;
-  // from the player out, a few levels: the first container with a video's link is the player's post
-  for (let n = el, depth = 0; n && n !== document.documentElement && depth < 14; n = n.parentElement, depth++) {
-    const own = n.closest && n.closest('a[href]');
+  const levels = postOf(el);
+  const tok = tiktokPage(levels);
+  if (tok) return tok;
+  // from the player out: the first video link in its post (a link around the player, its time stamp...)
+  for (const n of levels) {
+    const own = n.closest('a[href]');
     if (own && isVideoUrl(own.href)) return own.href;
-    const link = n.querySelectorAll ? [...n.querySelectorAll('a[href]')].find(a => isVideoUrl(a.href)) : null;
+    const link = [...n.querySelectorAll('a[href]')].find(a => isVideoUrl(a.href));
     if (link) return link.href;
   }
   const meta = document.querySelector('meta[property="og:url"]')?.content || document.querySelector('link[rel="canonical"]')?.href;

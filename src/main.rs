@@ -1768,6 +1768,8 @@ struct App {
     dlg_pos: HashMap<u64, egui::Pos2>,
     serial: u64,
     quitting: bool,
+    /// Closing for an update: the setup's own window shows it, so no "Exit NDM" note.
+    updating: bool,
     /// "Refresh download address": the download waiting for a fresh link from the browser.
     refreshing: Option<u64>,
     /// Login typed in "Connecting to the site" for the grabber to explore again with.
@@ -2166,6 +2168,7 @@ impl App {
             dlg_pos: HashMap::new(),
             serial: 0,
             quitting: false,
+            updating: false,
             toolbar: None,
             tb_key: (String::new(), false, 0),
             icons: HashMap::new(),
@@ -6270,7 +6273,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             Some(Ok(())) => {
                                 // the setup (or the new copy) waits for this process to end: close the main
                                 // window, not this dialog's, and exit anyway should that not happen
-                                self.quitting = true;
+                                (self.quitting, self.updating) = (true, true);
                                 ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
                                 let core = self.core.clone();
                                 std::thread::spawn(move || {
@@ -8314,7 +8317,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        win::exit_splash(&i18n::tr_os("Exit NDM"), &i18n::tr_os("Saving settings..."));
+        if !self.updating {
+            win::exit_splash(&i18n::tr_os("Exit NDM"), &i18n::tr_os("Saving settings..."));
+        }
         self.core.shutdown();
     }
 }
