@@ -738,6 +738,7 @@ the package manager failed=the package manager failed
 the playlist has no segments=the playlist has no segments
 the playlist has no streams=the playlist has no streams
 The project with "%s" name already exists. Please select another name.=The project with "%s" name already exists. Please select another name.
+the request failed=the request failed
 The selected column should be=The selected column should be
 the server refused the Kerberos ticket=the server refused the Kerberos ticket
 The Site Grabber downloads all pictures, documents or a whole site from a start page.=The Site Grabber downloads all pictures, documents or a whole site from a start page.

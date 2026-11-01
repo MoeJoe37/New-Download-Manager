@@ -30,6 +30,10 @@ const MIN_STEAL: u64 = 64 * 1024;
 const STEAL_STARTUP: f64 = 1.0;
 /// Bytes before a resume point that are fetched again and compared with the file.
 const VERIFY: u64 = 64;
+/// How long a new connection waits for the server's answer while the download's other connections
+/// receive, before it gives up (the server allows fewer connections).
+const NO_ANSWER: Duration = Duration::from_secs(6);
+const NO_ANSWER_ERR: &str = "no answer from the server";
 pub const CHANGED: &str = "the file on the server has changed";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 
@@ -1574,11 +1578,16 @@ impl Job {
                     Some(n) => (k, fails) = (n, 0),
                     None => return None,
                 },
-                Err(e) if (e.starts_with("HTTP 503") || e.starts_with("HTTP 429")) && self.others_receiving(k, &net) > 0 => {
-                    // the server allows fewer connections than this: this one ends and hands its part
-                    // back, and the network keeps to the connections that work (`caps`)
+                Err(e) if e == NO_ANSWER_ERR || ((e.starts_with("HTTP 503") || e.starts_with("HTTP 429") || self.info().segs[k].next == before) && self.others_receiving(k, &net) > 0) => {
+                    // the server allows fewer connections than this (it says busy, or a new connection
+                    // gets nothing: turned away, or left hanging until the read times out while the others
+                    // receive): this one ends and hands its part back, and the network keeps to the
+                    // connections that work (`caps`)
                     let working = self.others_receiving(k, &net).max(1);
-                    self.caps.lock().unwrap().insert(net.clone(), working);
+                    let mut caps = self.caps.lock().unwrap();
+                    let cap = caps.get(&net).map_or(working, |c| working.min(*c));
+                    caps.insert(net.clone(), cap);
+                    drop(caps);
                     let mut i = self.info();
                     let s = &mut i.segs[k];
                     (s.owned, s.rate, s.info) = (false, 0.0, String::new());
@@ -1643,7 +1652,7 @@ impl Job {
                     let range = stop.map_or(format!("bytes={from}-"), |e| format!("bytes={from}-{}", e - 1));
                     req = req.set("Range", &range);
                 }
-                let resp = call(req)?;
+                let Some(resp) = self.answer(req)? else { return Ok(()) };
                 if ranges && resp.status() != 206 {
                     return Err("server ignored the Range request".into());
                 }
@@ -1731,6 +1740,34 @@ impl Job {
 
     /// How many other connections on `net` than part `k`'s are receiving data (a finished part keeps its
     /// owner's last state, so it doesn't count).
+    /// A connection's request, waited for while the download runs: a server that leaves a new connection
+    /// unanswered for NO_ANSWER while the others receive (it allows fewer connections), or twice that once
+    /// it has sent part of the file, ends it instead of after the read timeout. None: the download stopped.
+    fn answer(&self, req: ureq::Request) -> Result<Option<ureq::Response>, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(call(req));
+        });
+        let since = Instant::now();
+        let before = self.info().done();
+        loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(r) => return r.map(Some),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err("the request failed".into()),
+                Err(_) if self.stopping() => return Ok(None),
+                Err(_) => {
+                    // the other connections received meanwhile; or, alone, a server that has been sending (it
+                    // may still count the connection just closed) gets twice as long
+                    let done = self.info().done();
+                    let waited = since.elapsed();
+                    if (waited >= NO_ANSWER && done > before) || (waited >= 2 * NO_ANSWER && done > 0) {
+                        return Err(NO_ANSWER_ERR.into());
+                    }
+                }
+            }
+        }
+    }
+
     fn others_receiving(&self, k: usize, net: &str) -> usize {
         self.info().segs.iter().enumerate().filter(|(j, s)| *j != k && s.owned && !s.done() && s.net == net && s.info.starts_with("Receiving")).count()
     }
@@ -1913,9 +1950,9 @@ pub(crate) mod tests {
         assert!(check("/gone", "audio/mpeg", 0, "a.mp3").is_err(), "an error");
     }
 
-    /// A server that serves at most `most` requests at once and answers 503 to the rest; returns its
-    /// address and how many it turned away.
-    fn serve_limited(data: Arc<Vec<u8>>, most: usize) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    /// A server that serves at most `most` requests at once and answers 503 to the rest (`hang`: leaves
+    /// them unanswered, as some video sites do); returns its address and how many it turned away.
+    fn serve_limited(data: Arc<Vec<u8>>, most: usize, hang: bool) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::AtomicUsize;
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", l.local_addr().unwrap());
@@ -1946,6 +1983,10 @@ pub(crate) mod tests {
                     if active.fetch_add(1, Relaxed) >= most {
                         active.fetch_sub(1, Relaxed);
                         refused.fetch_add(1, Relaxed);
+                        if hang {
+                            thread::sleep(Duration::from_secs(120));
+                            return;
+                        }
                         let _ = w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
                         continue;
                     }
@@ -1969,7 +2010,7 @@ pub(crate) mod tests {
     #[test]
     fn keeps_to_a_servers_connection_limit() {
         let data: Arc<Vec<u8>> = Arc::new((0..3 * 1024 * 1024).map(|i: u32| (i * 13 % 251) as u8).collect());
-        let (base, refused) = serve_limited(data.clone(), 2);
+        let (base, refused) = serve_limited(data.clone(), 2, false);
         let dir = std::env::temp_dir().join(format!("ndm-test-limit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let j = Job::new(Info { conns: 8, ..info(format!("{base}f.bin"), &dir) });
@@ -1981,6 +2022,24 @@ pub(crate) mod tests {
         // the connections the server turned away end at once instead of retrying for a minute
         assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
         assert!(refused.load(Relaxed) <= 12, "{} requests refused", refused.load(Relaxed));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A server that leaves the connections over its limit unanswered: they give up after NO_ANSWER while
+    /// the others receive, instead of waiting out the read timeout again and again (a download that seemed
+    /// stuck).
+    #[test]
+    fn keeps_to_a_server_that_leaves_connections_hanging() {
+        let data: Arc<Vec<u8>> = Arc::new((0..3 * 1024 * 1024).map(|i: u32| (i * 7 % 251) as u8).collect());
+        let (base, _) = serve_limited(data.clone(), 1, true);
+        let dir = std::env::temp_dir().join(format!("ndm-test-hang-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let j = Job::new(Info { conns: 8, ..info(format!("{base}f.bin"), &dir) });
+        let t = Instant::now();
+        run(&j);
+        assert_eq!(j.info().status, Status::Complete);
+        assert_eq!(fs::read(j.info().path()).unwrap(), *data);
+        assert!(t.elapsed() < Duration::from_secs(25), "{:?}", t.elapsed());
         let _ = fs::remove_dir_all(&dir);
     }
 

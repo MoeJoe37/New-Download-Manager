@@ -694,6 +694,7 @@ the package manager failed=فشل مدير الحزم
 the playlist has no segments=لا تحتوي قائمة التشغيل على مقاطع
 the playlist has no streams=لا تحتوي قائمة التشغيل على بثوث
 The project with "%s" name already exists. Please select another name.=يوجد مشروع بالاسم "%s" بالفعل. يرجى اختيار اسم آخر.
+the request failed=فشل الطلب
 The selected column should be=يجب أن يكون العمود المحدد
 the server refused the Kerberos ticket=رفض الخادم تذكرة Kerberos
 The Site Grabber downloads all pictures, documents or a whole site from a start page.=ينزّل ملتقط المواقع كل الصور أو المستندات أو موقعًا كاملًا بدءًا من صفحة البدء.

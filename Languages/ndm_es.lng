@@ -698,6 +698,7 @@ the package manager failed=falló el gestor de paquetes
 the playlist has no segments=la lista de reproducción no tiene segmentos
 the playlist has no streams=la lista de reproducción no tiene flujos
 The project with "%s" name already exists. Please select another name.=Ya existe un proyecto con el nombre "%s". Elija otro nombre.
+the request failed=la solicitud falló
 The selected column should be=La columna seleccionada debe tener
 the server refused the Kerberos ticket=el servidor rechazó el ticket de Kerberos
 The Site Grabber downloads all pictures, documents or a whole site from a start page.=El capturador de sitios descarga todas las imágenes, los documentos o un sitio completo a partir de una página de inicio.

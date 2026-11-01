@@ -115,13 +115,28 @@ fn last_error(err: &str) -> String {
 
 /// With ffmpeg: the best video and audio, merged by yt-dlp into an MP4.
 const MERGED: &str = "bv*+ba/b";
-/// Without: the best video-only stream NDM can join with an audio stream (MP4, else WebM).
-const VIDEO_ONLY: &str = "bv*[acodec=none][ext=mp4]/bv*[acodec=none][ext=webm]";
 /// The single file with both, when a site has no separate streams.
 const SINGLE: &str = "b";
 /// Without ffmpeg: the best video-only stream and the audio NDM can join it with (MP4 and M4A, else WebM
 /// and WebM), else the single file.
 const PAIR: &str = "bv*[acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/bv*[acodec=none][ext=webm]+ba[vcodec=none][ext=webm]/b";
+
+/// The formats asked for on `url`'s site, `ff`: with ffmpeg. TikTok and Douyin: the one file that has both
+/// (H.264 first, which every player plays), not their video-only streams (some broken) with the separate
+/// "music" track, which isn't always the video's own sound. YouTube without ffmpeg: its separate streams,
+/// which NDM joins itself. Other sites without ffmpeg: the one file that has both when there is one, since
+/// their separate streams may be whole MP4 files that only ffmpeg joins.
+fn formats(url: &str, ff: bool) -> String {
+    let host = host_of(url);
+    let both = if ff { MERGED } else { PAIR };
+    if ["tiktok.com", "douyin.com"].iter().any(|s| on_site(&host, s)) {
+        format!("b[vcodec^=h264]/b[vcodec^=avc]/b/{both}")
+    } else if ff || ["youtube.com", "youtu.be"].iter().any(|s| on_site(&host, s)) {
+        both.to_string()
+    } else {
+        format!("{SINGLE}/{PAIR}")
+    }
+}
 
 /// One stream yt-dlp's look-up (-J) picked: its format id, address, type and size (0: unknown), the
 /// headers it is fetched with, and whether it is a plain file NDM can fetch itself (http / https; DASH and
@@ -179,7 +194,7 @@ fn picked(json: &[u8]) -> Option<Vec<Stream>> {
 pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     let p = yt_dlp()?;
     let ff = ffmpeg();
-    let fmt = if ff.is_some() { MERGED.to_string() } else { format!("{VIDEO_ONLY}/{SINGLE}") };
+    let fmt = formats(url, ff.is_some());
     let out = command(&p)
         .args(base_args(url, referrer, cookies))
         .args(["-f", &fmt, "--skip-download", "--print", "%(title)s", "--print", "%(ext)s"])
@@ -191,7 +206,8 @@ pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> 
     let (Some(title), Some(ext)) = (lines.next(), lines.next()) else {
         return Err(last_error(&String::from_utf8_lossy(&out.stderr)));
     };
-    let ext = if ff.is_some() { "mp4" } else { ext.trim() };
+    // a pair is joined into an MP4 (WebM with WebM)
+    let ext = if ff.is_some() && ext.trim() != "webm" { "mp4" } else { ext.trim() };
     let name = sanitize(&format!("{}.{ext}", title.trim()));
     // the size shows as the streams arrive (video and audio come separately)
     Ok(Probe { name, size: None, ranges: false, modified: String::new(), stream: false, page: false, ytdlp: true })
@@ -331,8 +347,8 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     let args = base_args(&url, &referrer, &cookies);
     let ff = ffmpeg();
     // with ffmpeg any video and audio can be joined; without, a pair NDM joins itself (MP4 + M4A, WebM + WebM)
-    let fmt = if ff.is_some() { MERGED } else { PAIR };
-    let looked = command(&p).args(&args).args(["-J", "-f", fmt]).arg(&url).output().map_err(|e| e.to_string())?;
+    let fmt = formats(&url, ff.is_some());
+    let looked = command(&p).args(&args).args(["-J", "-f", &fmt]).arg(&url).output().map_err(|e| e.to_string())?;
     if !looked.status.success() {
         return Err(last_error(&String::from_utf8_lossy(&looked.stderr)));
     }
@@ -1071,5 +1087,38 @@ mod tests {
         assert!(samples.iter().map(|s| s.2).max().unwrap() > 2, "several connections at once");
         assert_eq!(job.info().done(), total);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A page through the real yt-dlp (NDM_TEST_YTDLP), as the app downloads it: NDM_TEST_PAGE, into a
+    /// temporary folder; ffmpeg on PATH unless NDM_TEST_NO_FFMPEG.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "needs the real yt-dlp and a page: NDM_TEST_YTDLP=... NDM_TEST_PAGE=... cargo test real_ytdlp_page -- --ignored"]
+    fn real_ytdlp_page() {
+        let bin = std::env::var("NDM_TEST_YTDLP").expect("NDM_TEST_YTDLP");
+        let home = std::env::temp_dir().join(format!("ndm-page-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let tools = home.join("NewDownloadManager/tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::copy(&bin, tools.join("yt-dlp")).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &home);
+        if std::env::var("NDM_TEST_NO_FFMPEG").is_ok() {
+            std::env::set_var("PATH", "/nonexistent");
+        }
+        let dir = home.join("Video");
+        let job = Job::new(crate::engine::Info { url: std::env::var("NDM_TEST_PAGE").unwrap(), folder: dir.display().to_string(), conns: 4, ..Default::default() });
+        let t = std::time::Instant::now();
+        let r = run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default());
+        eprintln!("{r:?} in {:?}: {:?}", t.elapsed(), std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| (e.file_name(), e.metadata().map(|m| m.len()).unwrap_or(0))).collect::<Vec<_>>()));
+        assert_eq!(r, Ok(true));
+    }
+    #[test]
+    fn formats_per_site() {
+        let tiktok = formats("https://www.tiktok.com/@a/video/1", false);
+        assert!(tiktok.starts_with("b[vcodec^=h264]/"), "{tiktok}");
+        assert!(formats("https://m.douyin.com/video/1", true).starts_with("b[vcodec^=h264]/"));
+        assert_eq!(formats("https://www.youtube.com/watch?v=x", false), PAIR);
+        assert_eq!(formats("https://www.youtube.com/watch?v=x", true), MERGED);
+        assert_eq!(formats("https://vimeo.com/1", true), MERGED);
+        assert_eq!(formats("https://vimeo.com/1", false), format!("b/{PAIR}"));
     }
 }
