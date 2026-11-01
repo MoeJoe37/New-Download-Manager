@@ -1,6 +1,6 @@
 [package]
 name = "ndm"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 
 [dependencies]
@@ -13,6 +13,8 @@ ureq = { version = "2", default-features = false, features = ["tls", "socks-prox
 sha2 = "0.10"
 sha1 = "0.10"
 md5 = { package = "md-5", version = "0.10" }
+# Downloads -> Set yt-dlp: Deno comes as a zip (already built for the tray icon's PNG)
+flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"

@@ -54,9 +54,10 @@
 - HLS (.m3u8) and DASH (.mpd), including AES-128, byte ranges, multi-period and live streams
 - Video and audio joined into one MP4 or WebM without any extra program
 - YouTube, Vimeo, TikTok, Instagram, X, Reddit, Twitch, SoundCloud and other video sites through
-  [yt-dlp](https://github.com/yt-dlp/yt-dlp): *Downloads → Set yt-dlp* downloads it, adds it to PATH and keeps it
-  up to date (with ffmpeg, best video and audio in one MP4).
-  Paste the page's address, or right-click the page → *Download this video with New Download Manager*
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp): *Downloads → Set yt-dlp* downloads it (and Deno, which it needs for
+  YouTube), adds it to PATH and keeps it up to date. The best video and audio end up in one file, joined by NDM
+  itself when ffmpeg isn't installed. Paste the page's address, click *Download this video* on the player, or
+  right-click the page → *Download this video with New Download Manager*
 
 **Organizing**
 - Categories with their own folders, queues with a scheduler (start / stop times, days, retries)

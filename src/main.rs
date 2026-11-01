@@ -2667,7 +2667,19 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         (info.referrer, info.cookies, info.browser_proxy) = (inc.referrer, inc.cookies, inc.proxy);
         let slot: ProbeSlot = Arc::default();
         let hint = inc.filename.rsplit(['/', '\\']).next().map(engine::sanitize).filter(|n| n != "download").unwrap_or_default();
-        let name = if hint.is_empty() { engine::sanitize(&engine::url_name(&info.url)) } else { hint.clone() };
+        // a video page (YouTube...): the Video category until yt-dlp names the file from the video's title
+        let video_page = ytdlp::is_video_page(&info.url);
+        let name = if !hint.is_empty() {
+            hint.clone()
+        } else if video_page {
+            "video.mp4".into()
+        } else {
+            engine::sanitize(&engine::url_name(&info.url))
+        };
+        if video_page {
+            info.category = self.core.settings().category_for(&name, &info.url);
+            info.folder = self.core.settings().folder_for(&info.category);
+        }
         if !inc.folder.is_empty() {
             info.folder = inc.folder.clone();
         }
@@ -4446,7 +4458,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 }
                                 (info.size, info.ranges, info.probed, info.stream) = (p.size, p.ranges, true, p.stream);
                             }
-                            Err(e) => *error = e,
+                            Err(e) => {
+                                // yt-dlp's own message says what is missing or wrong (Set yt-dlp, a sign-in...)
+                                if ytdlp::is_video_page(&info.url) {
+                                    self.open(Dialog::Info { title: "Download File Info".into(), text: i18n::tr_msg_os(&e) });
+                                }
+                                *error = e;
+                            }
                         }
                     }
                 }

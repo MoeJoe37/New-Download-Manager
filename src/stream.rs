@@ -789,6 +789,45 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     Ok(true)
 }
 
+/// Joins a video file and an audio file (a site's separate streams, fetched by yt-dlp without ffmpeg)
+/// into `out`: fragmented MP4 into one MP4, WebM into one WebM. Ok(false): not a pair NDM can join
+/// (nothing useful written).
+pub fn join_files(video: &Path, audio: &Path, out: &Path) -> Result<bool, String> {
+    fn chunks(p: &Path) -> Result<impl Iterator<Item = Result<Vec<u8>, String>>, String> {
+        let mut f = File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        Ok(std::iter::from_fn(move || {
+            let mut buf = vec![0u8; 1 << 20];
+            match f.read(&mut buf) {
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    Some(Ok(buf))
+                }
+                Err(e) => Some(Err(e.to_string())),
+            }
+        }))
+    }
+    use remux::{Kind, Regroup};
+    let webm = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("webm"));
+    if webm(video) != webm(audio) {
+        return Ok(false);
+    }
+    if webm(video) {
+        return remux::webm_merge(&mut Regroup::new(chunks(video)?, Kind::Webm), &mut Regroup::new(chunks(audio)?, Kind::Webm), out);
+    }
+    let timed = |p: &Path| chunks(p).map(|c| Regroup::new(c, Kind::Mp4).map(|u| (u, 0.0)));
+    let mut base = f64::INFINITY;
+    for p in [video, audio] {
+        if let Some(t) = first_time(timed(p)?) {
+            base = base.min(t);
+        }
+    }
+    let base = if base.is_finite() { base } else { 0.0 };
+    let mut v = Regroup::new(retime(timed(video)?, base), Kind::Mp4);
+    let mut a = Regroup::new(retime(timed(audio)?, base), Kind::Mp4);
+    mux_mp4(&mut v, &mut a, out)
+}
+
 /// A track's pieces on disk with their timeline shift; a whole file is re-cut into fragments first.
 fn timed<'a>(whole: bool, parts: &'a [Part], file: &'a dyn Fn(usize) -> PathBuf) -> Box<dyn Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a> {
     let on_disk = (0..parts.len()).filter(move |k| file(*k).exists());
@@ -1189,7 +1228,7 @@ fn mux_mp4<'a>(v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a), a
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
@@ -1377,10 +1416,10 @@ mod tests {
         assert_eq!(with_ext("Ep. 5", "mp4"), "Ep. 5.mp4");
     }
 
-    fn mk(t: &[u8; 4], parts: &[&[u8]]) -> Vec<u8> {
+    pub(crate) fn mk(t: &[u8; 4], parts: &[&[u8]]) -> Vec<u8> {
         mkbox(t, &parts.concat())
     }
-    fn init(id: u32, scale: u32) -> Vec<u8> {
+    pub(crate) fn init(id: u32, scale: u32) -> Vec<u8> {
         let tkhd = mk(b"tkhd", &[&[0; 12], &id.to_be_bytes(), &[0; 4]]);
         let mdhd = mk(b"mdhd", &[&[0; 12], &scale.to_be_bytes(), &[0; 4]]);
         let trak = mk(b"trak", &[&tkhd, &mk(b"mdia", &[&mdhd])]);
@@ -1388,7 +1427,7 @@ mod tests {
         let trex = mk(b"trex", &[&[0; 4], &id.to_be_bytes(), &[0; 12]]);
         [mk(b"ftyp", &[b"iso6"]), mk(b"moov", &[&mvhd, &trak, &mk(b"mvex", &[&trex])])].concat()
     }
-    fn frag(id: u32, t: u32, payload: u8) -> Vec<u8> {
+    pub(crate) fn frag(id: u32, t: u32, payload: u8) -> Vec<u8> {
         let traf = mk(b"traf", &[&mk(b"tfhd", &[&[0; 4], &id.to_be_bytes()]), &mk(b"tfdt", &[&[0; 4], &t.to_be_bytes()])]);
         [mk(b"styp", &[b"msdh"]), mk(b"moof", &[&traf]), mk(b"mdat", &[&[payload]])].concat()
     }
@@ -1414,6 +1453,29 @@ mod tests {
         let tfhd_ids: Vec<u32> = top.iter().filter(|b| &b.3 == b"moof").map(|b| be32(&d, find(&d, *b, &[b"traf", b"tfhd"]).unwrap().1 + 4)).collect();
         assert_eq!(tfhd_ids, [1, 2, 1, 2, 1]);
         assert!(!top.iter().any(|b| &b.3 == b"styp"));
+    }
+
+    /// yt-dlp's separate YouTube streams: whole fragmented-MP4 files (with a sidx), joined into one MP4.
+    #[test]
+    fn joins_whole_files() {
+        let dir = std::env::temp_dir().join(format!("ndm-join-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sidx = mk(b"sidx", &[&[0; 12]]);
+        let v = [init(1, 1000), sidx.clone(), frag(1, 0, b'v'), frag(1, 2000, b'w')].concat();
+        let a = [init(1, 48000), sidx, frag(1, 0, b'a'), frag(1, 96000, b'b')].concat();
+        let (vp, ap, out) = (dir.join("x.f137.mp4"), dir.join("x.f140.m4a"), dir.join("x.mp4"));
+        fs::write(&vp, v).unwrap();
+        fs::write(&ap, a).unwrap();
+        assert!(join_files(&vp, &ap, &out).unwrap());
+        let d = fs::read(&out).unwrap();
+        let top = boxes(&d, 0, d.len());
+        let moov = top.iter().find(|b| &b.3 == b"moov").copied().unwrap();
+        assert_eq!(traks(&d, moov).len(), 2);
+        let order: Vec<u8> = top.iter().filter(|b| &b.3 == b"mdat").map(|b| d[b.1]).collect();
+        assert_eq!(order, *b"vawb");
+        // a webm with an mp4 isn't a pair
+        assert!(!join_files(&vp, &dir.join("x.webm"), &out).unwrap());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn serve(files: Vec<(&'static str, Vec<u8>)>) -> String {

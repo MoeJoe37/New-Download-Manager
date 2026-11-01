@@ -347,6 +347,7 @@ Invalid number of files downloaded at the same time. Please set a correct number
 Invalid number of files explored at the same time. Please set a correct number.=عدد الملفات التي تُستكشف في الوقت نفسه غير صالح. يرجى تعيين رقم صحيح.
 Invalid start address=عنوان البدء غير صالح
 It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg=يمكنك إضافة مجموعة من الملفات ذات الأسماء المتتالية مثل img001.jpg وimg002.jpg وهكذا حتى img100.jpg إلى قائمة تنزيل New Download Manager. استخدم حرف البدل النجمة في نمط اسم الملف. \nمثال:   http://www.example.com/pictures/img*.jpg
+Joining video and audio...=جارٍ دمج الفيديو والصوت...
 KBytes/sec=كيلوبايت/ث
 Kerberos sign-in didn't finish=لم يكتمل تسجيل الدخول عبر Kerberos
 Kerberos sign-in failed (%s); for NTLM put a user name and password in the address=فشل تسجيل الدخول عبر Kerberos (%s)؛ لاستخدام NTLM ضع اسم مستخدم وكلمة مرور في العنوان
@@ -789,3 +790,6 @@ You may use asterisk as a wildcard pattern=يمكنك استخدام النجم�
 You may use the asterisk wildcard for the address pattern.=يمكنك استخدام حرف البدل النجمة في نمط العنوان.
 yt-dlp %s is ready. NDM downloads videos from YouTube and other video sites with it, and keeps it up to date.=yt-dlp %s جاهز. يستخدمه NDM لتنزيل الفيديوهات من YouTube ومواقع الفيديو الأخرى، ويبقيه محدّثًا.
 yt-dlp failed=فشل yt-dlp
+yt-dlp finished without a file=انتهى yt-dlp دون إنشاء ملف
+yt-dlp finished without the audio stream=انتهى yt-dlp دون تنزيل الصوت
+yt-dlp finished without the video stream=انتهى yt-dlp دون تنزيل الفيديو

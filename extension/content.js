@@ -105,6 +105,14 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
       dismissed.add(target);
       return hide();
     }
+    // YouTube and other sites that play videos in their own player: the stream pieces the page fetches
+    // aren't the video, so the app gets the page and its yt-dlp finds the video
+    const page = await chrome.runtime.sendMessage({ kind: 'video-page', url: location.href }).catch(() => false);
+    if (page) {
+      label.textContent = page === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first';
+      setTimeout(() => (label.textContent = target && target.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video'), 3000);
+      return;
+    }
     const items = await list();
     if (!items.length) {
       label.textContent = 'Play the video first';

@@ -367,6 +367,7 @@ Invalid number of files downloaded at the same time. Please set a correct number
 Invalid number of files explored at the same time. Please set a correct number.=Invalid number of files explored at the same time. Please set a correct number.
 Invalid start address=Invalid start address
 It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg=It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg
+Joining video and audio...=Joining video and audio...
 KB=KB
 KBytes/sec=KBytes/sec
 Kerberos sign-in didn't finish=Kerberos sign-in didn't finish
@@ -838,3 +839,6 @@ You may use asterisk as a wildcard pattern=You may use asterisk as a wildcard pa
 You may use the asterisk wildcard for the address pattern.=You may use the asterisk wildcard for the address pattern.
 yt-dlp %s is ready. NDM downloads videos from YouTube and other video sites with it, and keeps it up to date.=yt-dlp %s is ready. NDM downloads videos from YouTube and other video sites with it, and keeps it up to date.
 yt-dlp failed=yt-dlp failed
+yt-dlp finished without a file=yt-dlp finished without a file
+yt-dlp finished without the audio stream=yt-dlp finished without the audio stream
+yt-dlp finished without the video stream=yt-dlp finished without the video stream

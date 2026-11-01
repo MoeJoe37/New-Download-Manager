@@ -349,6 +349,7 @@ Invalid number of files downloaded at the same time. Please set a correct number
 Invalid number of files explored at the same time. Please set a correct number.=Le nombre de fichiers explorés à la fois n'est pas valide. Indiquez un nombre correct.
 Invalid start address=Adresse de départ non valide
 It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg=Vous pouvez ajouter à la file de téléchargement de New Download Manager un groupe de fichiers aux noms consécutifs comme img001.jpg, img002.jpg, etc., img100.jpg. Utilisez le caractère générique astérisque dans le modèle du nom de fichier. \nPar exemple :   http://www.example.com/pictures/img*.jpg
+Joining video and audio...=Assemblage de la vidéo et du son...
 KB=Ko
 KBytes/sec=Ko/s
 Kerberos sign-in didn't finish=La connexion Kerberos n'a pas abouti
@@ -793,3 +794,6 @@ You may use asterisk as a wildcard pattern=Vous pouvez utiliser l'astérisque co
 You may use the asterisk wildcard for the address pattern.=Vous pouvez utiliser le caractère générique astérisque dans le modèle d'adresse.
 yt-dlp %s is ready. NDM downloads videos from YouTube and other video sites with it, and keeps it up to date.=yt-dlp %s est prêt. NDM s'en sert pour télécharger les vidéos de YouTube et des autres sites de vidéos, et le tient à jour.
 yt-dlp failed=yt-dlp a échoué
+yt-dlp finished without a file=yt-dlp s'est terminé sans créer de fichier
+yt-dlp finished without the audio stream=yt-dlp s'est terminé sans télécharger le son
+yt-dlp finished without the video stream=yt-dlp s'est terminé sans télécharger la vidéo

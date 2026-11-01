@@ -191,6 +191,15 @@ const VIDEO_SITES = ['youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 
   'facebook.com', 'fb.watch', 'x.com', 'twitter.com', 'reddit.com', 'v.redd.it', 'soundcloud.com', 'bilibili.com',
   'rumble.com', 'streamable.com', 'ok.ru', 'vk.com', 'bandcamp.com', 'mixcloud.com'];
 
+function isVideoSite(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return VIDEO_SITES.some(h => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
 // The app's Options decide the context menu items and the panel exceptions (370).
 let config = { menu_dl: true, menu_all: true, panel_skip: '', keys: null }, configAt = 0, menus = '';
 async function refreshConfig() {
@@ -288,6 +297,12 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   if (msg.kind === 'list') {
     mediaFor(tab.id).then(reply);
+    return true;
+  }
+  if (msg.kind === 'video-page') {
+    // the panel on a video site: the page, like the "Download this video" menu item
+    if (!isVideoSite(msg.url)) return reply(false);
+    send(msg.url, { referrer: '', force: true }).then(ok => reply(ok ? 'sent' : 'off'));
     return true;
   }
   if (msg.kind === 'sel') {
