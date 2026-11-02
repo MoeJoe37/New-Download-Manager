@@ -839,8 +839,8 @@ fn fetch_deno(agent: &ureq::Agent, base: &str, dir: &Path, got: &AtomicU64, tota
     Ok(())
 }
 
-/// ffmpeg's release file for this system and where its SHA-256 is: yt-dlp's own ffmpeg builds (Windows,
-/// Linux; their checksums.sha256), martin-riedl.de's for macOS (`<file>.sha256`). None: no build for it.
+/// ffmpeg's release file for this system: yt-dlp's own ffmpeg builds (Windows, Linux; SHA-256s in their
+/// checksums.sha256), martin-riedl.de's for macOS (a .sha256 beside each build's file). None: no build for it.
 fn ffmpeg_asset() -> Option<(&'static str, &'static str)> {
     const YTDLP_FFMPEG: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
     Some(if cfg!(windows) {
@@ -901,17 +901,34 @@ fn fetch_ffmpeg(agent: &ureq::Agent, dir: &Path, got: &AtomicU64, total: &Atomic
         return Ok(());
     }
     let Some((base, file)) = ffmpeg_asset() else { return Err("ffmpeg: no build for this system".into()) };
-    let want = if base.contains("yt-dlp") {
-        listed_sum(&get_text(agent, &format!("{base}/checksums.sha256"))?, file)
-    } else {
-        only_sum(&get_text(agent, &format!("{base}/{file}.sha256"))?)
+    if base.contains("yt-dlp") {
+        let want = listed_sum(&get_text(agent, &format!("{base}/checksums.sha256"))?, file).ok_or_else(|| format!("{file}: no SHA-256 in its release"))?;
+        let archive = dir.join(format!("{file}.part"));
+        get_checked(agent, &format!("{base}/{file}"), &want, &archive, got, total)?;
+        let result = unpack_ffmpeg(&archive, file, dir);
+        let _ = std::fs::remove_file(&archive);
+        return result;
     }
-    .ok_or_else(|| format!("{file}: no SHA-256 in its release"))?;
-    let archive = dir.join(format!("{file}.part"));
-    get_checked(agent, &format!("{base}/{file}"), &want, &archive, got, total)?;
-    let result = unpack_ffmpeg(&archive, file, dir);
-    let _ = std::fs::remove_file(&archive);
-    result
+    // macOS: ffmpeg and ffprobe are zips of their own; "latest" sends on to the build's folder, where each
+    // has its .sha256 beside it
+    for zip in ["ffmpeg.zip", "ffprobe.zip"] {
+        let fetched = (|| -> Result<(), String> {
+            let url = agent.head(&format!("{base}/{zip}")).call().map_err(|e| format!("{base}/{zip}: {e}"))?.get_url().to_string();
+            let want = only_sum(&get_text(agent, &format!("{url}.sha256"))?).ok_or_else(|| format!("{zip}: no SHA-256 beside it"))?;
+            let archive = dir.join(format!("{zip}.part"));
+            get_checked(agent, &url, &want, &archive, got, total)?;
+            let result = unpack_ffmpeg(&archive, zip, dir);
+            let _ = std::fs::remove_file(&archive);
+            result
+        })();
+        // ffprobe is a help to yt-dlp, not a need
+        if zip == "ffmpeg.zip" {
+            fetched?;
+        } else if let Err(e) = fetched {
+            eprintln!("ffprobe: {e}");
+        }
+    }
+    Ok(())
 }
 
 /// ffmpeg and ffprobe out of the downloaded `archive` (release file `file`: .zip or .tar.xz) into `dir`,
@@ -934,9 +951,10 @@ fn unpack_ffmpeg(archive: &Path, file: &str, dir: &Path) -> Result<(), String> {
                 }
             }
         }
-        let main = dir.join(format!("{}.part", progs[0]));
-        if !main.is_file() {
-            return Err(format!("{file}: no {} in it", progs[0]));
+        // the archive's own program (macOS has one zip each), else ffmpeg
+        let need = if file.starts_with("ffprobe") { &progs[1] } else { &progs[0] };
+        if !dir.join(format!("{need}.part")).is_file() {
+            return Err(format!("{file}: no {need} in it"));
         }
         for p in &progs {
             let part = dir.join(format!("{p}.part"));
@@ -950,7 +968,7 @@ fn unpack_ffmpeg(archive: &Path, file: &str, dir: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(dir.join(format!("{p}.part")));
     }
     result?;
-    if !runs(&dir.join(&progs[0])) {
+    if !file.starts_with("ffprobe") && !runs(&dir.join(&progs[0])) {
         return Err("ffmpeg was downloaded but doesn't start".into());
     }
     Ok(())

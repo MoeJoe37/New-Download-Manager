@@ -156,14 +156,6 @@ jobs:
           curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o /tmp/ndm-test-yt-dlp
           chmod +x /tmp/ndm-test-yt-dlp
           NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
-      - name: (probe) macOS ffmpeg source
-        continue-on-error: true
-        run: |
-          for a in arm64 amd64; do
-            u=$(curl -sSL -o /dev/null -w '%{url_effective}' https://ffmpeg.martin-riedl.de/redirect/latest/macos/$a/release/ffmpeg.zip); echo "$a -> $u"
-            for c in "$u.sha256" "${u%/*}/ffmpeg.zip.sha256" "${u%/*}/sha256" "${u%/*}/checksums.sha256" "${u%/*}/ffmpeg.sha256"; do echo "$c: $(curl -sSL -o /tmp/s -w '%{http_code}' "$c") $(head -c 120 /tmp/s)"; done
-          done
-          curl -sSL https://ffmpeg.martin-riedl.de/ | grep -o -i 'href="[^"]*sha[^"]*"' | head -10
       - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
         run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: NDM.app and the disk image (Apple Silicon and Intel)

@@ -1,7 +1,7 @@
 # Browser downloads show only their own windows:  powershell -File tools\tray-windows.ps1 target\release\ndm.exe
 # NDM in the notification area (started for the browser, or its window closed) or minimized gets a download
 # the way the browser extension sends one (POST /add). Its File Info / progress / "Download complete" windows
-# must show; the main window must stay where it was (hidden, or minimized). Fails otherwise.
+# must show; the main window must stay where it was (hidden, minimized, or behind another program). Fails otherwise.
 param([string]$Exe)
 $ErrorActionPreference = 'Stop'
 Add-Type @"
@@ -12,6 +12,9 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  // whether `top` is above `other` in the z-order (GW_HWNDPREV walks up)
+  public static bool Above(IntPtr top, IntPtr other) { for (var h = GetWindow(other, 3); h != IntPtr.Zero; h = GetWindow(h, 3)) if (h == top) return true; return false; }
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   public delegate bool Proc(IntPtr h, IntPtr l);
@@ -59,7 +62,7 @@ function MainOf {
 }
 
 $failed = @()
-foreach ($case in 'tray', 'closed', 'minimized') {
+foreach ($case in 'tray', 'closed', 'minimized', 'behind') {
     "== $case"
     Get-Process ndm -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 1
@@ -76,25 +79,38 @@ foreach ($case in 'tray', 'closed', 'minimized') {
     if ($null -eq $main) { "no main window: " + ((All | ForEach-Object { "'$([W]::Title($_))' visible=$([W]::IsWindowVisible($_))" }) -join ', '); $failed += "$case (no main window)"; continue }
     if ($case -eq 'closed') { [W]::PostMessage($main, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null; Start-Sleep -Seconds 2 }
     if ($case -eq 'minimized') { [W]::ShowWindow($main, 6) | Out-Null; Start-Sleep -Seconds 2 }
-    $before = if ($case -eq 'minimized') { [W]::IsIconic($main) } else { -not [W]::IsWindowVisible($main) }
+    # open, but behind another program (the browser): it must stay behind it
+    $other = $null
+    if ($case -eq 'behind') {
+        $np = Start-Process notepad -PassThru; Start-Sleep -Seconds 2
+        $other = (Get-Process -Id $np.Id).MainWindowHandle
+        if ($other -eq [IntPtr]::Zero) { $other = (Get-Process notepad | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1).MainWindowHandle }
+        [W]::SetForegroundWindow($other) | Out-Null; Start-Sleep -Seconds 1
+    }
+    $before = switch ($case) { 'minimized' { [W]::IsIconic($main) } 'behind' { [W]::IsWindowVisible($main) -and -not [W]::Above($main, $other) } default { -not [W]::IsWindowVisible($main) } }
     "main window before: visible=$([W]::IsWindowVisible($main)) minimized=$([W]::IsIconic($main))"
     if (-not $before) { $failed += "$case (main window not in the tray / minimized before the download)"; continue }
-    $body = @{ url = 'http://127.0.0.1:8765/file.bin'; cookies = ''; proxy = ''; filename = "$case.bin"; referrer = 'http://127.0.0.1:8765/' } | ConvertTo-Json
-    Invoke-WebRequest -Uri "http://127.0.0.1:$port/add" -Method POST -Headers @{ 'X-NDM' = '1'; 'Content-Type' = 'application/json' } -Body $body -UseBasicParsing -TimeoutSec 10 | Out-Null
     $seen = @{}; $opened = $false
-    for ($i = 0; $i -lt 40; $i++) {
-        Start-Sleep -Milliseconds 500
-        foreach ($h in Shown) {
-            $t = [W]::Title($h)
-            if (-not $seen[$t]) { $seen[$t] = $true; "  window: $t" }
+    # a download as the browser hands it over (File Info), then one that starts at once (/n: progress,
+    # then "Download complete")
+    foreach ($silent in $false, $true) {
+        $body = @{ url = 'http://127.0.0.1:8765/file.bin'; cookies = ''; proxy = ''; filename = "$case-$silent.bin"; referrer = 'http://127.0.0.1:8765/'; silent = $silent } | ConvertTo-Json
+        Invoke-WebRequest -Uri "http://127.0.0.1:$port/add" -Method POST -Headers @{ 'X-NDM' = '1'; 'Content-Type' = 'application/json' } -Body $body -UseBasicParsing -TimeoutSec 10 | Out-Null
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            foreach ($h in Shown) {
+                $t = [W]::Title($h)
+                if (-not $seen[$t]) { $seen[$t] = $true; "  window: $t" }
+            }
+            $out = switch ($case) { 'minimized' { -not [W]::IsIconic($main) } 'behind' { [W]::Above($main, $other) } default { [W]::IsWindowVisible($main) } }
+            if ($out -and -not $opened) { $opened = $true; "  main window came out ($(if ($silent) { 'started download' } else { 'File Info' }))" }
         }
-        $out = if ($case -eq 'minimized') { -not [W]::IsIconic($main) } else { [W]::IsWindowVisible($main) }
-        if ($out -and -not $opened) { $opened = $true; "  main window came out at $([math]::Round($i / 2, 1)) s" }
     }
+    if ($other) { Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force }
     $popups = @($seen.Keys | Where-Object { $_ -ne $MainTitle })
     if ($opened) { $failed += "$case (the main window opened)" }
     if (-not $popups) { $failed += "$case (no download window showed)" }
-    if (-not (Test-Path "$tmp\dl\$case.bin") -and -not (Get-ChildItem -Recurse "$tmp\dl" -Filter "$case.bin" -ErrorAction SilentlyContinue)) { "  (file not downloaded yet)" }
+    if (-not ($seen.Keys | Where-Object { $_ -like '*Download complete*' })) { $failed += "$case (no Download complete window)" }
 }
 Get-Process ndm -ErrorAction SilentlyContinue | Stop-Process -Force
 Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
