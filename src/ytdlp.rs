@@ -279,7 +279,7 @@ fn download_args(conns: usize, limit: u64) -> Vec<String> {
 fn fetch_video(job: &Job, p: &Path, source: &[String], args: &[String], fmt: &str, out: &str, expected: u64, global: &Limiter) -> Result<bool, String> {
     let (conns, limit) = {
         let i = job.info();
-        let limits = [i.limit_kb.saturating_mul(1024), global.rate.load(Relaxed)];
+        let limits = [job.limiter.rate.load(Relaxed), global.rate.load(Relaxed)];
         (i.conns, limits.into_iter().filter(|l| *l > 0).min().unwrap_or(0))
     };
     let mut child = command(p)
@@ -548,6 +548,7 @@ fn fetch_streams(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[St
                 plain: true,
                 ..Default::default()
             });
+            part.limiter.rate.store(stream_limit(job, global, streams.len()), Relaxed);
             *part.lanes.lock().unwrap() = lanes.clone();
             part
         })
@@ -584,6 +585,9 @@ fn fetch_streams(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[St
             if job.stopping() || failed.load(Relaxed) {
                 parts.iter().for_each(|p| p.stop());
             }
+            let live = running.iter().filter(|h| !h.is_finished()).count();
+            let limit = stream_limit(job, global, live);
+            parts.iter().for_each(|p| p.limiter.rate.store(limit, Relaxed));
             show_parts(job, &parts, &expected);
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
@@ -592,6 +596,12 @@ fn fetch_streams(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[St
     });
     if let Some(e) = results.iter().find_map(|r| r.as_ref().err()) { return Err(e.clone()); }
     Ok(!job.stopping() && results.iter().all(|r| matches!(r, Ok(true))))
+}
+
+/// Video and audio belong to one download's bandwidth budget, even though they have separate engines.
+fn stream_limit(job: &Job, global: &Limiter, live: usize) -> u64 {
+    let rate = [job.limiter.rate.load(Relaxed), global.rate.load(Relaxed)].into_iter().filter(|r| *r > 0).min().unwrap_or(0);
+    if rate == 0 { 0 } else { (rate / live.max(1) as u64).max(1) }
 }
 
 #[cfg(test)]
@@ -927,7 +937,7 @@ mod tests {
     #[test]
     fn fallback_streams_download_together_and_stop_on_error() {
         use std::sync::atomic::AtomicUsize;
-        let job = Job::new(Info { conns: 4, ..Default::default() });
+        let job = Job::new(Info { conns: 4, limit_kb: 100, ..Default::default() });
         let make = |id: &str| Stream { id: id.into(), url: String::new(), ext: "mp4".into(), size: 16, headers: vec![], direct: false };
         let mut streams = [make("video"), make("audio")];
         // One native stream fails before receiving bytes and switches to the fallback while its
@@ -938,6 +948,7 @@ mod tests {
         let active = AtomicUsize::new(0);
         let fallback = |part: &Job, _: &Stream, _: &Path| {
             assert_eq!(part.info().conns, 4);
+            assert_eq!(part.limiter.rate.load(Relaxed), 50 * 1024, "parallel streams share one download's limit");
             active.fetch_add(1, Relaxed);
             let start = std::time::Instant::now();
             while active.load(Relaxed) < 2 && start.elapsed().as_secs() < 3 { std::thread::yield_now(); }
@@ -1300,7 +1311,9 @@ mod tests {
         }
         assert!(samples.windows(2).all(|w| w[1].0 >= w[0].0), "the bar never goes back");
         let total = 2 * data.len() as u64;
-        assert!(samples.iter().all(|s| s.1 == Some(total)), "the total stays put: {:?}", samples.iter().map(|s| s.1).collect::<Vec<_>>());
+        // The observer may run before fetch_streams has initialized the total. Once known it stays put.
+        assert!(samples.iter().any(|s| s.1 == Some(total)));
+        assert!(samples.iter().skip_while(|s| s.1.is_none()).all(|s| s.1 == Some(total)), "the total stays put: {:?}", samples.iter().map(|s| s.1).collect::<Vec<_>>());
         assert!(samples.iter().map(|s| s.2).max().unwrap() > 2, "several connections at once");
         assert_eq!(job.info().done(), total);
         let _ = std::fs::remove_dir_all(&dir);
