@@ -252,14 +252,14 @@ async function refreshConfig() {
   chrome.contextMenus.create({ id: 'ndm-panel', type: 'checkbox', checked: !panel_off, title: 'Show the download panel over videos', contexts: ['action'] });
   chrome.contextMenus.create({ id: 'ndm-options', title: 'Extension options...', contexts: ['action'] });
   // one item wherever the user right-clicks: a link or picture, a video or audio player (the file, or the
-  // page for yt-dlp when the player streams it in pieces), or a video site's page ("page" applies only
+  // page for yt-dlp when the player streams it in pieces), or any web page ("page" applies only
   // where nothing more specific does)
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm', title: 'Download with New Download Manager', contexts: ['link', 'image'] });
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-media', title: 'Download this video with New Download Manager', contexts: ['video'] });
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-audio', title: 'Download this audio with New Download Manager', contexts: ['audio'] });
   if (config.menu_all) chrome.contextMenus.create({ id: 'ndm-all', title: 'Download all links with New Download Manager', contexts: ['page', 'selection'] });
   if (config.menu_dl) chrome.contextMenus.create({ id: 'ndm-video', title: 'Download this video with New Download Manager', contexts: ['page'],
-    documentUrlPatterns: VIDEO_SITES.flatMap(h => [`*://${h}/*`, `*://*.${h}/*`]) });
+    documentUrlPatterns: ['http://*/*', 'https://*/*'] });
   return config;
 }
 chrome.runtime.onInstalled.addListener(refreshConfig);

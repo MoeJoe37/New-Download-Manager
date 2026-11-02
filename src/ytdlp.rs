@@ -6,7 +6,7 @@
 use crate::engine::{sanitize, Info, Job, Limiter, Probe, Seg, Status};
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 /// Sites whose pages hold a video for yt-dlp (the page itself, not a file on their servers); the browser
@@ -69,7 +69,24 @@ fn command(program: &Path) -> Command {
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     c.stdin(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
     c
+}
+
+/// Also stop a downloader/postprocessor yt-dlp started, so it cannot keep writing after Stop.
+fn kill_child(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+    #[cfg(windows)]
+    {
+        let _ = command(Path::new("taskkill.exe")).args(["/PID", &child.id().to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn runs(program: &Path) -> bool {
@@ -94,7 +111,9 @@ fn ffmpeg() -> Option<PathBuf> {
 /// NDM's Deno for YouTube. YouTube gets no cookies: signed in, yt-dlp turns to clients that need tokens
 /// it doesn't have and finds fewer formats.
 fn base_args(url: &str, referrer: &str, cookies: &str) -> Vec<String> {
-    let mut a = vec!["--no-playlist".into(), "--no-warnings".into()];
+    // This is one NDM job. For a playlist-only URL take its first entry rather than treating the
+    // playlist JSON as a file. Ignore external configs that can change output names/progress or run hooks.
+    let mut a = vec!["--ignore-config".into(), "--no-playlist".into(), "--playlist-items".into(), "1".into(), "--no-warnings".into()];
     if !referrer.is_empty() {
         a.extend(["--referer".into(), referrer.into()]);
     }
@@ -120,12 +139,12 @@ fn last_error(err: &str) -> String {
 }
 
 /// With ffmpeg: the best video and audio, merged by yt-dlp into an MP4.
-const MERGED: &str = "bv*+ba/b";
+const MERGED: &str = "bv*+ba/b/ba/bv";
 /// The single file with both, when a site has no separate streams.
 const SINGLE: &str = "b";
 /// Without ffmpeg: the best video-only stream and the audio NDM can join it with (MP4 and M4A, else WebM
 /// and WebM), else the single file.
-const PAIR: &str = "bv*[acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/bv*[acodec=none][ext=webm]+ba[vcodec=none][ext=webm]/b";
+const PAIR: &str = "bv*[acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/bv*[acodec=none][ext=webm]+ba[vcodec=none][ext=webm]/b/ba/bv";
 
 /// The formats asked for on `url`'s site, `ff`: with ffmpeg. TikTok and Douyin: the one file that has both
 /// (H.264 first, which every player plays), not their video-only streams (some broken) with the separate
@@ -169,7 +188,14 @@ impl Stream {
             headers.push(("Cookie".into(), cookie));
         }
         let url = text("url");
-        let direct = matches!(text("protocol").as_str(), "http" | "https") && (url.starts_with("http://") || url.starts_with("https://"));
+        // Leave fragments, live streams, and requests requiring TLS impersonation to yt-dlp, even
+        // when their URL looks like a plain HTTP file.
+        let direct = matches!(text("protocol").as_str(), "http" | "https")
+            && (url.starts_with("http://") || url.starts_with("https://"))
+            && f.get("fragments").is_none_or(|v| v.is_null())
+            && !f.get("is_live").and_then(|v| v.as_bool()).unwrap_or(false)
+            && f.get("impersonate").is_none_or(|v| v.is_null())
+            && f.pointer("/downloader_options/impersonate").is_none_or(|v| v.is_null());
         Some(Stream { id: f.get("format_id")?.as_str()?.to_string(), url, ext: text("ext"), size, headers, direct })
     }
 }
@@ -188,12 +214,29 @@ fn cookie_header(list: &str) -> String {
 }
 
 /// What the look-up picked: the video and audio streams, or the one stream that has both.
-fn picked(json: &[u8]) -> Option<Vec<Stream>> {
-    let v: serde_json::Value = serde_json::from_slice(json).ok()?;
+fn picked(v: &serde_json::Value) -> Option<Vec<Stream>> {
     match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
         Some(r) => r.iter().map(Stream::of).collect(),
         None => Some(vec![Stream::of(&v)?]),
     }
+}
+
+/// Multi-video posts and playlist-only extractors wrap the selected video in `entries`.
+fn video_info(mut v: serde_json::Value) -> Result<serde_json::Value, String> {
+    for _ in 0..16 {
+        if let Some(entries) = v.get_mut("entries").and_then(|e| e.as_array_mut()) {
+            v = entries.iter_mut().find(|e| !e.is_null()).map(serde_json::Value::take).ok_or("yt-dlp found no video in this playlist")?;
+        } else {
+            return Ok(v);
+        }
+    }
+    Err("yt-dlp returned too many nested playlists".into())
+}
+
+fn video_name(v: &serde_json::Value) -> String {
+    let title = v.get("title").and_then(|v| v.as_str()).unwrap_or("video");
+    let ext = v.get("ext").and_then(|v| v.as_str()).filter(|e| !e.is_empty()).unwrap_or("mp4");
+    sanitize(&format!("{title}.{ext}"))
 }
 
 /// The video's file name (title and type) and size, if yt-dlp knows it.
@@ -203,35 +246,46 @@ pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> 
     let fmt = formats(url, ff.is_some());
     let out = command(&p)
         .args(base_args(url, referrer, cookies))
-        .args(["-f", &fmt, "--skip-download", "--print", "%(title)s", "--print", "%(ext)s"])
+        .args(["-f", &fmt, "-J"])
+        .arg("--")
         .arg(url)
         .output()
         .map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines = text.lines();
-    let (Some(title), Some(ext)) = (lines.next(), lines.next()) else {
+    if !out.status.success() {
         return Err(last_error(&String::from_utf8_lossy(&out.stderr)));
-    };
-    // a pair is joined into an MP4 (WebM with WebM)
-    let ext = if ff.is_some() && ext.trim() != "webm" { "mp4" } else { ext.trim() };
-    let name = sanitize(&format!("{}.{ext}", title.trim()));
+    }
+    let v = video_info(serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?)?;
+    let name = video_name(&v);
     // the size shows as the streams arrive (video and audio come separately)
     Ok(Probe { name, size: None, ranges: false, modified: String::new(), stream: false, page: false, ytdlp: true })
 }
 
-/// What one yt-dlp run left: done, stopped by the user, or yt-dlp's error.
-enum Got {
-    Done,
-    Stopped,
-    Failed(String),
+/// Arguments for yt-dlp's own downloader. Its native HLS/DASH fetcher otherwise uses one fragment
+/// at a time. Keep its protocol-specific downloaders for sites NDM cannot fetch directly.
+fn download_args(conns: usize, limit: u64) -> Vec<String> {
+    let mut args = vec![
+        "--concurrent-fragments".into(), conns.clamp(1, 64).to_string(),
+        "--retries".into(), "10".into(), "--fragment-retries".into(), "10".into(),
+        "--abort-on-unavailable-fragments".into(),
+    ];
+    if limit > 0 {
+        args.extend(["--limit-rate".into(), limit.to_string()]);
+    }
+    args
 }
 
-/// One yt-dlp run with format `fmt` into `out` (an output template); its progress goes on the job's bar
-/// after `before` bytes of earlier runs. Returns the bytes this run fetched.
-fn fetch_video(job: &Job, p: &Path, source: &[String], args: &[String], fmt: &str, out: &str, before: u64, expected: u64) -> Result<(Got, u64), String> {
+/// One selected stream, using the saved extraction result (signed URLs and extractor-specific data
+/// included). Read stdout on its own thread: a silent or stalled downloader must still obey Stop.
+fn fetch_video(job: &Job, p: &Path, source: &[String], args: &[String], fmt: &str, out: &str, expected: u64, global: &Limiter) -> Result<bool, String> {
+    let (conns, limit) = {
+        let i = job.info();
+        let limits = [i.limit_kb.saturating_mul(1024), global.rate.load(Relaxed)];
+        (i.conns, limits.into_iter().filter(|l| *l > 0).min().unwrap_or(0))
+    };
     let mut child = command(p)
         .args(args)
-        .args(["-f", fmt, "--newline", "--continue", "--progress-template", "download:ndm %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s", "-o", out])
+        .args(download_args(conns, limit))
+        .args(["-f", fmt, "--newline", "--continue", "--progress", "--progress-template", "download:ndm %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s", "-o", out])
         .args(source)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -243,62 +297,62 @@ fn fetch_video(job: &Job, p: &Path, source: &[String], args: &[String], fmt: &st
         let _ = err.read_to_string(&mut s);
         s
     });
-    // with ffmpeg, video then audio in one run: each part counts from 0, the bar adds them up
-    let (mut base, mut last, mut part_total) = (0u64, 0u64, 0u64);
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() { break; }
+        }
+    });
+    let mut merging: Option<(PathBuf, u64)> = None;
+    let (mut reading, mut status, mut received) = (true, None, 0u64);
     let mut stopped = false;
-    // after the download, yt-dlp's ffmpeg joins video and audio (its "[Merger]" line) into "<name>.temp.<ext>":
-    // the bar follows that file growing towards the bytes fetched
-    let merging: std::sync::Mutex<Option<(PathBuf, u64)>> = Default::default();
-    let done_reading = std::sync::atomic::AtomicBool::new(false);
-    let ok = std::thread::scope(|sc| {
-        sc.spawn(|| {
-            while !done_reading.load(Relaxed) {
-                if let Some((out, expected)) = merging.lock().unwrap().clone() {
-                    let have = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-                    let label = job.info().post.as_ref().map(|p| p.0.clone()).unwrap_or_else(|| "Processing...".into());
-                    job.set_post(&label, (have as f64 / expected.max(1) as f64).min(0.99) as f32);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            }
-        });
-        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            if let Some(rest) = line.strip_prefix("ndm ") {
-                let mut it = rest.split_whitespace().map(|v| v.parse::<f64>().ok().map(|v| v as u64));
-                let (done, total) = (it.next().flatten().unwrap_or(0), it.next().flatten().unwrap_or(0));
-                if done < last {
-                    base += part_total.max(last);
-                }
-                (last, part_total) = (done, total);
-                // the size known from the look-up (video and audio) until the streams say more
-                let all = (before + base + total.max(done)).max(expected);
-                // the bar never goes back: the total only grows (yt-dlp's estimates), done only advances
-                let mut i = job.info();
-                i.post = None;
-                i.size = Some(all).filter(|s| *s > 0).max(i.size);
-                let next = (before + base + done).max(i.segs.first().map_or(0, |s| s.next));
-                i.segs = vec![Seg { start: 0, next, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
-                if i.status == Status::Connecting {
+    while reading || status.is_none() {
+        if job.stopping() {
+            kill_child(&mut child);
+            stopped = true;
+            break;
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(line) => {
+                if let Some(rest) = line.strip_prefix("ndm ") {
+                    let mut it = rest.split_whitespace().map(|v| v.parse::<f64>().ok().map(|v| v as u64));
+                    let (done, total) = (it.next().flatten().unwrap_or(0), it.next().flatten().unwrap_or(0));
+                    global.received.fetch_add(done.saturating_sub(received), Relaxed);
+                    received = received.max(done);
+                    let mut i = job.info();
+                    i.post = None;
+                    i.size = Some(total.max(done).max(expected)).filter(|s| *s > 0).max(i.size);
+                    let next = done.max(i.segs.first().map_or(0, |s| s.next));
+                    i.segs = vec![Seg { start: 0, next, stop: i.size, info: "Receiving data...".into(), owned: false, ..Default::default() }];
                     i.status = Status::Downloading;
+                } else if let Some((label, out, expected)) = post_step(&line, received) {
+                    job.set_post(label, 0.0);
+                    merging = out.map(|o| (o, expected));
                 }
-            } else if let Some((label, out, expected)) = post_step(&line, base + part_total.max(last)) {
-                // after the download, ffmpeg (through yt-dlp) writes "<name>.temp.<ext>": the bar follows it
-                job.set_post(label, 0.0);
-                *merging.lock().unwrap() = out.map(|o| (o, expected));
             }
-            if job.stopping() {
-                let _ = child.kill();
-                stopped = true;
-                break;
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                reading = false;
+                // stdout may close before a postprocessor exits.
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
-        let ok = child.wait().is_ok_and(|s| s.success());
-        done_reading.store(true, Relaxed);
-        ok
-    });
-    job.info().post = None;
+        if let Some((out, expected)) = &merging {
+            let have = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+            let label = job.info().post.as_ref().map(|p| p.0.clone()).unwrap_or_else(|| "Processing...".into());
+            job.set_post(&label, (have as f64 / (*expected).max(1) as f64).min(0.99) as f32);
+        }
+        if status.is_none() {
+            status = child.try_wait().map_err(|e| e.to_string())?;
+        }
+    }
+    let _ = reader.join();
     let errors = errors.join().unwrap_or_default();
-    let fetched = base + part_total.max(last);
-    Ok((if stopped { Got::Stopped } else if ok { Got::Done } else { Got::Failed(last_error(&errors)) }, fetched))
+    job.info().post = None;
+    if stopped { return Ok(false); }
+    if !status.is_some_and(|s| s.success()) { return Err(last_error(&errors)); }
+    Ok(true)
 }
 
 /// A yt-dlp line that starts a step after the download: its label, the file ffmpeg writes meanwhile
@@ -332,6 +386,11 @@ fn template(p: &Path) -> String {
 
 /// A yt-dlp run's output, unless the download is stopped meanwhile (None: yt-dlp ended at once).
 fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::process::Output>, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     let read = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -347,13 +406,35 @@ fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::proc
             break s;
         }
         if job.stopping() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_child(&mut child);
+            let _ = out.join();
+            let _ = err.join();
             return Ok(None);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     Ok(Some(std::process::Output { status, stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() }))
+}
+
+struct SavedInfo(PathBuf);
+impl SavedInfo {
+    fn new(path: PathBuf, info: &serde_json::Value) -> Result<Self, String> {
+        use std::io::Write;
+        let saved = Self(path);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&saved.0).map_err(|e| e.to_string())?;
+        file.write_all(&serde_json::to_vec(info).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        Ok(saved)
+    }
+}
+impl Drop for SavedInfo {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
 }
 
 /// Downloads the video into the job's file. yt-dlp looks the page up and picks the streams (the best
@@ -362,31 +443,28 @@ fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::proc
 /// audio are then joined (NDM's own joiner, else ffmpeg) as a processing step of its own.
 pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
     let p = yt_dlp()?;
-    let (url, referrer, cookies, named) = {
+    let (url, referrer, cookies) = {
         let i = job.info();
-        (i.url.clone(), i.referrer.clone(), i.cookies.clone(), !i.name.is_empty())
-    };
-    // added without the File Info window (command line, queue): the video's title names it
-    let found = if named { None } else { probe(&url, &referrer, &cookies).ok().map(|p| p.name) };
-    let dest = {
-        let mut i = job.info();
-        if !named {
-            i.name = found.unwrap_or_else(|| "video.mp4".into());
-        }
-        std::fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
-        i.path()
+        (i.url.clone(), i.referrer.clone(), i.cookies.clone())
     };
     let args = base_args(&url, &referrer, &cookies);
     let ff = ffmpeg();
-    // with ffmpeg any video and audio can be joined; without, a pair NDM joins itself (MP4 + M4A, WebM + WebM)
     let fmt = formats(&url, ff.is_some());
     let mut look = command(&p);
-    look.args(&args).args(["-J", "-f", &fmt]).arg(&url);
+    look.args(&args).args(["-J", "-f", &fmt, "--"]).arg(&url);
     let Some(looked) = output_unless_stopped(job, look)? else { return Ok(false) };
     if !looked.status.success() {
         return Err(last_error(&String::from_utf8_lossy(&looked.stderr)));
     }
-    let streams = picked(&looked.stdout).ok_or("yt-dlp gave no formats")?;
+    let v = video_info(serde_json::from_slice(&looked.stdout).map_err(|e| e.to_string())?)?;
+    let streams = picked(&v).ok_or("yt-dlp gave no formats")?;
+    // A single extraction also names jobs added without the File Info window (CLI, queues).
+    let dest = {
+        let mut i = job.info();
+        if i.name.is_empty() { i.name = video_name(&v); }
+        std::fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
+        i.path()
+    };
     let dir = dest.parent().map(Path::to_path_buf).unwrap_or_default();
     let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
     let outs: Vec<PathBuf> = if streams.len() == 2 {
@@ -394,49 +472,14 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     } else {
         vec![dest.clone()]
     };
-    // DASH, HLS... (and a server that won't let NDM's engine in): yt-dlp downloads them from the look-up,
-    // one after the other
-    let by_ytdlp = |job: &Job| -> Result<bool, String> {
-        let json = dir.join(format!("{stem}.ndm-info.json"));
-        std::fs::write(&json, &looked.stdout).map_err(|e| e.to_string())?;
-        let source = ["--load-info-json".to_string(), json.display().to_string()];
-        let expected = if streams.iter().all(|s| s.size > 0) { streams.iter().map(|s| s.size).sum() } else { 0 };
-        let mut got = Got::Done;
-        let mut before = 0;
-        for (s, out) in streams.iter().zip(&outs) {
-            let (g, fetched) = fetch_video(job, &p, &source, &args, &s.id, &template(out), before, expected)?;
-            before += fetched;
-            if !matches!(g, Got::Done) {
-                got = g;
-                break;
-            }
-        }
-        let _ = std::fs::remove_file(&json);
-        match got {
-            Got::Done => Ok(true),
-            Got::Stopped => Ok(false),
-            Got::Failed(e) => Err(e),
-        }
+    // Preserve extractor-specific fields and cookies for protocol-specific downloaders. Remove this
+    // private file on success, failure, Stop, or a Rust error while starting a subprocess.
+    let json = SavedInfo::new(dir.join(format!("{stem}.ndm-info.json")), &v)?;
+    let source = ["--load-info-json".to_string(), json.0.display().to_string()];
+    let fallback = |part: &Job, s: &Stream, out: &Path| {
+        fetch_video(part, &p, &source, &args, &s.id, &template(out), s.size, global)
     };
-    let got = if streams.iter().all(|s| s.direct) {
-        match fetch_direct(job, agent, global, &streams, &outs) {
-            Ok(got) => got,
-            Err(e) => {
-                // NDM's engine was turned away (a site that checks more than the address): yt-dlp's own way
-                eprintln!("{url}: NDM's engine couldn't fetch the streams ({e}), yt-dlp downloads them");
-                for out in &outs {
-                    let _ = std::fs::remove_file(out);
-                    let _ = std::fs::remove_file(format!("{}.part", out.display()));
-                }
-                let mut i = job.info();
-                (i.size, i.segs) = (None, Vec::new());
-                drop(i);
-                by_ytdlp(job)?
-            }
-        }
-    } else {
-        by_ytdlp(job)?
-    };
+    let got = fetch_streams(job, agent, global, &streams, &outs, &fallback)?;
     if !got {
         return Ok(false);
     }
@@ -454,7 +497,7 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
 }
 
 /// The video and audio streams joined into `dest` after the download, with the bar showing it: NDM's own
-/// joiner (MP4, WebM), else ffmpeg; failing both, the video is the file and its sound lies beside it.
+/// joiner (MP4, WebM), else ffmpeg; failing both, keep the sources and report the failure.
 fn join(job: &Job, video: &Path, audio: &Path, dest: &Path, ff: Option<&Path>) -> Result<(), String> {
     let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     let expected = size(video) + size(audio);
@@ -475,17 +518,13 @@ fn join(job: &Job, video: &Path, audio: &Path, dest: &Path, ff: Option<&Path>) -
         return Ok(());
     }
     let _ = std::fs::remove_file(dest);
-    std::fs::rename(video, dest).map_err(|e| e.to_string())?;
-    let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
-    let ext = audio.extension().unwrap_or_default().to_string_lossy().to_string();
-    let _ = std::fs::rename(audio, dest.with_file_name(format!("{stem}.audio.{ext}")));
-    Ok(())
+    Err(crate::i18n::tr_os("Could not join video and audio. Install ffmpeg next to NDM or on PATH, then resume the download. The separate streams have been kept."))
 }
 
-/// The streams fetched by NDM's own engine, all at once, each a download of its own with the parent's
-/// connections, segments, networks and speed limit; the parent's bar shows their segments one after the
-/// other, against the size the look-up gave (or the servers', once they answer). False: stopped.
-fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
+/// Fetch each stream concurrently with its appropriate backend. A failed native fetch switches only
+/// that stream to yt-dlp. The parent's bar combines both streams, including mixed native/yt-dlp jobs.
+fn fetch_streams(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf],
+    fallback: &(dyn Fn(&Job, &Stream, &Path) -> Result<bool, String> + Sync)) -> Result<bool, String> {
     let (conns, referrer, limit) = {
         let i = job.info();
         (i.conns.max(1), i.referrer.clone(), i.limit_kb)
@@ -516,10 +555,33 @@ fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Str
     let expected: Vec<u64> = streams.iter().map(|s| s.size).collect();
     // the total from the look-up before anything arrives
     show_parts(job, &parts, &expected);
+    let failed = std::sync::atomic::AtomicBool::new(false);
     let results: Vec<Result<bool, String>> = std::thread::scope(|sc| {
-        let running: Vec<_> = parts.iter().map(|part| sc.spawn(move || part.run_part(agent, global))).collect();
+        let running: Vec<_> = parts.iter().zip(streams).zip(outs).map(|((part, stream), out)| {
+            let failed = &failed;
+            sc.spawn(move || {
+                let result = (|| {
+                    if stream.direct {
+                        match part.run_part(agent, global) {
+                            Ok(got) => return Ok(got),
+                            Err(_) if part.stopping() => return Ok(false),
+                            Err(e) => {
+                                // Keep the other stream downloading; only the rejected stream switches backend.
+                                eprintln!("NDM could not fetch format {} ({e}); trying yt-dlp", stream.id);
+                                let _ = std::fs::remove_file(out);
+                                let _ = std::fs::remove_file(part.info().part());
+                                let mut i = part.info();
+                                (i.size, i.segs) = (None, Vec::new());
+                            }
+                        }
+                    }
+                    fallback(part, stream, out)
+                })();
+                if result.is_err() { failed.store(true, Relaxed); }
+                result
+        })}).collect();
         while running.iter().any(|h| !h.is_finished()) {
-            if job.stopping() {
+            if job.stopping() || failed.load(Relaxed) {
                 parts.iter().for_each(|p| p.stop());
             }
             show_parts(job, &parts, &expected);
@@ -528,14 +590,13 @@ fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Str
         show_parts(job, &parts, &expected);
         running.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("a download thread stopped".into()))).collect()
     });
-    for r in results {
-        match r {
-            Err(e) => return Err(e),
-            Ok(false) => return Ok(false),
-            Ok(true) => {}
-        }
-    }
-    Ok(!job.stopping())
+    if let Some(e) = results.iter().find_map(|r| r.as_ref().err()) { return Err(e.clone()); }
+    Ok(!job.stopping() && results.iter().all(|r| matches!(r, Ok(true))))
+}
+
+#[cfg(test)]
+fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
+    fetch_streams(job, agent, global, streams, outs, &|_, _, _| Err("unexpected fallback".into()))
 }
 
 /// The parent's bar and segment list from its streams' downloads: their segments one after the other, the
@@ -839,6 +900,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extractor_results_are_not_limited_to_known_sites() {
+        use serde_json::json;
+        let page = "https://media.example.org/podcast/episode";
+        assert!(!is_video_page(page));
+        assert!(wants(&Info { url: page.into(), ytdlp: true, ..Default::default() }));
+        let info = video_info(json!({"_type": "playlist", "entries": [null,
+            {"title": "An episode", "ext": "m4a", "format_id": "audio", "protocol": "https", "url": "https://cdn.example.org/signed?token=x"}
+        ]})).unwrap();
+        assert_eq!(video_name(&info), "An episode.m4a");
+        let streams = picked(&info).unwrap();
+        assert_eq!(streams.len(), 1);
+        assert!(streams[0].direct);
+        assert_eq!(streams[0].id, "audio");
+        assert!(video_info(json!({"entries": []})).is_err());
+        for extra in [json!({"fragments": []}), json!({"is_live": true}), json!({"downloader_options": {"impersonate": "chrome"}})] {
+            let mut f = info.clone();
+            f.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert!(!Stream::of(&f).unwrap().direct, "{extra}");
+        }
+        let args = base_args(page, page, "session=abc");
+        assert!(args.iter().any(|a| a == "--ignore-config"));
+        assert!(args.iter().any(|a| a == "Cookie: session=abc"));
+    }
+
+    #[test]
+    fn fallback_streams_download_together_and_stop_on_error() {
+        use std::sync::atomic::AtomicUsize;
+        let job = Job::new(Info { conns: 4, ..Default::default() });
+        let make = |id: &str| Stream { id: id.into(), url: String::new(), ext: "mp4".into(), size: 16, headers: vec![], direct: false };
+        let mut streams = [make("video"), make("audio")];
+        // One native stream fails before receiving bytes and switches to the fallback while its
+        // companion is already downloading there. No network is needed for an invalid URL.
+        streams[0].direct = true;
+        streams[0].url = "invalid-url".into();
+        let outs = [PathBuf::from("video"), PathBuf::from("audio")];
+        let active = AtomicUsize::new(0);
+        let fallback = |part: &Job, _: &Stream, _: &Path| {
+            assert_eq!(part.info().conns, 4);
+            active.fetch_add(1, Relaxed);
+            let start = std::time::Instant::now();
+            while active.load(Relaxed) < 2 && start.elapsed().as_secs() < 3 { std::thread::yield_now(); }
+            assert_eq!(active.load(Relaxed), 2, "both streams start concurrently");
+            part.info().segs = vec![Seg { next: 16, stop: Some(16), ..Default::default() }];
+            Ok(true)
+        };
+        let agent = crate::engine::agent("", "ndm-test");
+        assert_eq!(fetch_streams(&job, &agent, &Limiter::default(), &streams, &outs, &fallback), Ok(true));
+        assert_eq!(job.info().done(), 32);
+        let failed = |part: &Job, stream: &Stream, _: &Path| {
+            if stream.id == "audio" { return Err("audio failed".into()); }
+            let start = std::time::Instant::now();
+            while !part.stopping() && start.elapsed().as_secs() < 3 { std::thread::sleep(std::time::Duration::from_millis(10)); }
+            assert!(part.stopping(), "failed companion stops the other stream");
+            Ok(false)
+        };
+        assert_eq!(fetch_streams(&job, &agent, &Limiter::default(), &streams, &outs, &failed), Err("audio failed".into()));
+    }
+
+    #[test]
+    fn failed_merge_keeps_sources_and_reports_error() {
+        let dir = std::env::temp_dir().join(format!("ndm-merge-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (video, audio, dest) = (dir.join("v.mp4"), dir.join("a.m4a"), dir.join("out.mp4"));
+        std::fs::write(&video, b"not an MP4").unwrap();
+        std::fs::write(&audio, b"not an M4A").unwrap();
+        assert!(join(&Job::new(Info::default()), &video, &audio, &dest, None).is_err());
+        assert!(video.exists() && audio.exists() && !dest.exists());
+        let saved = SavedInfo::new(dir.join("private.json"), &serde_json::json!({"cookies": "secret"})).unwrap();
+        let path = saved.0.clone();
+        assert!(path.exists());
+        drop(saved);
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn silent_downloader_stops() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ndm-silent-ytdlp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("yt-dlp");
+        std::fs::write(&bin, b"#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let job = Job::new(Info::default());
+        let start = std::time::Instant::now();
+        let result = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                job.stop();
+            });
+            fetch_video(&job, &bin, &[], &[], "v", "unused", 0, &Limiter::default())
+        });
+        assert_eq!(result, Ok(false));
+        assert!(start.elapsed() < std::time::Duration::from_secs(3));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn video_pages() {
         assert!(is_video_page("https://www.youtube.com/watch?v=abc"));
         assert!(is_video_page("https://youtu.be/abc"));
@@ -988,7 +1148,6 @@ mod tests {
     }
     /// The real yt-dlp (NDM_TEST_YTDLP=<its path>) on a site with separate video and audio streams, as
     /// YouTube has them, without ffmpeg: video, then audio, joined by NDM into one MP4.
-    #[cfg(unix)]
     #[test]
     #[ignore = "needs the real yt-dlp: NDM_TEST_YTDLP=/path/to/yt-dlp cargo test real_ytdlp -- --ignored"]
     fn real_ytdlp_separate_streams() {
@@ -999,11 +1158,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         let tools = home.join("NewDownloadManager/tools");
         std::fs::create_dir_all(&tools).unwrap();
-        std::fs::copy(&bin, tools.join("yt-dlp")).unwrap();
-        // NDM's tools folder under this home, and no ffmpeg on PATH
+        std::fs::copy(&bin, tools.join(exe_file("yt-dlp"))).unwrap();
+        // Also find the isolated executable through PATH: macOS stores NDM's configuration under
+        // Application Support rather than XDG_CONFIG_HOME/APPDATA. No ffmpeg is on this PATH.
         std::env::set_var("XDG_CONFIG_HOME", &home);
         std::env::set_var("APPDATA", &home);
-        std::env::set_var("PATH", "/nonexistent");
+        std::env::set_var("PATH", &tools);
         let seg = |kind: &str| format!(r#"<SegmentList timescale="1000" duration="2000"><Initialization sourceURL="{kind}init.mp4"/><SegmentURL media="{kind}1.m4s"/><SegmentURL media="{kind}2.m4s"/></SegmentList>"#);
         let mpd = format!(
             r#"<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT4S" minBufferTime="PT2S" profiles="urn:mpeg:dash:profile:isoff-live:2011"><Period>
@@ -1015,6 +1175,7 @@ mod tests {
         );
         let files: Vec<(String, Vec<u8>, &str)> = vec![
             ("clip.mpd".into(), mpd.into_bytes(), "application/dash+xml"),
+            ("clip.m3u8".into(), b"#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-MAP:URI=\"vinit.mp4\"\n#EXTINF:2,\nv1.m4s\n#EXTINF:2,\nv2.m4s\n#EXT-X-ENDLIST\n".to_vec(), "application/vnd.apple.mpegurl"),
             ("vinit.mp4".into(), init(1, 1000), "video/mp4"),
             ("v1.m4s".into(), frag(1, 0, b'v'), "video/mp4"),
             ("v2.m4s".into(), frag(1, 2000, b'w'), "video/mp4"),
@@ -1026,13 +1187,25 @@ mod tests {
         let movie = [init(1, 1000), frag(1, 0, b'm')].concat();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
+        let files = std::sync::Arc::new(files);
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let maximum = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = maximum.clone();
         std::thread::spawn(move || {
             for c in listener.incoming().flatten() {
+                let (files, active, maximum) = (files.clone(), active.clone(), maximum.clone());
+                std::thread::spawn(move || {
                 let mut r = BufReader::new(c.try_clone().unwrap());
                 let mut line = String::new();
                 r.read_line(&mut line).unwrap();
                 while r.read_line(&mut String::new()).unwrap_or(0) > 2 {}
                 let path = line.split_whitespace().nth(1).unwrap_or("").trim_start_matches('/').split('?').next().unwrap_or("").to_string();
+                let fragment = path.ends_with(".m4s");
+                if fragment {
+                    let live = active.fetch_add(1, Relaxed) + 1;
+                    maximum.fetch_max(live, Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 let mut c = c;
                 match files.iter().find(|f| f.0 == path) {
                     Some((_, body, ct)) => {
@@ -1043,11 +1216,13 @@ mod tests {
                         let _ = write!(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     }
                 }
+                if fragment { active.fetch_sub(1, Relaxed); }
+                });
             }
         });
         assert!(ffmpeg().is_none(), "ffmpeg hidden");
         let dir = home.join("Video");
-        let job = Job::new(crate::engine::Info { url: format!("{base}clip.mpd"), folder: dir.display().to_string(), name: "clip.mp4".into(), ..Default::default() });
+        let job = Job::new(crate::engine::Info { url: format!("{base}clip.mpd"), folder: dir.display().to_string(), name: "clip.mp4".into(), conns: 4, ..Default::default() });
         assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         let d = std::fs::read(dir.join("clip.mp4")).unwrap();
         let top = crate::stream::boxes(&d, 0, d.len());
@@ -1060,6 +1235,13 @@ mod tests {
         let left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         assert_eq!(left, ["clip.mp4"], "the separate streams are cleaned up");
         assert_eq!(job.info().size, Some(d.len() as u64));
+        assert!(peak.load(Relaxed) > 2, "DASH fragments and companion streams fetched concurrently");
+        // HLS uses the same concurrent fragment path, preserving the assembled fragment order.
+        peak.store(0, Relaxed);
+        let job = Job::new(Info { url: format!("{base}clip.m3u8"), folder: dir.display().to_string(), name: "hls.mp4".into(), conns: 4, ..Default::default() });
+        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(std::fs::read(dir.join("hls.mp4")).unwrap(), [init(1, 1000), frag(1, 0, b'v'), frag(1, 2000, b'w')].concat());
+        assert!(peak.load(Relaxed) > 1, "HLS fragments fetched concurrently");
         // a site with one file that has both: no separate streams, so that file
         let job = Job::new(crate::engine::Info { url: format!("{base}movie.mp4"), folder: dir.display().to_string(), name: "movie.mp4".into(), ..Default::default() });
         assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));

@@ -270,6 +270,7 @@ pub fn tips() -> Vec<String> {
         tr_os("Drag a link onto the drop target (Tasks -> Show drop target) to download it."),
         tr_os("The Speed Limiter keeps some bandwidth free for browsing while NDM downloads."),
         tr_os("Video panels over web players list the streams the page plays; NDM joins HLS and DASH pieces into one file."),
+        tr_os("Choose Downloads -> Set yt-dlp to download videos and audio from supported websites. Paste the video's page address or right-click it in your browser and choose Download this video with New Download Manager. NDM fetches direct streams in segments and yt-dlp fetches HLS/DASH fragments in parallel."),
         tr_os("Closing the main window keeps NDM running in the notification area. Use Tasks -> Exit to quit."),
     ]
 }
@@ -349,7 +350,7 @@ mod tests {
         load("ndm_en");
         assert_eq!((current(), tr("Options")), ("ndm_en".to_string(), "Options".to_string()), "Languages\\ndm_en.lng loads");
         assert_eq!(tr("no such string"), "no such string");
-        assert_eq!(tips().len(), 10);
+        assert_eq!(tips().len(), 11);
         load("");
         assert_eq!(tr("Options"), "Options");
         assert_eq!(key("&Options...\tCtrl+O"), "options");

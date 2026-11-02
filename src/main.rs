@@ -374,6 +374,7 @@ fn main() -> eframe::Result {
     let (w, h, rgba) = app_icon();
     let viewport = ViewportBuilder::default()
         .with_title(TITLE)
+        .with_active(!tray_start())
         .with_inner_size([1000.0, 560.0])
         .with_min_inner_size([640.0, 320.0])
         .with_icon(Arc::new(egui::IconData { rgba, width: w as u32, height: h as u32 }));
@@ -2560,6 +2561,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         if inc.silent {
             // /n: no questions; /a only adds it to the queue
             let mut i = self.core.new_info(&inc.url);
+            i.ytdlp = inc.video;
+            (i.referrer, i.cookies, i.browser_proxy) = (inc.referrer.clone(), inc.cookies.clone(), inc.proxy.clone());
             if !inc.folder.is_empty() {
                 i.folder = inc.folder.clone();
             }
@@ -2716,6 +2719,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 // a web page from any of the sites yt-dlp knows (well beyond the ones NDM names): its video
                 let found = match found {
                     Ok(p) if p.page => ytdlp::probe(&url, &r, &k).or(Ok(p)),
+                    // Some extractors can read a page whose ordinary HTTP request is rejected.
+                    Err(e) if !video_page && (url.starts_with("https://") || url.starts_with("http://")) => ytdlp::probe(&url, &r, &k).map_err(|_| e),
                     other => other,
                 };
                 *s.lock().unwrap() = Some(found);
@@ -4477,6 +4482,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                     *path = Path::new(&info.folder).join(name).display().to_string();
                                 }
                                 (info.size, info.ranges, info.probed, info.stream) = (p.size, p.ranges, true, p.stream);
+                                info.page = p.page;
                                 info.ytdlp |= p.ytdlp;
                             }
                             Err(e) => {
@@ -8046,10 +8052,7 @@ impl eframe::App for App {
             } else {
                 #[cfg(windows)]
                 {
-                    win::keep_hidden(h, false);
-                    if win::visible(h) {
-                        win::hide(h);
-                    }
+                    win::hide(h);
                     TRAYED.store(true, Relaxed);
                 }
                 // Linux: to the tray once it is up (it starts on its own thread); without one it stays minimized

@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/MoeJoe37/New-Download-Manager/releases"><b>Download</b></a> ·
   <a href="#features">Features</a> ·
+  <a href="#videos-and-audio-with-yt-dlp">yt-dlp</a> ·
   <a href="#custom-toolbars">Custom toolbars</a> ·
   <a href="#custom-category-icons">Category icons</a> ·
   <a href="#building-from-source">Build</a> ·
@@ -56,11 +57,14 @@
 **Video and audio streams**
 - HLS (.m3u8) and DASH (.mpd), including AES-128, byte ranges, multi-period and live streams
 - Video and audio joined into one MP4 or WebM without any extra program
-- YouTube, Vimeo, TikTok, Instagram, X, Reddit, Twitch, SoundCloud and other video sites through
-  [yt-dlp](https://github.com/yt-dlp/yt-dlp): *Downloads → Set yt-dlp* downloads it (and Deno, which it needs for
-  YouTube), adds it to PATH and keeps it up to date. The best video and audio end up in one file, joined by NDM
-  itself when ffmpeg isn't installed. Paste the page's address, click *Download this video* on the player, or
-  right-click the page → *Download this video with New Download Manager*
+- Video and audio websites through [yt-dlp](https://github.com/yt-dlp/yt-dlp), including YouTube,
+  Vimeo, TikTok, Instagram, X, Reddit, Twitch and SoundCloud. Any website supported by the installed
+  yt-dlp can be submitted; NDM's list of familiar sites is only a shortcut for automatic detection
+- Direct video and audio streams use NDM's parallel connections, adaptive file segmentation and
+  connection reuse. Video and audio download together; HLS/DASH streams handled by yt-dlp use concurrent
+  fragments, with the connection count from NDM's settings
+- **Downloads → Set yt-dlp** installs and updates yt-dlp and Deno on Windows, macOS and Linux.
+  [Setup and usage](#videos-and-audio-with-yt-dlp)
 
 **Organizing**
 - Categories with their own folders, queues with a scheduler (start / stop times, days, retries)
@@ -140,6 +144,41 @@ Cinnamon, MATE, GNOME with the AppIndicator extension), the drop target, dial-up
 the desktop's proxy, PAC scripts, NTLM and Kerberos sign-in, links dropped on the main window and Firefox's cache.
 
 NDM checks the Releases page for new versions (Help → Check for updates, and by itself every two weeks).
+
+## Videos and audio with yt-dlp
+
+1. Choose **Downloads → Set yt-dlp**. NDM downloads the correct yt-dlp and Deno builds for your system,
+   verifies their SHA-256 checksums and keeps its copies up to date. You can also put your own `yt-dlp`
+   (`yt-dlp.exe` on Windows) beside NDM or on PATH.
+2. Paste the video's own page address into **Add URL**, click the extension's **Download this video**
+   panel, or right-click the page → **Download this video with New Download Manager**. This page menu
+   is available on every HTTP/HTTPS site, including sites outside NDM's automatic detection list.
+   On a feed, open the individual video's page first. Audio-only pages work too. A playlist-only or
+   multi-video page adds its first entry as one NDM download.
+3. Choose the file's folder and start. NDM uses its segmented engine for ordinary HTTP/HTTPS media,
+   fetching video and audio at the same time. When a stream needs yt-dlp's own downloader, it keeps
+   the extracted format's URLs, headers and cookies and downloads HLS/DASH fragments concurrently.
+   A stream rejected by NDM's engine falls back to yt-dlp without restarting its companion stream.
+
+The **maximum connections** setting controls NDM's connections and yt-dlp's fragment concurrency
+(up to 64 concurrent fragments per stream). Servers can impose connection or speed limits; live and
+protocol-specific streams may need a sequential downloader. Faster downloading depends on the server
+and your connection.
+
+NDM can join fragmented MP4/M4A and WebM streams itself. For the widest container and protocol support,
+install [ffmpeg](https://ffmpeg.org/download.html) beside NDM or on PATH. If joining fails, NDM keeps the
+separate streams and reports the error instead of marking a silent video as complete.
+
+Site compatibility follows the installed [yt-dlp supported sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+and its generic extractor. NDM does not restrict explicit page requests to a fixed site list. Private,
+age-restricted or regional content may need a signed-in browser session or other site requirements;
+DRM-protected and unavailable media remain subject to yt-dlp's limitations. Updating yt-dlp is often
+necessary when a site changes.
+
+**Tip:** use the video's page address, rather than a temporary CDN link or one stream fragment. NDM
+lets yt-dlp find the complete media and then uses the appropriate parallel download path. Browser
+captures show their File Info/progress and Download complete popups while the main window stays in
+the notification area; open it yourself from the tray when you need the download list.
 
 ## Custom toolbars
 

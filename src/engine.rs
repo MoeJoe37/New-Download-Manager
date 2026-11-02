@@ -1400,6 +1400,19 @@ impl Job {
                     self.info().stream = true;
                     return crate::stream::run(self, agent, global);
                 }
+                // Queued, silent CLI and "start downloading immediately" jobs can reach here without
+                // the File Info probe. Let yt-dlp try HTML from any site, while explicit HTML downloads
+                // (and the Site Grabber's pages) keep their ordinary file behavior.
+                let video_page = {
+                    let i = self.info();
+                    let html = |name: &str| matches!(crate::core::ext(name).as_str(), "html" | "htm" | "xhtml");
+                    !i.plain && !i.page && !html(&i.name) && !html(&url_name(&i.url)) && is_page(r.header("Content-Type"))
+                };
+                if video_page {
+                    drop(r);
+                    self.info().ytdlp = true;
+                    return crate::ytdlp::run(self, agent, global);
+                }
                 // the server's cookies go along on the other connections
                 let set: Vec<String> = r.all("Set-Cookie").iter().filter_map(|c| c.split(';').next()).map(|c| c.trim().to_string()).collect();
                 if !set.is_empty() {

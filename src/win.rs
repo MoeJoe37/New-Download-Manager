@@ -118,8 +118,8 @@ pub fn exe_icon(path: &Path) -> Option<Rgba> {
 
 /// Started for the browser (`/tray`): eframe shows the main window after its first frame whatever NDM
 /// asks, so while this is on the window's subclass drops that show (and the WS_VISIBLE winit sets
-/// with it), and only the download's dialog comes up. Turned on in the first frame, before the show; off
-/// from the UI thread once it is past, or by `show`.
+/// with it). Keep the guard for the entire time in the tray: creating or closing a download viewport
+/// can show its owner again. Only an explicit `show` removes it.
 static KEEP_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn keep_hidden(hwnd: isize, on: bool) {
@@ -168,7 +168,7 @@ pub fn show(hwnd: isize) {
     if h.is_null() {
         return;
     }
-    KEEP_HIDDEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    keep_hidden(hwnd, false);
     unsafe {
         ShowWindow(h, if IsIconic(h) != 0 { SW_RESTORE } else { SW_SHOW });
         SetForegroundWindow(h);
@@ -197,6 +197,7 @@ pub fn wake(hwnd: isize) {
 }
 
 pub fn hide(hwnd: isize) {
+    keep_hidden(hwnd, true);
     unsafe { ShowWindow(hwnd as HWND, SW_HIDE) };
 }
 
@@ -985,6 +986,38 @@ pub fn package_owner(_exe: &Path) -> Option<&'static str> {
 
 pub fn install_package(_file: &Path) -> Result<(), String> {
     Err("not on Windows".into())
+}
+
+#[cfg(test)]
+#[test]
+fn tray_window_stays_hidden_until_explicitly_opened() {
+    unsafe {
+        let title = wide("NDM tray visibility test");
+        let class = wide("STATIC");
+        let root = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), WS_OVERLAPPEDWINDOW,
+            0, 0, 320, 240, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+        assert!(!root.is_null());
+        hide(root as isize);
+        // eframe (or Windows restoring an owner after a popup closes) asks to show it again.
+        for _ in 0..3 {
+            ShowWindow(root, SW_SHOW);
+            assert!(!visible(root as isize));
+            let popup = CreateWindowExW(0, class.as_ptr(), wide("Download complete").as_ptr(), WS_OVERLAPPEDWINDOW,
+                0, 0, 200, 120, root, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            assert!(!popup.is_null());
+            ShowWindow(popup, SW_SHOW);
+            assert!(visible(popup as isize));
+            DestroyWindow(popup);
+            assert!(!visible(root as isize));
+        }
+        show(root as isize);
+        assert!(visible(root as isize), "Open in the tray still works");
+        hide(root as isize);
+        ShowWindow(root, SW_SHOW);
+        assert!(!visible(root as isize), "closing re-arms the guard");
+        keep_hidden(root as isize, false);
+        DestroyWindow(root);
+    }
 }
 
 #[cfg(test)]
