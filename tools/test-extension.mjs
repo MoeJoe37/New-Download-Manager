@@ -9,7 +9,7 @@ const chrome = {
   action: { onClicked: event() },
   runtime: {
     onInstalled: event(), onStartup: event(), onMessage: event(),
-    getManifest: () => ({ version: '2.7.3' }),
+    getManifest: () => ({ version: '2.7.4' }),
     sendNativeMessage: async () => ({}),
   },
   cookies: { getAll: async () => [{ name: 'session', value: 'signed-in' }] },

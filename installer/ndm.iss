@@ -6,7 +6,7 @@
 ; Output: installer\out\NDM-ARM64-Setup-<version>.exe (a name NDM 1.x's updater never takes for its own)
 
 #define AppName "New Download Manager"
-#define AppVersion "2.7.3"
+#define AppVersion "2.7.4"
 #ifndef Arch
   #define Arch "x64"
 #endif

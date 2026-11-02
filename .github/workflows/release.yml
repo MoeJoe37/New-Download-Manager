@@ -17,6 +17,10 @@ on:
       tag:
         description: Tag to publish, e.g. v2.0.0 (created at the commit this runs on if it doesn't exist)
         required: true
+      prerelease:
+        description: A test build, published as a pre-release (NDM's update check never offers it)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -149,6 +153,9 @@ jobs:
           # hand-written notes (.github/release-notes/vX.Y.Z.md) are what NDM's update window shows
           notes=".github/release-notes/$TAG.md"
           if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" --title "New Download Manager ${TAG#v}" "$@"
+          # a test build is a pre-release, which GitHub never reports as the latest release (NDM's update check)
+          pre=""; [ "${{ inputs.prerelease }}" = "true" ] && pre="--prerelease"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" --title "New Download Manager ${TAG#v}" $pre "$@"
+          [ -n "$pre" ] && gh release edit "$TAG" --prerelease
           [ -f "$notes" ] && gh release edit "$TAG" --notes-file "$notes"
           gh release upload "$TAG" out/* --clobber
