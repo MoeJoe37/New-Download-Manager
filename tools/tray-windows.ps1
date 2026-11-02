@@ -24,7 +24,7 @@ public static class W {
   public static string Title(IntPtr h) { var s = new StringBuilder(512); GetWindowText(h, s, 512); return s.ToString(); }
 }
 "@
-$Main = 'New Download Manager 1.0'
+$MainTitle = 'New Download Manager 1.0'
 $data = Join-Path $env:APPDATA 'NewDownloadManager'
 $tmp = Join-Path $env:TEMP 'ndm-tray-test'
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
@@ -51,7 +51,7 @@ function All { @(Get-Process ndm -ErrorAction SilentlyContinue | ForEach-Object 
 function Shown { @(All | Where-Object { [W]::IsWindowVisible($_) -and [W]::Title($_) }) }
 function MainOf {
     for ($i = 0; $i -lt 20; $i++) {
-        $m = @(All | Where-Object { [W]::Title($_) -eq $Main })
+        $m = @(All | Where-Object { [W]::Title($_) -eq $MainTitle })
         if ($m.Count -gt 0) { return $m[0] }
         Start-Sleep -Milliseconds 500
     }
@@ -91,7 +91,7 @@ foreach ($case in 'tray', 'closed', 'minimized') {
         $out = if ($case -eq 'minimized') { -not [W]::IsIconic($main) } else { [W]::IsWindowVisible($main) }
         if ($out -and -not $opened) { $opened = $true; "  main window came out at $([math]::Round($i / 2, 1)) s" }
     }
-    $popups = @($seen.Keys | Where-Object { $_ -ne $Main })
+    $popups = @($seen.Keys | Where-Object { $_ -ne $MainTitle })
     if ($opened) { $failed += "$case (the main window opened)" }
     if (-not $popups) { $failed += "$case (no download window showed)" }
     if (-not (Test-Path "$tmp\dl\$case.bin") -and -not (Get-ChildItem -Recurse "$tmp\dl" -Filter "$case.bin" -ErrorAction SilentlyContinue)) { "  (file not downloaded yet)" }
