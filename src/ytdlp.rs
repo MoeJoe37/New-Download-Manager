@@ -913,7 +913,8 @@ fn fetch_ffmpeg(agent: &ureq::Agent, dir: &Path, got: &AtomicU64, total: &Atomic
     // has its .sha256 beside it
     for zip in ["ffmpeg.zip", "ffprobe.zip"] {
         let fetched = (|| -> Result<(), String> {
-            let url = agent.head(&format!("{base}/{zip}")).call().map_err(|e| format!("{base}/{zip}: {e}"))?.get_url().to_string();
+            // its "latest" address answers GET only (HEAD: 404); the body isn't read here
+            let url = agent.get(&format!("{base}/{zip}")).call().map_err(|e| format!("{base}/{zip}: {e}"))?.get_url().to_string();
             let want = only_sum(&get_text(agent, &format!("{url}.sha256"))?).ok_or_else(|| format!("{zip}: no SHA-256 beside it"))?;
             let archive = dir.join(format!("{zip}.part"));
             get_checked(agent, &url, &want, &archive, got, total)?;
