@@ -839,14 +839,134 @@ fn fetch_deno(agent: &ureq::Agent, base: &str, dir: &Path, got: &AtomicU64, tota
     Ok(())
 }
 
+/// ffmpeg's release file for this system and where its SHA-256 is: yt-dlp's own ffmpeg builds (Windows,
+/// Linux; their checksums.sha256), martin-riedl.de's for macOS (`<file>.sha256`). None: no build for it.
+fn ffmpeg_asset() -> Option<(&'static str, &'static str)> {
+    const YTDLP_FFMPEG: &str = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download";
+    Some(if cfg!(windows) {
+        if cfg!(target_arch = "aarch64") {
+            (YTDLP_FFMPEG, "ffmpeg-master-latest-winarm64-gpl.zip")
+        } else if cfg!(target_arch = "x86_64") {
+            (YTDLP_FFMPEG, "ffmpeg-master-latest-win64-gpl.zip")
+        } else {
+            return None;
+        }
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            ("https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release", "ffmpeg.zip")
+        } else {
+            ("https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release", "ffmpeg.zip")
+        }
+    } else if cfg!(target_arch = "aarch64") {
+        (YTDLP_FFMPEG, "ffmpeg-master-latest-linuxarm64-gpl.tar.xz")
+    } else if cfg!(target_arch = "x86_64") {
+        (YTDLP_FFMPEG, "ffmpeg-master-latest-linux64-gpl.tar.xz")
+    } else {
+        return None;
+    })
+}
+
+/// The programs `names` out of a .tar stream (ffmpeg's Linux builds, after xz), each written to
+/// `dir/<name>.part`; the rest is read past. Returns how many were found.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn untar_some(mut r: impl Read, names: &[&str], dir: &Path) -> Result<usize, String> {
+    let mut found = 0;
+    let mut head = [0u8; 512];
+    loop {
+        if r.read_exact(&mut head).is_err() || head.iter().all(|b| *b == 0) {
+            return Ok(found);
+        }
+        let field = |a: usize, b: usize| String::from_utf8_lossy(&head[a..b]).trim_end_matches('\0').to_string();
+        let octal = field(124, 136);
+        let size = u64::from_str_radix(octal.trim().trim_matches('\0'), 8).map_err(|_| "not a tar archive".to_string())?;
+        let prefix = field(345, 500);
+        let path = if head[257..262] == *b"ustar" && !prefix.is_empty() { format!("{prefix}/{}", field(0, 100)) } else { field(0, 100) };
+        let file = path.rsplit('/').next().unwrap_or("").to_string();
+        let mut body = (&mut r).take(size.div_ceil(512) * 512);
+        if matches!(head[156], b'0' | 0) && names.contains(&file.as_str()) {
+            let mut out = std::fs::File::create(dir.join(format!("{file}.part"))).map_err(|e| e.to_string())?;
+            std::io::copy(&mut (&mut body).take(size), &mut out).map_err(|e| e.to_string())?;
+            found += 1;
+        }
+        std::io::copy(&mut body, &mut std::io::sink()).map_err(|e| e.to_string())?;
+    }
+}
+
+/// ffmpeg (and ffprobe, which yt-dlp asks for alongside it) into `dir`, checked against its SHA-256, when
+/// no ffmpeg runs yet: NDM's own copy, one beside NDM or one on PATH. Its builds are made every day, so a
+/// working copy stays as it is rather than coming down again each day. yt-dlp then joins video and audio
+/// itself, in any format.
+fn fetch_ffmpeg(agent: &ureq::Agent, dir: &Path, got: &AtomicU64, total: &AtomicU64) -> Result<(), String> {
+    if ffmpeg().is_some() {
+        return Ok(());
+    }
+    let Some((base, file)) = ffmpeg_asset() else { return Err("ffmpeg: no build for this system".into()) };
+    let want = if base.contains("yt-dlp") {
+        listed_sum(&get_text(agent, &format!("{base}/checksums.sha256"))?, file)
+    } else {
+        only_sum(&get_text(agent, &format!("{base}/{file}.sha256"))?)
+    }
+    .ok_or_else(|| format!("{file}: no SHA-256 in its release"))?;
+    let archive = dir.join(format!("{file}.part"));
+    get_checked(agent, &format!("{base}/{file}"), &want, &archive, got, total)?;
+    let result = unpack_ffmpeg(&archive, file, dir);
+    let _ = std::fs::remove_file(&archive);
+    result
+}
+
+/// ffmpeg and ffprobe out of the downloaded `archive` (release file `file`: .zip or .tar.xz) into `dir`,
+/// in place of older copies; ffmpeg must start.
+fn unpack_ffmpeg(archive: &Path, file: &str, dir: &Path) -> Result<(), String> {
+    let progs = [exe_file("ffmpeg"), exe_file("ffprobe")];
+    let result = (|| -> Result<(), String> {
+        if file.ends_with(".tar.xz") {
+            #[cfg(target_os = "linux")]
+            {
+                let xz = xz2::read::XzDecoder::new(std::io::BufReader::new(std::fs::File::open(archive).map_err(|e| e.to_string())?));
+                untar_some(xz, &progs.iter().map(String::as_str).collect::<Vec<_>>(), dir)?;
+            }
+        } else {
+            let bytes = std::fs::read(archive).map_err(|e| e.to_string())?;
+            for p in &progs {
+                // macOS: ffprobe is a release of its own; ffmpeg is what matters
+                if let Ok(program) = unzip_one(&bytes, p) {
+                    std::fs::write(dir.join(format!("{p}.part")), program).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        let main = dir.join(format!("{}.part", progs[0]));
+        if !main.is_file() {
+            return Err(format!("{file}: no {} in it", progs[0]));
+        }
+        for p in &progs {
+            let part = dir.join(format!("{p}.part"));
+            if part.is_file() {
+                put_in_place(&part, &dir.join(p))?;
+            }
+        }
+        Ok(())
+    })();
+    for p in &progs {
+        let _ = std::fs::remove_file(dir.join(format!("{p}.part")));
+    }
+    result?;
+    if !runs(&dir.join(&progs[0])) {
+        return Err("ffmpeg was downloaded but doesn't start".into());
+    }
+    Ok(())
+}
+
 /// Downloads (or brings up to date) yt-dlp and Deno in NDM's tools folder, each checked against the SHA-256
-/// its release lists, and makes sure the folder is on PATH. `got` / `total`: progress for the window.
-/// Returns yt-dlp's version.
+/// its release lists, and ffmpeg when there is none yet; makes sure the folder is on PATH. `got` / `total`:
+/// progress for the window. Returns yt-dlp's version.
 pub fn install(agent: &ureq::Agent, got: &AtomicU64, total: &AtomicU64) -> Result<String, String> {
     let dir = tools_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fetch_ytdlp(agent, YTDLP_LATEST, &dir, got, total)?;
     fetch_deno(agent, DENO_LATEST, &dir, got, total)?;
+    // yt-dlp works without ffmpeg (NDM joins the usual formats itself): it is on PATH before ffmpeg's turn
+    add_to_path(&dir);
+    fetch_ffmpeg(agent, &dir, got, total)?;
     add_to_path(&dir);
     Ok(version(&dir.join(exe_file("yt-dlp"))))
 }
@@ -864,7 +984,10 @@ fn add_to_path(dir: &Path) {
     if let Some(home) = std::env::var_os("HOME") {
         let bin = Path::new(&home).join(".local/bin");
         let _ = std::fs::create_dir_all(&bin);
-        for prog in ["yt-dlp", "deno"] {
+        for prog in ["yt-dlp", "deno", "ffmpeg", "ffprobe"] {
+            if !dir.join(prog).is_file() {
+                continue;
+            }
             let link = bin.join(prog);
             // a program of the user's own stays
             if std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -1376,5 +1499,55 @@ mod tests {
         c.arg("hi");
         let out = output_unless_stopped(&Job::new(Info::default()), c).unwrap().unwrap();
         assert_eq!(out.stdout, b"hi\n");
+    }
+    /// The real ffmpeg download (Downloads -> Set yt-dlp) for this system, from its real release, into a
+    /// tools folder of its own, with no other ffmpeg around: it is found and runs.
+    #[test]
+    #[ignore = "downloads ffmpeg (100+ MB): cargo test real_ffmpeg -- --ignored"]
+    fn real_ffmpeg_install() {
+        let home = std::env::temp_dir().join(format!("ndm-real-ffmpeg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("XDG_CONFIG_HOME", &home);
+        std::env::set_var("APPDATA", &home);
+        std::env::set_var("HOME", &home);
+        std::env::set_var("PATH", home.join("none"));
+        assert!(ffmpeg().is_none(), "no other ffmpeg");
+        let dir = tools_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let (got, total) = (AtomicU64::new(0), AtomicU64::new(0));
+        fetch_ffmpeg(&crate::engine::agent("", "ndm-test"), &dir, &got, &total).unwrap();
+        assert!(got.load(Relaxed) > 10_000_000, "{} bytes", got.load(Relaxed));
+        let ff = ffmpeg().expect("NDM's ffmpeg is found");
+        assert!(ff.starts_with(&dir), "{ff:?}");
+        let out = command(&ff).arg("-version").output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.starts_with("ffmpeg version"), "{text}");
+        eprintln!("{}", text.lines().next().unwrap_or(""));
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert!(left.iter().all(|f| !f.ends_with(".part")), "{left:?}");
+        // a second time: a working ffmpeg stays as it is, nothing is downloaded
+        let again = AtomicU64::new(0);
+        fetch_ffmpeg(&crate::engine::agent("", "ndm-test"), &dir, &again, &total).unwrap();
+        assert_eq!(again.load(Relaxed), 0);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+    /// A real ffmpeg release file already on disk (NDM_TEST_FFMPEG_ARCHIVE=<path>, NDM_TEST_FFMPEG_FILE=<its
+    /// release name>) unpacked as Set yt-dlp does it.
+    #[test]
+    #[ignore = "needs an ffmpeg release file"]
+    fn real_ffmpeg_unpack() {
+        let archive = PathBuf::from(std::env::var("NDM_TEST_FFMPEG_ARCHIVE").unwrap());
+        let file = std::env::var("NDM_TEST_FFMPEG_FILE").unwrap();
+        let dir = std::env::temp_dir().join(format!("ndm-ffmpeg-unpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = std::time::Instant::now();
+        unpack_ffmpeg(&archive, &file, &dir).unwrap();
+        let out = command(&dir.join(exe_file("ffmpeg"))).arg("-version").output().unwrap();
+        eprintln!("{} in {:?}", String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or(""), t.elapsed());
+        assert!(dir.join(exe_file("ffprobe")).is_file());
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

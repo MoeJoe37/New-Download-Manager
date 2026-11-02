@@ -46,8 +46,17 @@ function Port {
     }
     throw 'NDM did not start'
 }
-function Shown($proc) { @([W]::Of($proc.Id) | Where-Object { [W]::IsWindowVisible($_) -and [W]::Title($_) }) }
-function MainOf($proc) { [W]::Of($proc.Id) | Where-Object { [W]::Title($_) -eq $Main } | Select-Object -First 1 }
+# every ndm process: NDM starts itself again with another renderer when OpenGL fails (CI has no GPU)
+function All { @(Get-Process ndm -ErrorAction SilentlyContinue | ForEach-Object { [W]::Of($_.Id) } | ForEach-Object { $_ }) }
+function Shown { @(All | Where-Object { [W]::IsWindowVisible($_) -and [W]::Title($_) }) }
+function MainOf {
+    for ($i = 0; $i -lt 20; $i++) {
+        $m = @(All | Where-Object { [W]::Title($_) -eq $Main })
+        if ($m.Count -gt 0) { return $m[0] }
+        Start-Sleep -Milliseconds 500
+    }
+    $null
+}
 
 $failed = @()
 foreach ($case in 'tray', 'closed', 'minimized') {
@@ -57,13 +66,14 @@ foreach ($case in 'tray', 'closed', 'minimized') {
     New-Item -ItemType Directory -Force $data | Out-Null
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     # no tip of the day or update check at start: only the download's windows may come up
-    @{ settings = @{ tips_startup = $false; update_checked = $now; base_dir = "$tmp\dl"; show_progress = $true; show_complete = $true; start_at_once = $true }; items = @(); next_id = 1 } |
-        ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $data 'state.json')
-    $proc = if ($case -eq 'tray') { Start-Process -FilePath $Exe -ArgumentList '/tray' -PassThru } else { Start-Process -FilePath $Exe -PassThru }
+    $json = @{ settings = @{ tips_startup = $false; update_checked = $now; base_dir = "$tmp\dl"; show_progress = $true; show_complete = $true; start_at_once = $true }; items = @(); next_id = 1 } | ConvertTo-Json -Depth 5
+    # no byte order mark: NDM's JSON reader would skip the file
+    [IO.File]::WriteAllText((Join-Path $data 'state.json'), $json, (New-Object Text.UTF8Encoding $false))
+    if ($case -eq 'tray') { Start-Process -FilePath $Exe -ArgumentList '/tray' | Out-Null } else { Start-Process -FilePath $Exe | Out-Null }
     $port = Port
     Start-Sleep -Seconds 3
-    $main = MainOf $proc
-    if (-not $main) { "no main window: " + ((Shown $proc | ForEach-Object { [W]::Title($_) }) -join ', '); $failed += "$case (no main window)"; continue }
+    $main = MainOf
+    if ($null -eq $main) { "no main window: " + ((All | ForEach-Object { "'$([W]::Title($_))' visible=$([W]::IsWindowVisible($_))" }) -join ', '); $failed += "$case (no main window)"; continue }
     if ($case -eq 'closed') { [W]::PostMessage($main, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null; Start-Sleep -Seconds 2 }
     if ($case -eq 'minimized') { [W]::ShowWindow($main, 6) | Out-Null; Start-Sleep -Seconds 2 }
     $before = if ($case -eq 'minimized') { [W]::IsIconic($main) } else { -not [W]::IsWindowVisible($main) }
@@ -74,7 +84,7 @@ foreach ($case in 'tray', 'closed', 'minimized') {
     $seen = @{}; $opened = $false
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 500
-        foreach ($h in Shown $proc) {
+        foreach ($h in Shown) {
             $t = [W]::Title($h)
             if (-not $seen[$t]) { $seen[$t] = $true; "  window: $t" }
         }

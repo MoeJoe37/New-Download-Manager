@@ -49,6 +49,8 @@ rquickjs = "0.9"
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# ffmpeg's Linux builds are .tar.xz (Downloads -> Set yt-dlp): liblzma, built in
+xz2 = { version = "0.1", features = ["static"] }
 # the tray icon, drop target, choosers and icon theme (tray-icon already builds on it)
 gtk = "0.18"
 # X11 first when DISPLAY is set (eframe already builds on it)

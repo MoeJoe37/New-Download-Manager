@@ -3074,7 +3074,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 });
                 ui.separator();
-                if ui.button(tr("Set yt-dlp")).on_hover_text(tr("Downloads yt-dlp for YouTube and other video sites, adds it to PATH and keeps it up to date")).clicked() {
+                if ui.button(tr("Set yt-dlp")).on_hover_text(tr("Downloads yt-dlp and ffmpeg for YouTube and other video sites, adds them to PATH and keeps yt-dlp up to date")).clicked() {
                     self.set_ytdlp(ctx);
                     ui.close_menu();
                 }
@@ -4356,7 +4356,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
             Dialog::Checksum { .. } => ("Checksum".into(), tpl(300.0, 134.0)),
-            Dialog::YtDlp { .. } => ("Set yt-dlp".into(), tpl(186.0, 34.0)),
+            Dialog::YtDlp { .. } => ("Set yt-dlp".into(), tpl(186.0, 44.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
             Dialog::Scale { .. } => ("Custom scale".into(), tpl(232.0, 100.0)),
             Dialog::Tip { .. } => ("Tip of the Day".into(), tpl(253.0, 164.0)),
@@ -6187,14 +6187,15 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let mut d = dlu::D::new(ui);
                 let (g, t) = (got.load(Relaxed), total.load(Relaxed));
                 let amount = if t > 0 { format!("{} / {}", human(g), human(t)) } else if g > 0 { human(g) } else { String::new() };
-                d.label(7.0, 4.0, 110.0, 9.0, "Downloading yt-dlp");
-                d.label_r(118.0, 4.0, 61.0, 9.0, RichText::new(i18n::ltr(&amount)));
+                // the label has the whole line (longer in other languages); the amount goes under the bar
+                d.label(7.0, 4.0, 172.0, 9.0, "Downloading yt-dlp and ffmpeg");
+                d.label_r(79.0, 30.0, 100.0, 9.0, RichText::new(i18n::ltr(&amount)));
                 let frac = if t > 0 { g as f32 / t as f32 } else { (d.ui.input(|i| i.time) as f32 * 0.5).fract() };
                 d.progress(7.0, 16.0, 172.0, 11.0, frac);
                 let res = done.lock().unwrap().take();
                 match res {
-                    Some(Ok(v)) => self.open(Dialog::Info { title: "Set yt-dlp".into(), text: i18n::trf_os("yt-dlp %s is ready. NDM downloads videos from YouTube and other video sites with it, and keeps it up to date.", &[&v]) }),
-                    Some(Err(e)) => self.open(Dialog::Info { title: "Set yt-dlp".into(), text: format!("{}\r\n\r\n{}", tr_os("NDM cannot download yt-dlp. Check your connection and try again."), i18n::tr_msg_os(&e)) }),
+                    Some(Ok(v)) => self.open(Dialog::Info { title: "Set yt-dlp".into(), text: i18n::trf_os("yt-dlp %s and ffmpeg are ready. NDM downloads videos from YouTube and other video sites with them, and keeps yt-dlp up to date.", &[&v]) }),
+                    Some(Err(e)) => self.open(Dialog::Info { title: "Set yt-dlp".into(), text: format!("{}\r\n\r\n{}", tr_os("NDM cannot download yt-dlp or ffmpeg. Check your connection and try again."), i18n::tr_msg_os(&e)) }),
                     None => {
                         ui.ctx().request_repaint_after(Duration::from_millis(100));
                         return true;

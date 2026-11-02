@@ -27,6 +27,8 @@ jobs:
           $env:NDM_TEST_YTDLP = Join-Path $env:RUNNER_TEMP 'ndm-test-yt-dlp.exe'
           Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile $env:NDM_TEST_YTDLP
           cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+      - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
+        run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: Language files are up to date
         run: python tools/ndm_lng.py --check
       - name: Extension video handoff
@@ -54,6 +56,8 @@ jobs:
           $env:NDM_TEST_YTDLP = Join-Path $env:RUNNER_TEMP 'ndm-test-yt-dlp.exe'
           Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_arm64.exe' -OutFile $env:NDM_TEST_YTDLP
           cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+      - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
+        run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: NDM starts
         run: powershell -File tools\smoke-windows.ps1 target\release\ndm.exe
 
@@ -86,6 +90,8 @@ jobs:
           curl --fail --location --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$asset" -o /tmp/ndm-test-yt-dlp
           chmod +x /tmp/ndm-test-yt-dlp
           NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+      - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
+        run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: AppImage
         run: bash tools/appimage.sh
       - name: .deb, .rpm and .tar.gz
@@ -150,6 +156,8 @@ jobs:
           curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o /tmp/ndm-test-yt-dlp
           chmod +x /tmp/ndm-test-yt-dlp
           NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+      - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
+        run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: NDM.app and the disk image (Apple Silicon and Intel)
         run: bash tools/macos.sh
       - name: NDM starts
