@@ -198,24 +198,37 @@ fn message(s: &str) -> Option<(&'static str, Vec<String>)> {
     })
 }
 
-/// egui lays text out left to right without shaping, so right-to-left languages are handed over in display
-/// order: letters joined into their contextual forms (ar-reshaper), then each line reordered by the Unicode
-/// bidi algorithm with a right-to-left base.
+/// egui lays text out left to right without shaping, so right-to-left text is handed over in display order:
+/// letters joined into their contextual forms (ar-reshaper), then each line reordered by the Unicode bidi
+/// algorithm. In a right-to-left language the line's base direction is right to left; in the others it is
+/// left to right, as Windows lays out an Arabic or Hebrew file name in an English window ("فيلم.mp4" reads
+/// its Arabic right to left, then ".mp4"). Text with no right-to-left letters stays as it is.
 fn visual(t: &str) -> String {
-    if !rtl_stem(&current()) || !unshaped(t) {
+    if !unshaped(t) {
         return t.to_string();
     }
-    rtl(t)
+    if rtl_stem(&current()) { rtl(t) } else { reorder(t, unicode_bidi::Level::ltr()) }
+}
+
+/// A file name, folder, address or description as it is shown (the download list, File Info, Properties):
+/// written as it was, whatever the language, with its Arabic or Hebrew in reading order (see `visual`).
+pub fn shown(t: &str) -> String {
+    visual(t)
 }
 
 /// Shape and reorder right-to-left text for egui (see `visual`). Brackets in right-to-left runs are mirrored
 /// (bidi rule L4, which unicode-bidi leaves to the renderer) so "(" still opens toward its text.
 fn rtl(t: &str) -> String {
+    reorder(t, unicode_bidi::Level::rtl())
+}
+
+/// `rtl` with the line's base direction `base`.
+fn reorder(t: &str, base: unicode_bidi::Level) -> String {
     t.replace('\r', "")
         .split('\n')
         .map(|line| {
             let shaped = ar_reshaper::reshape_line(line);
-            let info = unicode_bidi::BidiInfo::new(&shaped, Some(unicode_bidi::Level::rtl()));
+            let info = unicode_bidi::BidiInfo::new(&shaped, Some(base));
             let mut out = String::with_capacity(shaped.len());
             for p in &info.paragraphs {
                 let (levels, runs) = info.visual_runs(p, p.range.clone());
@@ -364,5 +377,22 @@ mod tests {
         assert_eq!(w.lines().map(|l| l.chars().count()).collect::<Vec<_>>(), [5, 2], "{w}");
         assert!(w.lines().next().unwrap().ends_with(&rtl("\u{627}\u{628}")), "{w}");
         assert_eq!(trf("Downloaded %s (%I64d Bytes) 100%%", &[&"1 MB", &1048576]), "Downloaded 1 MB (1048576 Bytes) 100%");
+    }
+
+    /// A downloaded file's Arabic or Hebrew name is shown as it is written, in an English window too:
+    /// its letters joined and its words in reading order, the Latin parts left to right around them.
+    #[test]
+    fn names_read_as_written_in_a_left_to_right_window() {
+        let ltr = |t: &str| reorder(t, unicode_bidi::Level::ltr());
+        let back = |t: &str| ar_reshaper::reshape_line(t).chars().rev().collect::<String>();
+        assert_eq!(shown("report 2024.pdf"), "report 2024.pdf", "Latin names stay as they are");
+        assert_eq!(ltr("فيلم.mp4"), format!("{}.mp4", back("فيلم")));
+        assert_eq!(ltr("Lecture 2 - مقدمة.pdf"), format!("Lecture 2 - {}.pdf", back("مقدمة")));
+        // two Arabic words: the first one on the right
+        assert_eq!(ltr("أغنية جميلة.mp3"), format!("{}.mp3", back("أغنية جميلة")));
+        assert_eq!(ltr("שלום.txt"), "םולש.txt");
+        // the letters come out joined (presentation forms), not the separate letters
+        assert!(!unshaped(&ltr("فيلم.mp4")), "joined forms");
+        assert!(unshaped("فيلم.mp4"));
     }
 }

@@ -4065,7 +4065,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             ui.add(egui::Image::new((*t, Vec2::new(16.0, 13.0))));
                             return;
                         }
-                        let text = r.cell(*c);
+                        // names, folders and addresses as they are written (Arabic and Hebrew in reading order)
+                        let text = match c {
+                            Col::Name | Col::Desc | Col::SaveTo | Col::Referer | Col::Parent => i18n::shown(&r.cell(*c)),
+                            _ => r.cell(*c),
+                        };
                         let error = matches!(r.status, Status::Error(_));
                         if let (Some(t), Col::Status) = (&nt, *c) {
                             // NDM Style: the status in its colour over a thin progress bar
