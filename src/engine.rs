@@ -112,6 +112,7 @@ pub struct Info {
     /// Server's Last-Modified; a different one on resume means the file changed (option
     /// "Ignore file modification time changes when resuming a download").
     pub modified: String,
+    pub etag: String,
     /// The server labels the file a web page (text/html): then a part labelled so is no sign of trouble.
     pub page: bool,
     /// The browser extension fetched the file inside its web page and handed it over (a file the page makes
@@ -138,6 +139,8 @@ pub struct Info {
     pub temp: String,
     /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
     pub stream: bool,
+    pub media_output: String,
+    pub media_variant: Option<usize>,
     /// A Site Grabber download with "Look up files in IE cache before downloading".
     pub ie_cache: bool,
     /// The browser's own proxy when the extension handed the download over ("http://h:p", "socks5://h:p"
@@ -158,11 +161,11 @@ impl Info {
     }
     pub fn done(&self) -> u64 {
         if self.status == Status::Complete {
-            return self.size.unwrap_or_else(|| self.segs.iter().map(|s| s.next - s.start).sum());
+            return self.size.unwrap_or_else(|| self.segs.iter().map(|s| s.next.saturating_sub(s.start)).fold(0, u64::saturating_add));
         }
         match self.size {
-            Some(s) if !self.segs.is_empty() => s - self.segs.iter().map(Seg::left).sum::<u64>().min(s),
-            _ => self.segs.iter().map(|s| s.next - s.start).sum(),
+            Some(s) if !self.segs.is_empty() => s - self.segs.iter().map(Seg::left).fold(0, u64::saturating_add).min(s),
+            _ => self.segs.iter().map(|s| s.next.saturating_sub(s.start)).fold(0, u64::saturating_add),
         }
     }
 }
@@ -219,7 +222,7 @@ pub struct Job {
     pub failed_at: Mutex<Option<Instant>>,
     /// "Download over several network connections at once": (network, its agent), set by the core
     /// before each start. Connection c goes over lanes[c % n]; empty = the job's agent.
-    pub lanes: Mutex<Vec<(String, ureq::Agent)>>,
+    pub lanes: Mutex<Vec<(String, Agent)>>,
     /// Bytes received over each network this run (the progress window's per-network line).
     pub net_bytes: Mutex<std::collections::HashMap<String, u64>>,
     /// The core may spread this run over networks as they come and go (not through the browser's proxy).
@@ -229,13 +232,16 @@ pub struct Job {
     caps: Mutex<std::collections::HashMap<String, usize>>,
 }
 
-type Body = Box<dyn Read + Send + Sync>;
+type Body = Box<dyn Read + Send>;
+
+pub use crate::transport::{call, request, Agent, Request, Response};
 
 pub struct Probe {
     pub name: String,
     pub size: Option<u64>,
     pub ranges: bool,
     pub modified: String,
+    pub etag: String,
     pub stream: bool,
     /// The address is a web page (text/html): perhaps one yt-dlp knows a video on.
     pub page: bool,
@@ -451,48 +457,44 @@ impl ureq::Resolver for DnsCache {
     }
 }
 
-pub fn agent(proxy: &str, user_agent: &str) -> ureq::Agent {
-    let mut b = ureq::AgentBuilder::new()
-        .user_agent(if user_agent.trim().is_empty() { UA } else { user_agent.trim() })
-        .timeout_connect(Duration::from_secs(20))
-        .timeout_read(Duration::from_secs(30))
-        // a connection that finishes its part takes the next one over the same keep-alive connection
-        // (no new TCP / TLS handshake), for every connection of every download to a server
-        .max_idle_connections_per_host(64)
-        .max_idle_connections(256)
-        .resolver(DnsCache);
-    if !proxy.trim().is_empty() {
-        match ureq::Proxy::new(proxy.trim()) {
-            Ok(p) => b = b.proxy(p),
-            Err(e) => eprintln!("bad proxy {proxy}: {e}"),
+pub fn agent(proxy: &str, user_agent: &str) -> Agent {
+    let user_agent = if user_agent.trim().is_empty() { UA } else { user_agent.trim() };
+    let proxy = proxy.trim();
+    let invalid = !proxy.is_empty() && (!url::Url::parse(proxy).is_ok_and(|url| url.host_str().is_some())
+        || ureq::Proxy::new(proxy).is_err());
+    let build = || {
+        let mut builder = ureq::AgentBuilder::new()
+            .try_proxy_from_env(false)
+            .user_agent(user_agent)
+            .timeout_connect(Duration::from_secs(20))
+            .timeout_read(Duration::from_secs(30))
+            .max_idle_connections_per_host(64)
+            .max_idle_connections(256)
+            .resolver(DnsCache);
+        if !proxy.is_empty() {
+            // Invalid configuration fails closed, including ancillary callers using the ureq agent.
+            let route = if invalid { "http://127.0.0.1:0" } else { proxy };
+            builder = builder.proxy(ureq::Proxy::new(route).expect("validated proxy"));
+        }
+        builder
+    };
+    Agent::new(build().build(), build().redirects(0).build(), proxy, user_agent, invalid)
+}
+
+fn with_headers(mut request: Request, headers: &[(String, String)]) -> Request {
+    for (key, value) in headers {
+        if !matches!(key.to_ascii_lowercase().as_str(), "host" | "connection" | "proxy-authorization"
+            | "content-length" | "transfer-encoding" | "te" | "upgrade" | "accept-encoding") {
+            request = request.set(key, value);
         }
     }
-    b.build()
-}
-
-/// `r` with a download's own headers (`Info::headers`).
-fn with_headers(mut r: ureq::Request, headers: &[(String, String)]) -> ureq::Request {
-    for (k, v) in headers {
-        r = r.set(k, v);
-    }
-    r
-}
-
-pub(crate) fn request(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> ureq::Request {
-    let mut r = agent.get(url);
-    if !referrer.is_empty() {
-        r = r.set("Referer", referrer);
-    }
-    if !cookies.is_empty() {
-        r = r.set("Cookie", cookies);
-    }
-    r
+    request
 }
 
 /// Send a request; a 401 asking for Digest authentication is answered with the URL's login (NDM's
 /// header parser 0x58ad70 handles Basic and Digest), NTLM / Negotiate through Windows (`sspi`).
 /// ureq itself sends Basic from the URL.
-pub(crate) fn call(r: ureq::Request) -> Result<ureq::Response, String> {
+pub(crate) fn call_legacy(r: ureq::Request) -> Result<ureq::Response, String> {
     match r.clone().call() {
         Err(ureq::Error::Status(401, resp)) => {
             let challenges: Vec<String> = resp.all("WWW-Authenticate").iter().map(|s| s.to_string()).collect();
@@ -691,7 +693,7 @@ mod gss {
     #[ignore]
     fn kerberos_site() {
         let url = std::env::var("NDM_KERBEROS_URL").expect("NDM_KERBEROS_URL");
-        let resp = super::call(ureq::agent().get(&url)).unwrap();
+        let resp = super::call_legacy(ureq::agent().get(&url)).unwrap();
         assert_eq!(resp.status(), 200);
     }
 
@@ -959,30 +961,39 @@ fn md5_hex(s: &str) -> String {
 
 fn err(e: ureq::Error) -> String {
     match e {
-        ureq::Error::Status(code, r) => format!("HTTP {code} {}", r.status_text()),
-        ureq::Error::Transport(t) => t.to_string(),
+        ureq::Error::Status(code, _) => crate::transport::http_error(code),
+        ureq::Error::Transport(error) => {
+            use ureq::ErrorKind::*;
+            match error.kind() {
+                ProxyUnauthorized => "HTTP 407 Proxy Authentication Required".into(),
+                InvalidProxyUrl => "Invalid proxy configuration".into(),
+                ProxyConnect => "Could not connect through the configured proxy".into(),
+                kind => format!("HTTP transport error: {kind:?}"),
+            }
+        }
     }
 }
 
-pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
+pub fn probe(agent: &Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     if crate::stream::is_manifest(url) {
         return crate::stream::probe(agent, url, referrer, cookies);
     }
     if crate::ytdlp::is_video_page(url) {
-        return crate::ytdlp::probe(url, referrer, cookies);
+        return crate::ytdlp::probe(agent, url, referrer, cookies);
     }
     if crate::stream::is_media_url(url) {
         // a live mms / rtmp / rtsp stream: no size until it is recorded
-        return Ok(Probe { name: sanitize(&url_name(url)), size: None, ranges: false, modified: String::new(), stream: true, page: false, ytdlp: false });
+        return Ok(Probe { name: sanitize(&url_name(url)), size: None, ranges: false, modified: String::new(), etag: String::new(), stream: true, page: false, ytdlp: false });
     }
     if is_ftp(url) {
         let (size, ranges, _) = ftp_open(url, 0)?;
-        return Ok(Probe { name: sanitize(&url_name(url)), size, ranges, modified: String::new(), stream: false, page: false, ytdlp: false });
+        return Ok(Probe { name: sanitize(&url_name(url)), size, ranges, modified: String::new(), etag: String::new(), stream: false, page: false, ytdlp: false });
     }
     let r = call(request(agent, url, referrer, cookies).set("Range", "bytes=0-0"))?;
     if r.header("Content-Type").is_some_and(crate::stream::is_manifest_type) {
         return crate::stream::probe(agent, url, referrer, cookies);
     }
+    validate_http_response(&r, Some((0, Some(0))), None)?;
     Ok(probe_of(&r))
 }
 
@@ -990,12 +1001,13 @@ pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> R
 /// and some addresses give NDM something else: a file a site's service worker makes in the page (Telegram
 /// Web), an expired or one-time link, a login page. The browser's `mime` and `size` (0: unknown) and file name
 /// are compared with what the server sends NDM; Err says why the browser should keep the download.
-pub fn same_file(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str, mime: &str, size: u64, filename: &str) -> Result<(), String> {
+pub fn same_file(agent: &Agent, url: &str, referrer: &str, cookies: &str, mime: &str, size: u64, filename: &str) -> Result<(), String> {
     if crate::stream::is_manifest(url) || crate::stream::is_media_url(url) || crate::ytdlp::is_video_page(url) || is_ftp(url) {
         return Ok(());
     }
     let r = call(request(agent, url, referrer, cookies).set("Range", "bytes=0-0"))?;
     let got = r.header("Content-Type").unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    validate_http_response(&r, Some((0, Some(0))), None)?;
     let p = probe_of(&r);
     drop(r); // not read: a server that ignores the range would send the whole file
     let page = |m: &str| m == "text/html" || m == "application/xhtml+xml";
@@ -1003,6 +1015,11 @@ pub fn same_file(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str, 
     let named_page = matches!(filename.rsplit('.').next().map(str::to_ascii_lowercase).as_deref(), Some("htm" | "html" | "xhtml" | "mht" | "mhtml"));
     if page(&got) && !page(&want) && !(want.is_empty() && named_page) {
         return Err(format!("the server sends a web page ({got}), not the file the browser gets ({})", if want.is_empty() { "?" } else { &want }));
+    }
+    if let (Some(want_ext), Some(got_ext)) = (mime_ext(&want), mime_ext(&got)) {
+        if want_ext != got_ext {
+            return Err(format!("The server sends {got_ext}, but the browser received {want_ext}"));
+        }
     }
     if let (true, Some(s)) = (size > 0, p.size) {
         if s != size {
@@ -1018,13 +1035,81 @@ fn is_page(content_type: Option<&str>) -> bool {
     m == "text/html" || m == "application/xhtml+xml"
 }
 
-fn probe_of(r: &ureq::Response) -> Probe {
-    let total = r.header("Content-Range").and_then(|c| c.rsplit('/').next()).and_then(|t| t.trim().parse().ok());
+/// An inclusive, concrete byte interval. Unsatisfied and unknown-size ranges cannot be split.
+pub(crate) fn content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let (unit, value) = value.trim().split_once(' ')?;
+    if !unit.eq_ignore_ascii_case("bytes") {
+        return None;
+    }
+    let (span, total) = value.split_once('/')?;
+    let (first, last) = span.split_once('-')?;
+    let (first, last, total) = (first.parse().ok()?, last.parse().ok()?, total.parse().ok()?);
+    (first <= last && last < total).then_some((first, last, total))
+}
+
+pub(crate) fn validate_http_response(r: &Response, range: Option<(u64, Option<u64>)>, expected: Option<u64>) -> Result<(), String> {
+    if r.header("Content-Encoding").is_some_and(|value| !value.eq_ignore_ascii_case("identity")) {
+        return Err("Server returned an encoded body for a byte download".into());
+    }
+    let length = r.header("Content-Length").map(|n| n.trim().parse::<u64>()).transpose().map_err(|_| "Invalid Content-Length")?;
+    match (r.status(), range) {
+        (206, Some((start, end))) => {
+            let (first, last, total) = r.header("Content-Range").and_then(content_range).ok_or("Invalid Content-Range")?;
+            if expected.is_some_and(|size| total != size) {
+                return Err(CHANGED.into());
+            }
+            if first != start || last != end.unwrap_or(total - 1).min(total - 1) || length.is_some_and(|n| n != last - first + 1) {
+                return Err("Content-Range does not match the requested bytes".into());
+            }
+            Ok(())
+        }
+        (200, _) if expected.zip(length).is_some_and(|(old, new)| old != new) => Err(CHANGED.into()),
+        (200, _) => Ok(()),
+        _ => Err(format!("Unexpected HTTP {} response", r.status())),
+    }
+}
+
+pub(crate) fn permanent_error(error: &str) -> bool {
+    let code = error.strip_prefix("HTTP ").and_then(|text| text.split_whitespace().next()).and_then(|code| code.parse::<u16>().ok());
+    code.is_some_and(|code| (400..500).contains(&code) && !matches!(code, 408 | 425 | 429))
+        || error == CHANGED
+        || error == "server ignored the Range request"
+        || error == "Invalid Content-Range"
+        || error == "Content-Range does not match the requested bytes"
+        || error == "Invalid proxy configuration"
+}
+
+pub(crate) fn retry_delay(failures: u32) -> Duration {
+    use std::hash::{BuildHasher, RandomState};
+    let jitter = RandomState::new().hash_one(failures) % 500;
+    Duration::from_millis((1000 * (1u64 << failures.min(5)) + jitter).min(30_000))
+}
+
+fn valid_layout(segs: &[Seg], size: Option<u64>) -> bool {
+    if segs.len() == 1 && segs[0].stop.is_none() {
+        return segs[0].start == 0 && size.is_none();
+    }
+    let mut ordered: Vec<_> = segs.iter().collect();
+    ordered.sort_unstable_by_key(|segment| segment.start);
+    let mut end = 0;
+    for segment in ordered {
+        let Some(stop) = segment.stop else { return false };
+        if segment.start != end || segment.next < end || segment.next > stop {
+            return false;
+        }
+        end = stop;
+    }
+    size.is_none_or(|size| size == end)
+}
+
+fn probe_of(r: &Response) -> Probe {
+    let total = r.header("Content-Range").and_then(content_range).map(|(_, _, total)| total);
     let ranges = r.status() == 206 && total.is_some();
     let size = if ranges { total } else { r.header("Content-Length").and_then(|l| l.trim().parse().ok()) };
     let name = r.header("Content-Disposition").and_then(disposition_name).unwrap_or_else(|| url_name(r.get_url()));
-    let name = typed_name(&sanitize(&name), r.header("Content-Type").and_then(mime_ext));
-    Probe { name, size, ranges, modified: r.header("Last-Modified").unwrap_or_default().to_string(), stream: false, page: is_page(r.header("Content-Type")), ytdlp: false }
+    let name = sanitize(&name);
+    let name = r.header("Content-Type").and_then(mime_ext).map_or_else(|| name.clone(), |ext| media_name(&name, ext));
+    Probe { name, size, ranges, modified: r.header("Last-Modified").unwrap_or_default().to_string(), etag: r.header("ETag").unwrap_or_default().to_string(), stream: false, page: is_page(r.header("Content-Type")), ytdlp: false }
 }
 
 /// The file type a Content-Type names, as an extension (None: not a type NDM files by).
@@ -1086,6 +1171,17 @@ pub fn typed_name(name: &str, ext: Option<&str>) -> String {
     format!("{stem}.{ext}")
 }
 
+pub(crate) fn media_name(name: &str, actual: &str) -> String {
+    const CONTAINERS: &[&str] = &["ts", "mp4", "m4a", "mkv", "webm", "mov", "avi", "flv", "3gp"];
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    if CONTAINERS.contains(&actual) && CONTAINERS.contains(&ext.to_ascii_lowercase().as_str())
+        && !ext.eq_ignore_ascii_case(actual) && !(actual == "mp4" && ext.eq_ignore_ascii_case("m4a")) {
+        format!("{stem}.{actual}")
+    } else {
+        typed_name(name, Some(actual))
+    }
+}
+
 /// What a file is from its first bytes, as an extension (None: can't tell).
 pub fn sniff(path: &Path) -> Option<&'static str> {
     let mut head = vec![0u8; 512];
@@ -1131,7 +1227,10 @@ pub fn sniff(path: &Path) -> Option<&'static str> {
         "jpg"
     } else if at(0, b"GIF8") {
         "gif"
-    } else if d.len() > 188 && d[0] == 0x47 && d[188] == 0x47 {
+    } else if [188, 192, 204].into_iter().any(|stride| {
+        let offset = if stride == 192 { 4 } else { 0 };
+        d.get(offset) == Some(&0x47) && d.get(offset + stride) == Some(&0x47)
+    }) {
         "ts"
     } else {
         return None;
@@ -1260,6 +1359,7 @@ impl Job {
             let mut buf = vec![0u8; 4 << 20];
             let mut done = 0u64;
             loop {
+                if self.stopping() { return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "stopped")); }
                 let n = src.read(&mut buf)?;
                 if n == 0 {
                     break;
@@ -1284,13 +1384,19 @@ impl Job {
 
     /// Runs this download here and now (not on a thread of its own, no status kept): a part of another
     /// download, such as the video or audio stream of a video page (`ytdlp::run`).
-    pub(crate) fn run_part(&self, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
+    pub(crate) fn run_part(&self, agent: &Agent, global: &Limiter) -> Result<bool, String> {
         self.run(agent, global)
     }
 
-    pub fn start(self: &Arc<Self>, agent: ureq::Agent, global: Arc<Limiter>) {
+    pub fn start(self: &Arc<Self>, agent: Agent, global: Arc<Limiter>) {
         if self.info().status == Status::Complete || self.running.swap(true, Relaxed) {
             return;
+        }
+        let changed = matches!(&self.info().status, Status::Error(error) if error == CHANGED);
+        if changed {
+            // Queue retries skip identity mismatches. A subsequent user start explicitly
+            // requests a new transfer, after the changed-resource error was shown.
+            self.reset();
         }
         self.stop.store(false, Relaxed);
         self.net_bytes.lock().unwrap().clear();
@@ -1333,11 +1439,13 @@ impl Job {
         let _ = fs::remove_file(i.part());
         let _ = fs::remove_dir_all(i.part()); // a stream's pieces
         i.segs.clear();
+        i.etag.clear();
+        i.modified.clear();
         i.probed = false;
         i.status = Status::Stopped;
     }
 
-    fn run(&self, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
+    fn run(&self, agent: &Agent, global: &Limiter) -> Result<bool, String> {
         let (url, referrer, cookies, probed, headers) = {
             let mut i = self.info();
             i.last_try = chrono::Local::now().timestamp();
@@ -1347,7 +1455,7 @@ impl Job {
             return Err(crate::i18n::tr_os("This file came from its web page through the browser: download it again from the page."));
         }
         if crate::stream::is_media_url(&url) {
-            return crate::stream::run_media(self);
+            return crate::stream::run_media(self, agent);
         }
         if crate::ytdlp::wants(&self.info()) {
             return crate::ytdlp::run(self, agent, global);
@@ -1366,9 +1474,9 @@ impl Job {
             // Like NDM (0x589960) the first request is the download itself, `bytes=0-`; no separate probe.
             let (p, r): (Probe, Body) = if is_ftp(&url) {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
-                (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), stream: false, page: false, ytdlp: false }, r)
+                (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), etag: String::new(), stream: false, page: false, ytdlp: false }, r)
             } else {
-                let first_req = |agent: &ureq::Agent| {
+                let first_req = |agent: &Agent| {
                     let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-");
                     if let Some((_, since)) = &cached {
                         req = req.set("If-Modified-Since", since);
@@ -1395,6 +1503,7 @@ impl Job {
                     i.segs = vec![Seg { next: n, stop: Some(n), ..Default::default() }];
                     return Ok(true);
                 }
+                validate_http_response(&r, Some((0, None)), None)?;
                 if r.header("Content-Type").is_some_and(crate::stream::is_manifest_type) {
                     drop(r);
                     self.info().stream = true;
@@ -1415,7 +1524,7 @@ impl Job {
                 }
                 // the server's cookies go along on the other connections
                 let set: Vec<String> = r.all("Set-Cookie").iter().filter_map(|c| c.split(';').next()).map(|c| c.trim().to_string()).collect();
-                if !set.is_empty() {
+                if !set.is_empty() && r.get_url() == url {
                     let mut i = self.info();
                     i.cookies = merge_cookies(&i.cookies, &set);
                 }
@@ -1426,12 +1535,15 @@ impl Job {
             if i.name.is_empty() {
                 i.name = unique_name(&i.folder, &p.name, &|_| false);
             }
-            if i.size != p.size || i.ranges != p.ranges {
-                i.segs.clear(); // remote file changed (or first contact): start over
+            if !i.segs.is_empty() && i.done() > 0 && (i.size != p.size || i.ranges != p.ranges
+                || (!i.etag.is_empty() && !p.etag.is_empty() && i.etag != p.etag)
+                || (!i.modified.is_empty() && !p.modified.is_empty() && i.modified != p.modified && !self.ignore_date.load(Relaxed))) {
+                return Err(CHANGED.into());
             }
             (i.size, i.ranges, i.probed) = (p.size, p.ranges, true);
             if i.segs.is_empty() {
                 i.modified = p.modified;
+                i.etag = p.etag;
                 first = Some(r); // becomes the first connection
             }
         }
@@ -1445,6 +1557,13 @@ impl Job {
                 fs::create_dir_all(&i.temp).map_err(|e| e.to_string())?;
             }
             let part = i.part();
+            if !i.segs.is_empty() && !valid_layout(&i.segs, i.size) {
+                return Err("Saved download ranges are invalid. Restart the download to recover.".into());
+            }
+            if i.ranges && i.done() > 0 && part.exists()
+                && fs::metadata(&part).map_err(|e| e.to_string())?.len() < i.segs.iter().map(|s| s.next).max().unwrap_or(0) {
+                return Err("The partial download is shorter than its saved progress".into());
+            }
             // Servers without Range support can't resume, so they always start over.
             if i.segs.is_empty() || !i.ranges || !part.exists() {
                 // One segment for the whole file; more connections split it as they open.
@@ -1537,14 +1656,38 @@ impl Job {
             if size.is_none() {
                 OpenOptions::new().write(true).open(part).and_then(|f| f.set_len(len)).map_err(|e| e.to_string())?;
             }
+            let output = self.info().media_output.clone();
+            if matches!(output.as_str(), "mp4" | "mkv") {
+                if sniff(part) != Some("ts") { return Err("The downloaded source is no longer a transport stream".into()); }
+                let ffmpeg = crate::media::toolchain().ok_or("Install FFmpeg and ffprobe to convert this transport stream")?;
+                let mut converted = dest.with_extension(&output);
+                if converted != dest && converted.exists() {
+                    let folder = converted.parent().unwrap_or(Path::new(".")).to_string_lossy();
+                    let name = unique_name(&folder, &converted.file_name().unwrap_or_default().to_string_lossy(), &|_| false);
+                    converted = converted.with_file_name(name);
+                }
+                let stage = crate::media::Stage::new(&converted)?;
+                let result = crate::media::mux(self, &ffmpeg, part, None, stage.path(), &output, output == "mp4");
+                if self.stopping() { return Ok(false); }
+                result?;
+                stage.finish(&converted)?;
+                let size = fs::metadata(&converted).map_err(|err| err.to_string())?.len();
+                let _ = fs::remove_file(part);
+                let mut info = self.info();
+                info.name = converted.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                info.size = Some(size);
+                info.segs = vec![Seg { next: size, stop: Some(size), ..Default::default() }];
+                return Ok(true);
+            }
             if fs::rename(part, &dest).is_err() {
-                self.copy_out(part, &dest)?;
+                let copied = self.copy_out(part, &dest);
+                if self.stopping() && copied.is_err() { return Ok(false); }
+                copied?;
             }
         }
         let mut i = self.info();
         if errors.iter().any(|e| e == CHANGED) {
-            i.segs.clear(); // the partial data is stale: the next start downloads from scratch
-            i.probed = false;
+            // Preserve existing data and identity. An explicit restart can discard them.
             return Err(CHANGED.into());
         }
         if i.segs.iter().all(Seg::done) && !part.exists() {
@@ -1568,7 +1711,7 @@ impl Job {
         }
     }
 
-    fn worker(&self, mut k: usize, part: &Path, (agent, net): (ureq::Agent, String), global: &Limiter, mut pre: Option<Body>) -> Option<String> {
+    fn worker(&self, mut k: usize, part: &Path, (agent, net): (Agent, String), global: &Limiter, mut pre: Option<Body>) -> Option<String> {
         let mut fails = 0;
         loop {
             // a network that is gone (unplugged, unticked) hands its part back to the others
@@ -1585,6 +1728,10 @@ impl Job {
                 Ok(()) if self.stopping() => return None,
                 Err(e) if e == CHANGED => {
                     self.stop();
+                    return Some(e);
+                }
+                Err(e) if permanent_error(&e) => {
+                    self.info().segs[k].owned = false;
                     return Some(e);
                 }
                 Err(e) if e == LANE_GONE => {
@@ -1627,7 +1774,7 @@ impl Job {
                     if fails > RETRIES {
                         return Some(e);
                     }
-                    let until = Instant::now() + Duration::from_secs(2u64.pow(fails).min(30));
+                    let until = Instant::now() + retry_delay(fails);
                     while !self.stopping() && Instant::now() < until && self.lane_present(&net) {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -1643,7 +1790,7 @@ impl Job {
         }
     }
 
-    fn fetch(&self, k: usize, part: &Path, agent: &ureq::Agent, global: &Limiter, pre: Option<Body>) -> Result<(), String> {
+    fn fetch(&self, k: usize, part: &Path, agent: &Agent, global: &Limiter, pre: Option<Body>) -> Result<(), String> {
         let (url, referrer, cookies, ranges, start, stop, back, headers) = {
             let mut i = self.info();
             let ranges = i.ranges;
@@ -1668,20 +1815,34 @@ impl Job {
                 if ranges {
                     let range = stop.map_or(format!("bytes={from}-"), |e| format!("bytes={from}-{}", e - 1));
                     req = req.set("Range", &range);
+                    let etag = self.info().etag.clone();
+                    if etag.starts_with('"') { req = req.set("If-Range", &etag); }
                 }
                 let Some(resp) = self.answer(req)? else { return Ok(()) };
+                let mut partial = ranges;
                 if ranges && resp.status() != 206 {
-                    return Err("server ignored the Range request".into());
+                    let mut info = self.info();
+                    if resp.status() == 200 && start == 0 && info.done() == 0 && info.segs.len() == 1 {
+                        info.ranges = false;
+                        partial = false;
+                    } else {
+                        return Err("server ignored the Range request".into());
+                    }
                 }
+                validate_http_response(&resp, partial.then_some((from, stop.map(|end| end - 1))), self.info().size)?;
                 // a page where the file was (an expired link, a login or error page): not written into the file
                 if is_page(resp.header("Content-Type")) && !self.info().page {
                     return Err("the server sends a web page instead of the file".into());
                 }
                 let lm = resp.header("Last-Modified").unwrap_or_default();
-                let old = self.info().modified.clone();
-                if !lm.is_empty() && !old.is_empty() && lm != old && !self.ignore_date.load(Relaxed) {
+                let etag = resp.header("ETag").unwrap_or_default();
+                let mut info = self.info();
+                if (!lm.is_empty() && !info.modified.is_empty() && lm != info.modified && !self.ignore_date.load(Relaxed))
+                    || (!etag.is_empty() && !info.etag.is_empty() && etag != info.etag) {
                     return Err(CHANGED.into());
                 }
+                if info.modified.is_empty() { info.modified = lm.into(); }
+                if info.etag.is_empty() { info.etag = etag.into(); }
                 resp.into_reader()
             }
         };
@@ -1760,7 +1921,7 @@ impl Job {
     /// A connection's request, waited for while the download runs: a server that leaves a new connection
     /// unanswered for NO_ANSWER while the others receive (it allows fewer connections), or twice that once
     /// it has sent part of the file, ends it instead of after the read timeout. None: the download stopped.
-    fn answer(&self, req: ureq::Request) -> Result<Option<ureq::Response>, String> {
+    fn answer(&self, req: Request) -> Result<Option<Response>, String> {
         let (tx, rx) = std::sync::mpsc::channel();
         thread::spawn(move || {
             let _ = tx.send(call(req));
@@ -1801,12 +1962,12 @@ impl Job {
     }
 
     /// The networks the core set for this download (`lanes`).
-    fn lanes(&self) -> Vec<(String, ureq::Agent)> {
+    fn lanes(&self) -> Vec<(String, Agent)> {
         self.lanes.lock().unwrap().clone()
     }
 
     /// `lanes`, or the default network alone when there are none.
-    fn lanes_or(&self, agent: &ureq::Agent) -> Vec<(String, ureq::Agent)> {
+    fn lanes_or(&self, agent: &Agent) -> Vec<(String, Agent)> {
         let l = self.lanes();
         if l.is_empty() { vec![(String::new(), agent.clone())] } else { l }
     }
@@ -2212,6 +2373,67 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn rejects_invalid_ranges_and_preserves_partial_when_etag_changes() {
+        for value in ["bytes 5-4/6", "bytes 0-6/6", "bytes */6", "items 0-1/6", "bytes 0-1/*"] {
+            assert_eq!(content_range(value), None, "{value}");
+        }
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/video.mp4?signature=abc", server.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let (mut socket, _) = server.accept().unwrap();
+            let mut request = String::new();
+            let mut reader = BufReader::new(&socket);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() <= 2 { break; }
+                request.push_str(&line);
+            }
+            assert!(request.to_ascii_lowercase().contains("if-range: \"old\""));
+            socket.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 0-3/4\r\nETag: \"new\"\r\n\r\nXYZ!").unwrap();
+        });
+        let dir = std::env::temp_dir().join(format!("ndm-test-etag-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let info = Info { name: "video.mp4".into(), size: Some(4), ranges: true, probed: true, etag: "\"old\"".into(),
+            segs: vec![Seg { next: 2, stop: Some(4), ..Default::default() }], ..info(url, &dir) };
+        fs::write(info.part(), b"AB\0\0").unwrap();
+        let job = Job::new(info);
+        run(&job);
+        assert_eq!(job.info().status, Status::Error(CHANGED.into()));
+        let current = job.info();
+        assert!(!current.path().exists());
+        assert_eq!(current.done(), 2);
+        assert_eq!(fs::read(current.part()).unwrap(), b"AB\0\0");
+        drop(current);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn initial_full_response_is_downloaded_once_without_splitting() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/video", server.local_addr().unwrap());
+        let data = [0, 0, 0, 16, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', 0, 0, 0, 0];
+        let handle = thread::spawn(move || {
+            let (mut socket, _) = server.accept().unwrap();
+            let mut reader = BufReader::new(&socket);
+            while reader.read_line(&mut String::new()).unwrap() > 2 {}
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 16\r\n\r\n").unwrap();
+            socket.write_all(&data).unwrap();
+        });
+        let dir = std::env::temp_dir().join(format!("ndm-test-full-range-{}", std::process::id()));
+        let job = Job::new(Info { conns: 8, ..info(url, &dir) });
+        run(&job);
+        let current = job.info();
+        assert_eq!(current.status, Status::Complete);
+        assert!(!current.ranges);
+        assert_eq!(current.segs.len(), 1);
+        assert_eq!(fs::read(current.path()).unwrap(), data);
+        drop(current);
+        handle.join().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn resume_detects_changed_file() {
         let a: Arc<Vec<u8>> = Arc::new((0..2 * 1024 * 1024).map(|i: u32| (i % 251) as u8).collect());
         let b: Arc<Vec<u8>> = Arc::new(a.iter().map(|x| x ^ 0xff).collect());
@@ -2337,14 +2559,14 @@ pub(crate) mod tests {
         (url, log)
     }
 
-    fn lanes_run(lanes: Vec<(String, ureq::Agent)>, tag: &str) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+    fn lanes_run(lanes: Vec<(String, Agent)>, tag: &str) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
         lanes_run_then(lanes, tag, None)
     }
 
     /// As `lanes_run`; after a second the download's networks become `later`, as the core sets them
     /// when a network comes or goes.
     /// A download over `lanes`, which become `later` after `after` (if given).
-    fn lanes_run_then(lanes: Vec<(String, ureq::Agent)>, tag: &str, later: Option<(Duration, Vec<(String, ureq::Agent)>)>) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+    fn lanes_run_then(lanes: Vec<(String, Agent)>, tag: &str, later: Option<(Duration, Vec<(String, Agent)>)>) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
         let data: Arc<Vec<u8>> = Arc::new((0..4 * 1024 * 1024 + 3).map(|i: u32| (i * 17 % 249) as u8).collect());
         let (url, log) = serve_ua(data.clone());
         let dir = std::env::temp_dir().join(format!("ndm-test-lanes-{tag}-{}", std::process::id()));
@@ -2570,7 +2792,7 @@ pub(crate) mod tests {
                 (&s).write_all(reply.as_bytes()).unwrap();
             }
         });
-        let resp = call(ureq::AgentBuilder::new().build().get(&url)).unwrap();
+        let resp = call(request(&agent("", ""), &url, "", "")).unwrap();
         assert_eq!(resp.into_string().unwrap(), "ok");
     }
 

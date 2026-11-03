@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PIECE: u64 = 4 << 20;
+const MAX_PARTS: usize = 100_000;
 const PROTECTED: &str = "the stream is protected (DRM) and can't be downloaded";
 
 pub fn is_manifest(url: &str) -> bool {
@@ -67,7 +68,17 @@ fn join(base: &str, rel: &str) -> Result<String, String> {
 /// Video (or the only track) first, then a separate audio track.
 fn plan(get: Get, url: &str) -> Result<Vec<Track>, String> {
     let (base, text) = get(url)?;
-    if text.trim_start().starts_with('<') { dash(&base, &text, unix_now()) } else { hls(get, &base, &text) }
+    if text.trim_start().starts_with('<') { dash(&base, &text, unix_now()) } else { hls(get, &base, &text, None) }
+}
+
+fn plan_variant(get: Get, url: &str, variant: Option<usize>) -> Result<Vec<Track>, String> {
+    if variant.is_none() { return plan(get, url); }
+    let (base, manifest) = get(url)?;
+    if manifest.trim_start().starts_with('<') {
+        dash_variant(&base, &manifest, unix_now(), variant)
+    } else {
+        hls(get, &base, &manifest, variant)
+    }
 }
 
 /// How far this PC's clock is behind the servers' (ms), from the last manifest's Date header. Date is
@@ -108,23 +119,24 @@ fn attrs(s: &str) -> HashMap<String, String> {
     m
 }
 
-fn hls(get: Get, base: &str, text: &str) -> Result<Vec<Track>, String> {
+fn hls(get: Get, base: &str, text: &str, variant: Option<usize>) -> Result<Vec<Track>, String> {
     if !text.trim_start().starts_with("#EXTM3U") {
         return Err("not an HLS playlist".into());
     }
     if !text.contains("#EXT-X-STREAM-INF") {
+        if variant.is_some() { return Err("The selected HLS quality is no longer available".into()); }
         return Ok(vec![hls_media(base, text)?]);
     }
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let mut best: Option<(u64, &str, String)> = None; // bandwidth, URI, audio group
+    let mut variants = Vec::new(); // bandwidth, URI, audio group
     let mut audio = Vec::new(); // group, default, URI
     for (n, l) in lines.iter().enumerate() {
         if let Some(a) = l.strip_prefix("#EXT-X-STREAM-INF:") {
             let a = attrs(a);
             let bw = a.get("BANDWIDTH").and_then(|b| b.parse().ok()).unwrap_or(0);
             let uri = lines[n + 1..].iter().find(|x| !x.is_empty() && !x.starts_with('#'));
-            if let Some(uri) = uri.filter(|_| best.as_ref().is_none_or(|b| bw > b.0)) {
-                best = Some((bw, uri, a.get("AUDIO").cloned().unwrap_or_default()));
+            if let Some(uri) = uri {
+                variants.push((bw, *uri, a.get("AUDIO").cloned().unwrap_or_default()));
             }
         } else if let Some(a) = l.strip_prefix("#EXT-X-MEDIA:") {
             let a = attrs(a);
@@ -133,13 +145,16 @@ fn hls(get: Get, base: &str, text: &str) -> Result<Vec<Track>, String> {
             }
         }
     }
-    let (_, uri, group) = best.ok_or("the playlist has no streams")?;
+    let (_, uri, group) = match variant {
+        Some(index) => variants.get(index).ok_or("The selected HLS quality is no longer available")?,
+        None => variants.iter().max_by_key(|v| v.0).ok_or("the playlist has no streams")?,
+    };
     let sub = |u: &str| -> Result<Track, String> {
         let (b, t) = get(&join(base, u)?)?;
         hls_media(&b, &t)
     };
     let mut tracks = vec![sub(uri)?];
-    let mut a: Vec<_> = audio.iter().filter(|x| !group.is_empty() && x.0 == group).collect();
+    let mut a: Vec<_> = audio.iter().filter(|x| !group.is_empty() && x.0 == *group).collect();
     a.sort_by_key(|x| !x.1);
     if let Some(x) = a.first() {
         tracks.push(sub(&x.2)?);
@@ -185,6 +200,7 @@ fn hls_media(base: &str, text: &str) -> Result<Track, String> {
                 end = b + 1;
             }
             let key = key.as_ref().map(|(u, iv)| (u.clone(), iv.unwrap_or((seq as u128).to_be_bytes())));
+            if t.parts.len() >= MAX_PARTS { return Err("Media manifest has too many segments".into()); }
             t.parts.push(Part { url: join(base, l)?, range: range.take(), key, seq, shift: 0.0 });
             seq += 1;
         }
@@ -276,6 +292,10 @@ struct LiveAt {
 /// with video and audio with audio: a period whose initialization piece differs starts with it, and each
 /// piece's `shift` puts its fragments on one timeline (`retime`).
 fn dash(base: &str, text: &str, now: f64) -> Result<Vec<Track>, String> {
+    dash_variant(base, text, now, None)
+}
+
+fn dash_variant(base: &str, text: &str, now: f64, variant: Option<usize>) -> Result<Vec<Track>, String> {
     let doc = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
     let mpd = doc.root_element();
     let periods: Vec<Node> = kids(mpd, "Period").collect();
@@ -284,6 +304,9 @@ fn dash(base: &str, text: &str, now: f64) -> Result<Vec<Track>, String> {
     }
     let total = mpd.attribute("mediaPresentationDuration").map_or(0.0, iso_dur);
     let dynamic = mpd.attribute("type") == Some("dynamic");
+    if variant.is_some() && (dynamic || periods.len() != 1) {
+        return Err("The selected DASH quality is only available on a single-period recording".into());
+    }
     let ast = mpd.attribute("availabilityStartTime").and_then(|t| chrono::DateTime::parse_from_rfc3339(t.trim()).ok()).map_or(now, |t| t.timestamp_millis() as f64 / 1000.0);
     let window = mpd.attribute("timeShiftBufferDepth").map_or(30.0, iso_dur);
     let update = mpd.attribute("minimumUpdatePeriod").map_or(2.0, iso_dur);
@@ -306,6 +329,7 @@ fn dash(base: &str, text: &str, now: f64) -> Result<Vec<Track>, String> {
         let b0 = base_of(&b_mpd, *period);
         for kind in ["video", "audio"] {
             let mut best: Option<(u64, Node, Node)> = None;
+            let mut index = 0;
             for set in kids(*period, "AdaptationSet") {
                 for rep in kids(set, "Representation") {
                     let mime = rep.attribute("mimeType").or(set.attribute("mimeType")).unwrap_or("");
@@ -313,12 +337,20 @@ fn dash(base: &str, text: &str, now: f64) -> Result<Vec<Track>, String> {
                         continue;
                     }
                     let bw = num(rep.attribute("bandwidth"), 0);
-                    if best.is_none_or(|b| bw > b.0) {
+                    if let Some(selected) = variant.filter(|_| kind == "video") {
+                        if selected == index { best = Some((bw, set, rep)); }
+                        index += 1;
+                    } else if best.is_none_or(|b| bw > b.0) {
                         best = Some((bw, set, rep));
                     }
                 }
             }
-            let Some((_, set, rep)) = best else { continue };
+            let Some((_, set, rep)) = best else {
+                if kind == "video" && variant.is_some() {
+                    return Err("The selected DASH quality is no longer available".into());
+                }
+                continue;
+            };
             if set.descendants().any(|n| n.tag_name().name() == "ContentProtection") {
                 return Err(PROTECTED.into());
             }
@@ -381,25 +413,27 @@ fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &st
                 let r: i64 = num(s.attribute("r"), 0);
                 let left = (end - time as f64) / d as f64;
                 let count = if r >= 0 { r as u64 + 1 } else if live.is_some() { left.floor().max(0.0) as u64 } else { left.ceil().max(1.0) as u64 };
-                for _ in 0..count.min(1_000_000) {
+                if count > (MAX_PARTS - t.parts.len()) as u64 { return Err("Media manifest has too many segments".into()); }
+                for _ in 0..count {
                     t.parts.push(part(&fill(media, id, bw, n, time), None, time)?);
-                    (time, n) = (time + d, n + 1);
+                    (time, n) = (time.checked_add(d).ok_or("Invalid DASH timeline")?, n.checked_add(1).ok_or("Invalid DASH sequence number")?);
                 }
             }
         } else {
             let d: f64 = num(ta("duration"), 0.0);
-            let ks: Vec<u64> = match live {
+            let ks = match live {
                 // the pieces finished by now, as far back as the time-shift window reaches
                 Some(l) if d > 0.0 => {
                     let last = (l.elapsed * ts as f64 / d).floor() as i64 - 1;
                     let first = (last + 1 - (l.window * ts as f64 / d).ceil() as i64).max(0);
-                    (first.max(0) as u64..(last + 1).max(0) as u64).collect()
+                    first.max(0) as u64..last.saturating_add(1).max(0) as u64
                 }
                 _ if d <= 0.0 || secs <= 0.0 => return Err("the manifest doesn't say how long the stream is".into()),
-                _ => (0..(secs * ts as f64 / d).ceil() as u64).collect(),
+                _ => 0..(secs * ts as f64 / d).ceil() as u64,
             };
+            if ks.end.saturating_sub(ks.start) > MAX_PARTS as u64 { return Err("Media manifest has too many segments".into()); }
             for k in ks {
-                t.parts.push(part(&fill(media, id, bw, start + k, (k as f64 * d) as u64), None, start + k)?);
+                t.parts.push(part(&fill(media, id, bw, start.saturating_add(k), (k as f64 * d) as u64), None, start.saturating_add(k))?);
             }
         }
     } else if let Some(sl) = [rep, set].into_iter().find_map(|n| el(n, "SegmentList")) {
@@ -408,7 +442,8 @@ fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &st
         }
         let start: u64 = num(sl.attribute("startNumber"), 1);
         for (k, s) in kids(sl, "SegmentURL").enumerate() {
-            t.parts.push(part(s.attribute("media").unwrap_or(""), s.attribute("mediaRange"), start + k as u64)?);
+            if k >= MAX_PARTS { return Err("Media manifest has too many segments".into()); }
+            t.parts.push(part(s.attribute("media").unwrap_or(""), s.attribute("mediaRange"), start.saturating_add(k as u64))?);
         }
     } else {
         t.parts.push(part("", None, 0)?); // the whole file at BaseURL (SegmentBase)
@@ -425,7 +460,7 @@ fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &st
 
 // ---- download ----
 
-fn text(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> Result<(String, String), String> {
+fn text(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<(String, String), String> {
     let r = engine::call(engine::request(agent, url, referrer, cookies))?;
     if let Some(t) = r.header("Date").and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok()) {
         CLOCK.store(t.timestamp_millis() - chrono::Utc::now().timestamp_millis(), Relaxed);
@@ -436,9 +471,109 @@ fn text(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> Result
 }
 
 /// `name` with the stream's extension in place of a playlist / container one.
+#[derive(serde::Serialize)]
+pub(crate) struct FormatChoice {
+    variant: Option<usize>,
+    resolution: String,
+    bandwidth: u64,
+    codecs: String,
+    audio: Option<bool>,
+    outputs: Vec<&'static str>,
+    transcode: bool,
+}
+
+pub(crate) fn transport_formats(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Vec<FormatChoice>, String> {
+    if crate::media::toolchain().is_none() { return Ok(vec![]); }
+    let (transcode, audio) = crate::media::probe_transport(agent, url, referrer, cookies)?;
+    Ok(vec![FormatChoice { variant: None, resolution: String::new(), bandwidth: 0, codecs: String::new(),
+        audio: Some(audio), outputs: vec!["mp4", "mkv"], transcode }])
+}
+
+/// Report only formats identified in a real manifest. TS/MP4 choices require evidence
+/// from the selected playlist or adaptation set; unknown codecs keep automatic output.
+pub(crate) fn formats(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Vec<FormatChoice>, String> {
+    let get = |target: &str| text(agent, target, referrer,
+        if crate::transport::same_origin(url, target) { cookies } else { "" });
+    let (base, manifest) = get(url)?;
+    let mkv = crate::media::toolchain().is_some();
+    if manifest.trim_start().starts_with('<') {
+        let doc = roxmltree::Document::parse(&manifest).map_err(|e| e.to_string())?;
+        let root = doc.root_element();
+        let periods: Vec<_> = kids(root, "Period").collect();
+        if periods.len() != 1 || root.attribute("type") == Some("dynamic") { return Ok(vec![]); }
+        let mut choices = Vec::new();
+        let period = periods[0];
+        let audio = kids(period, "AdaptationSet").any(|set| set.attribute("contentType") == Some("audio")
+            || set.attribute("mimeType").is_some_and(|mime| mime.starts_with("audio/")));
+        let mut index = 0;
+        for set in kids(period, "AdaptationSet") {
+            let protected = set.descendants().any(|node| node.tag_name().name() == "ContentProtection");
+            for rep in kids(set, "Representation") {
+                let mime = rep.attribute("mimeType").or(set.attribute("mimeType")).unwrap_or("");
+                if !mime.starts_with("video") && set.attribute("contentType") != Some("video") { continue; }
+                let variant = index;
+                index += 1;
+                if protected || choices.len() == 16 { continue; }
+                let width = rep.attribute("width").or(set.attribute("width"));
+                let height = rep.attribute("height").or(set.attribute("height"));
+                let mut outputs = if mime == "video/mp4" { vec!["mp4"] } else if mime == "video/webm" { vec!["webm"] } else { vec![] };
+                if mkv && !outputs.is_empty() { outputs.push("mkv"); }
+                choices.push(FormatChoice {
+                    variant: Some(variant),
+                    resolution: width.zip(height).map_or_else(String::new, |(w, h)| format!("{w}×{h}")),
+                    bandwidth: num(rep.attribute("bandwidth"), 0),
+                    codecs: rep.attribute("codecs").or(set.attribute("codecs")).unwrap_or("").into(),
+                    audio: audio.then_some(true),
+                    outputs,
+                    transcode: false,
+                });
+            }
+        }
+        return Ok(choices);
+    }
+    let specs: Vec<_> = manifest.lines().filter_map(|line| line.trim().strip_prefix("#EXT-X-STREAM-INF:"))
+        .take(8).map(attrs).collect();
+    let mut choices = Vec::new();
+    for index in 0..specs.len().max(1) {
+        let spec = specs.get(index);
+        let variant = spec.map(|_| index);
+        let tracks = match hls(&get, &base, &manifest, variant) {
+            Ok(tracks) => tracks,
+            Err(err) if spec.is_none() => return Err(err),
+            Err(_) => continue,
+        };
+        let value = |name| spec.and_then(|a| a.get(name)).map(String::as_str).unwrap_or("");
+        let codecs = value("CODECS");
+        let mp4_safe = !codecs.is_empty() && codecs.split(',').all(|codec| {
+            let codec = codec.trim().split('.').next().unwrap_or("");
+            matches!(codec, "avc1" | "avc3" | "hvc1" | "hev1" | "mp4a" | "ac-3" | "ec-3")
+        });
+        let transport = tracks[0].ext == "ts" && tracks[0].parts.first().is_some_and(|p|
+            engine::url_name(&p.url).to_ascii_lowercase().ends_with(".ts"));
+        let mut outputs = Vec::new();
+        if tracks[0].ext == "mp4" || transport && mp4_safe { outputs.push("mp4"); }
+        if transport && tracks.len() == 1 { outputs.push("ts"); }
+        if mkv && !outputs.is_empty() { outputs.push("mkv"); }
+        let audio = tracks.len() == 2 || codecs.split(',').any(|c| {
+            let c = c.trim();
+            c.starts_with("mp4a") || c.starts_with("ac-3") || c.starts_with("ec-3")
+        });
+        choices.push(FormatChoice {
+            variant,
+            resolution: value("RESOLUTION").replace('x', "×"),
+            bandwidth: value("BANDWIDTH").parse().unwrap_or(0),
+            codecs: codecs.into(),
+            audio: audio.then_some(true),
+            outputs,
+            transcode: false,
+        });
+    }
+    Ok(choices)
+}
+
 fn with_ext(name: &str, ext: &str) -> String {
     let stem = match name.rsplit_once('.') {
-        Some((s, e)) if ["m3u8", "mpd", "mp4", "ts", "webm", "m4a", "aac"].contains(&e.to_ascii_lowercase().as_str()) => s,
+        Some((s, e)) if ["m3u8", "mpd", "mp4", "ts", "mkv", "webm", "m4a", "aac", "mov", "avi", "mp3", "ogg"].contains(&e.to_ascii_lowercase().as_str()) => s,
         _ => name,
     };
     format!("{stem}.{ext}")
@@ -449,9 +584,9 @@ fn out_ext(tracks: &[Track]) -> &str {
     if tracks[0].ext == "ts" { "mp4" } else { &tracks[0].ext }
 }
 
-pub fn probe(agent: &ureq::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
+pub fn probe(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     let tracks = plan(&|u| text(agent, u, referrer, cookies), url)?;
-    Ok(Probe { name: engine::sanitize(&with_ext(&engine::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), stream: true, page: false, ytdlp: false })
+    Ok(Probe { name: engine::sanitize(&with_ext(&engine::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), etag: String::new(), stream: true, page: false, ytdlp: false })
 }
 
 fn aes_cbc(key: &[u8], iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
@@ -499,73 +634,108 @@ fn aes_cbc_raw(key: &[u8], mut iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, Str
 
 struct Ctx<'a> {
     job: &'a Job,
-    agent: &'a ureq::Agent,
+    agent: &'a engine::Agent,
     global: &'a Limiter,
     referrer: String,
     cookies: String,
+    origin: String,
     keys: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl Ctx<'_> {
-    fn bytes(&self, p: &Part, got: &AtomicU64, tick: &dyn Fn()) -> Result<Vec<u8>, String> {
-        let mut req = engine::request(self.agent, &p.url, &self.referrer, &self.cookies);
-        if let Some((a, b)) = p.range {
-            req = req.set("Range", &format!("bytes={a}-{b}"));
+    fn transfer(&self, part: &Part, output: &mut dyn Write, got: &AtomicU64, tick: &dyn Fn(), max: u64) -> Result<u64, String> {
+        let cookies = if crate::transport::same_origin(&self.origin, &part.url) { &self.cookies } else { "" };
+        let mut request = engine::request(self.agent, &part.url, &self.referrer, cookies);
+        if let Some((first, last)) = part.range {
+            request = request.set("Range", &format!("bytes={first}-{last}"));
         }
-        let resp = engine::call(req)?;
-        let whole = p.range.filter(|_| resp.status() == 200);
-        let mut r = resp.into_reader();
-        let (mut out, mut buf) = (Vec::new(), vec![0; engine::CHUNK]);
-        let res = loop {
-            if self.job.stopping() {
-                break Err("stopped".to_string());
-            }
-            match r.read(&mut buf) {
-                Ok(0) => break Ok(()),
-                Ok(n) => {
-                    out.extend_from_slice(&buf[..n]);
-                    got.fetch_add(n as u64, Relaxed);
-                    tick();
-                    self.job.throttle(self.global, n);
+        let response = engine::call(request)?;
+        if part.range.is_some() && response.status() != 206 {
+            return Err("server ignored the Range request".into());
+        }
+        engine::validate_http_response(&response, part.range.map(|(first, last)| (first, Some(last))), None)?;
+        let expected = part.range.map(|(first, last)| last - first + 1)
+            .or_else(|| response.header("Content-Length")?.parse().ok());
+        if expected.is_some_and(|length| length > max) { return Err("Media fragment exceeds its size limit".into()); }
+        let mut reader = response.into_reader();
+        let mut buffer = vec![0; engine::CHUNK];
+        let mut done = 0;
+        let result = (|| {
+            loop {
+                if self.job.stopping() { return Err("stopped".into()); }
+                let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+                if n == 0 { break; }
+                if done + n as u64 > max || expected.is_some_and(|length| done + n as u64 > length) {
+                    return Err("Media fragment is longer than declared".into());
                 }
-                Err(e) => break Err(e.to_string()),
+                output.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+                done += n as u64;
+                got.fetch_add(n as u64, Relaxed);
+                tick();
+                self.job.throttle(self.global, n);
             }
-        };
-        if let Err(e) = res {
-            got.fetch_sub(out.len() as u64, Relaxed);
-            return Err(e);
-        }
-        if let Some((a, b)) = whole {
-            // the server sent the whole file instead of the range
-            out = out.get(a as usize..=(b as usize).min(out.len().saturating_sub(1))).unwrap_or_default().to_vec();
-        }
-        Ok(out)
+            if done == 0 || expected.is_some_and(|length| length != done) {
+                return Err("Incomplete media fragment".into());
+            }
+            Ok(done)
+        })();
+        if result.is_err() { got.fetch_sub(done, Relaxed); }
+        result
     }
 
-    fn piece(&self, p: &Part, got: &AtomicU64, tick: &dyn Fn()) -> Result<Vec<u8>, String> {
-        let data = self.bytes(p, got, tick)?;
-        let Some((url, iv)) = &p.key else { return Ok(data) };
-        let mut keys = self.keys.lock().unwrap();
-        if !keys.contains_key(url) {
-            let k = self.bytes(&Part { url: url.clone(), range: None, key: None, seq: 0, shift: 0.0 }, &AtomicU64::new(0), &|| {})?;
-            keys.insert(url.clone(), k);
+    fn piece(&self, part: &Part, file: &Path, got: &AtomicU64, tick: &dyn Fn()) -> Result<(), String> {
+        let tmp = file.with_extension("tmp");
+        let mut committed_bytes = 0;
+        let result = (|| {
+            let mut output = File::create(&tmp).map_err(|e| e.to_string())?;
+            if let Some((url, iv)) = &part.key {
+                let key = {
+                    let mut keys = self.keys.lock().unwrap();
+                    if let Some(key) = keys.get(url) { key.clone() } else {
+                        let mut key = Vec::with_capacity(16);
+                        self.transfer(&Part { url: url.clone(), range: None, key: None, seq: 0, shift: 0.0 },
+                            &mut key, &AtomicU64::new(0), &|| {}, 16)?;
+                        keys.insert(url.clone(), key.clone());
+                        key
+                    }
+                };
+                let mut encrypted = Vec::new();
+                committed_bytes = self.transfer(part, &mut encrypted, got, tick, 64 << 20)?;
+                let decrypted = aes_cbc(&key, *iv, &encrypted)?;
+                output.write_all(&decrypted).map_err(|e| e.to_string())?;
+                got.fetch_sub(committed_bytes - decrypted.len() as u64, Relaxed);
+                committed_bytes = decrypted.len() as u64;
+            } else {
+                committed_bytes = self.transfer(part, &mut output, got, tick, u64::MAX)?;
+            }
+            output.sync_data().map_err(|e| e.to_string())?;
+            drop(output);
+            fs::rename(&tmp, file).map_err(|e| e.to_string())
+        })();
+        if result.is_err() {
+            got.fetch_sub(committed_bytes, Relaxed);
+            let _ = fs::remove_file(&tmp);
         }
-        aes_cbc(&keys[url], *iv, &data)
+        result
     }
 }
 
-pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
-    let (url, referrer, cookies) = {
+pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, String> {
+    let (url, referrer, cookies, output, variant) = {
         let i = job.info();
-        (i.url.clone(), i.referrer.clone(), i.cookies.clone())
+        (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.media_output.clone(), i.media_variant)
     };
-    let get = |u: &str| text(agent, u, &referrer, &cookies);
-    let mut tracks = plan(&get, &url)?;
+    if !matches!(output.as_str(), "" | "mp4" | "ts" | "mkv" | "webm") {
+        return Err("Unsupported media output container".into());
+    }
+    let scoped_cookies = |target: &str| if crate::transport::same_origin(&url, target) { cookies.as_str() } else { "" };
+    let get = |u: &str| text(agent, u, &referrer, scoped_cookies(u));
+    let mut tracks = plan_variant(&get, &url, variant)?;
     for t in tracks.iter_mut().filter(|t| t.whole) {
         // each period's single file: 4 MiB byte ranges, so it downloads over several connections and resumes
         t.parts = std::mem::take(&mut t.parts)
             .into_iter()
-            .flat_map(|p| match (p.range, engine::probe(agent, &p.url, &referrer, &cookies)) {
+            .flat_map(|p| match (p.range, engine::probe(agent, &p.url, &referrer, scoped_cookies(&p.url))) {
                 (None, Ok(engine::Probe { size: Some(len), ranges: true, .. })) => (0..len).step_by(PIECE as usize).map(|a| Part { range: Some((a, (a + PIECE).min(len) - 1)), ..p.clone() }).collect(),
                 _ => vec![p],
             })
@@ -575,19 +745,25 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
         return Ok(false);
     }
     let live = tracks.iter().any(|t| t.live);
-    let dir = {
+    let root = {
         let mut i = job.info();
-        let ext = out_ext(&tracks);
+        let ext = if output.is_empty() { out_ext(&tracks) } else { output.as_str() };
         i.name = if i.name.is_empty() { engine::unique_name(&i.folder, &engine::sanitize(&with_ext(&engine::url_name(&url), ext)), &|_| false) } else { with_ext(&i.name, ext) };
         (i.ranges, i.probed, i.stream, i.status) = (true, true, true, Status::Downloading);
         let dir = i.part();
-        let _ = fs::remove_file(&dir); // a .part file left from before
-        if live {
-            let _ = fs::remove_dir_all(&dir); // a live window moves on: its old pieces don't line up
-        }
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         dir
     };
+    // Indexes alone do not identify VOD fragments. Use a digest of the exact plan, including
+    // ranges, keys and timing. Keep pre-upgrade pieces until a replacement output succeeds.
+    use sha2::{Digest, Sha256};
+    let fingerprint = if live {
+        format!("live-{}", chrono::Utc::now().timestamp_micros())
+    } else {
+        format!("{:x}", Sha256::digest(format!("{tracks:?}")))
+    };
+    let dir = root.join(fingerprint);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = |t: usize, k: usize| dir.join(format!("{t}_{k:06}"));
     let lists: Mutex<Vec<Vec<Part>>> = Mutex::new(tracks.iter().map(|t| t.init.iter().chain(&t.parts).cloned().collect()).collect());
     let n = tracks.len();
@@ -622,7 +798,7 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
         i.size = (!live).then_some(off);
     };
     show("Connecting...");
-    let ctx = Ctx { job, agent, global, referrer: referrer.clone(), cookies: cookies.clone(), keys: Default::default() };
+    let ctx = Ctx { job, agent, global, referrer: referrer.clone(), cookies: cookies.clone(), origin: url.clone(), keys: Default::default() };
     let failed = Mutex::new(None::<String>);
     let tick_at = Mutex::new(Instant::now());
     let tick = || {
@@ -661,10 +837,7 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
             if job.stopping() || failed.lock().unwrap().is_some() {
                 return;
             }
-            let r = ctx.piece(&part, &got[t], &tick).and_then(|d| {
-                let tmp = f.with_extension("tmp");
-                fs::write(&tmp, d).and_then(|_| fs::rename(&tmp, &f)).map_err(|e| e.to_string())
-            });
+            let r = ctx.piece(&part, &f, &got[t], &tick);
             match r {
                 Ok(()) => {
                     have[t].fetch_add(1, Relaxed);
@@ -673,15 +846,15 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
                 Err(_) if job.stopping() => return,
                 Err(e) => {
                     fails += 1;
-                    if fails > RETRIES {
-                        if live {
+                    if fails > RETRIES || engine::permanent_error(&e) {
+                        if live && e.starts_with("HTTP 404 ") {
                             break; // a live piece that's gone from the server: skip it
                         }
                         *failed.lock().unwrap() = Some(e);
                         return;
                     }
                     show(&format!("Error: {e}, retrying..."));
-                    let until = Instant::now() + Duration::from_secs(2u64.pow(fails).min(30));
+                    let until = Instant::now() + engine::retry_delay(fails);
                     while !job.stopping() && Instant::now() < until {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -694,26 +867,32 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
         let mut last: Vec<u64> = tracks.iter().map(|t| t.parts.last().map_or(0, |p| p.seq)).collect();
         let key = |p: &Part| format!("{}#{:?}", p.url, p.range);
         let mut seen: Vec<HashSet<String>> = tracks.iter().map(|t| t.parts.iter().map(key).collect()).collect();
-        while !job.stopping() && !all_ended() {
+        while !job.stopping() && !all_ended() && failed.lock().unwrap().is_none() {
             let wait = tracks.iter().filter(|t| t.live).map(|t| t.target).fold(10.0, f64::min).clamp(1.0, 10.0);
             let until = Instant::now() + Duration::from_secs_f64(wait);
-            while !job.stopping() && Instant::now() < until {
+            while !job.stopping() && Instant::now() < until && failed.lock().unwrap().is_none() {
                 thread::sleep(Duration::from_millis(100));
             }
+            if job.stopping() || failed.lock().unwrap().is_some() { return; }
             for (t, tr) in tracks.iter().enumerate().filter(|(t, _)| !ended[*t].load(Relaxed)) {
                 let Ok(now) = refresh(&get, tr, t) else { continue };
                 let new: Vec<Part> = now.parts.into_iter().filter(|p| if tr.dash { seen[t].insert(key(p)) } else { p.seq > last[t] }).collect();
                 if let Some(p) = new.last() {
                     last[t] = p.seq;
                 }
-                lists.lock().unwrap()[t].extend(new);
+                let mut lists = lists.lock().unwrap();
+                if lists[t].len().saturating_add(new.len()) > MAX_PARTS {
+                    *failed.lock().unwrap() = Some("Live recording reached the segment limit".into());
+                    return;
+                }
+                lists[t].extend(new);
                 if !now.live {
                     ended[t].store(true, Relaxed);
                 }
             }
         }
     };
-    let conns = job.info().conns.max(1);
+    let conns = job.info().conns.clamp(1, 16);
     thread::scope(|sc| {
         if live {
             sc.spawn(poll);
@@ -731,65 +910,96 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
     }
     let parts: Vec<Vec<Part>> = lists.into_inner().unwrap();
     let mut dest = job.info().path();
-    let pieces = |t: usize| (0..parts[t].len()).map(move |k| file(t, k)).filter(|f| f.exists()).map(|f| fs::read(f).map_err(|e| e.to_string()));
+    let paths = |t: usize| (0..parts[t].len()).map(move |k| file(t, k)).filter(|p| p.is_file());
+    let pieces = |t: usize| paths(t).map(|p| fs::read(p).map_err(|e| e.to_string()));
+    if (0..n).any(|t| paths(t).next().is_none()) {
+        return Err("A required media track has no complete fragments".into());
+    }
+    if !live && (0..n).any(|t| paths(t).count() != parts[t].len()) {
+        return Err("A required media fragment is missing".into());
+    }
     let ext = |t: usize| tracks[t].ext.as_str();
     let fmp4 = |t: usize| (tracks[t].init.is_some() || tracks[t].whole) && ext(t) != "webm";
     use remux::{Kind, Regroup};
-    // fMP4: every fragment moved onto one timeline starting at 0 (periods one after another)
     let tfile = |t: usize| move |k: usize| file(t, k);
     let (f0, f1) = (tfile(0), tfile(1.min(n - 1)));
     let ft: [&dyn Fn(usize) -> PathBuf; 2] = [&f0, &f1];
-    // joining the pieces into the file: the bar shows the file growing towards the pieces' size
-    let expected: u64 = (0..n).flat_map(|t| (0..parts[t].len()).map(move |k| (t, k))).filter_map(|(t, k)| fs::metadata(file(t, k)).ok()).map(|m| m.len()).sum();
-    let watch = [dest.clone(), dir.join(format!("track0.{}", ext(0))), dir.join(format!("track1.{}", ext(1.min(n - 1)))), dest.with_extension("ts")];
-    dest = with_post(job, "Joining the pieces...", &watch, expected, || -> Result<PathBuf, String> {
+    let expected: u64 = (0..n).flat_map(paths).filter_map(|p| fs::metadata(p).ok()).map(|m| m.len()).sum();
+    let stage = crate::media::Stage::new(&dest)?;
+    let staged = stage.path();
+    let watch = [staged.to_path_buf()];
+    let ffmpeg = (!job.stopping()).then(crate::media::toolchain).flatten();
+    let result = with_post(job, "Joining the pieces...", &watch, expected, || -> Result<bool, String> {
         let base = (0..n).filter(|t| fmp4(*t)).filter_map(|t| first_time(timed(tracks[t].whole, &parts[t], ft[t]))).fold(f64::INFINITY, f64::min);
         let base = if base.is_finite() { base } else { 0.0 };
-        let muxed = if n == 2 && fmp4(0) && fmp4(1) {
-            let mut v = Regroup::new(retime(timed(tracks[0].whole, &parts[0], ft[0]), base), Kind::Mp4);
-            let mut a = Regroup::new(retime(timed(tracks[1].whole, &parts[1], ft[1]), base), Kind::Mp4);
-            mux_mp4(&mut v, &mut a, &dest)?
-        } else if ext(0) == "ts" {
-            let mut a = pieces(1.min(n - 1));
-            remux::ts_to_mp4(&mut pieces(0), (n == 2).then_some(&mut a as remux::Pieces), &dest)?
-        } else if n == 2 && ext(0) == "webm" && ext(1) == "webm" {
-            remux::webm_merge(&mut Regroup::new(&mut pieces(0), Kind::Webm), &mut Regroup::new(&mut pieces(1), Kind::Webm), &dest)?
-        } else {
-            false
-        };
-        if !muxed {
-            if ext(0) == "ts" {
-                // couldn't remux (MPEG-2 video, Opus...): keep it as MPEG-TS
-                let mut i = job.info();
-                i.name = with_ext(&i.name, "ts");
-                dest = i.path();
-            }
-            let joined: Vec<PathBuf> = (0..n)
-                .map(|t| {
-                    let out = dir.join(format!("track{t}.{}", ext(t)));
-                    let mut w = BufWriter::new(File::create(&out).map_err(|e| e.to_string())?);
-                    let src: Box<dyn Iterator<Item = Result<Vec<u8>, String>>> = if fmp4(t) { Box::new(retime(timed(tracks[t].whole, &parts[t], ft[t]), base)) } else { Box::new(pieces(t)) };
-                    for p in src {
-                        w.write_all(&p?).map_err(|e| e.to_string())?;
+        let stop = || job.stopping() && !live;
+        let cancel = |piece| if stop() { Err("stopped".into()) } else { piece };
+        let target = dest.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        let muxed = if n == 2 && target == "mp4" && fmp4(0) && fmp4(1) {
+            let mut v = Regroup::new(retime(timed(tracks[0].whole, &parts[0], ft[0]), base).map(cancel), Kind::Mp4);
+            let mut a = Regroup::new(retime(timed(tracks[1].whole, &parts[1], ft[1]), base).map(cancel), Kind::Mp4);
+            mux_mp4(&mut v, &mut a, staged)?
+        } else if ext(0) == "ts" && target == "mp4" && ffmpeg.is_none() {
+            let mut audio = pieces(1.min(n - 1)).map(cancel);
+            remux::ts_to_mp4(&mut pieces(0).map(cancel), (n == 2).then_some(&mut audio as remux::Pieces), staged)?
+        } else if n == 2 && target == "webm" && ext(0) == "webm" && ext(1) == "webm" {
+            remux::webm_merge(&mut Regroup::new(pieces(0).map(cancel), Kind::Webm),
+                &mut Regroup::new(pieces(1).map(cancel), Kind::Webm), staged)?
+        } else { false };
+        if muxed { return Ok(true); }
+
+        let write_track = |track: usize, path: &Path| -> Result<(), String> {
+            let mut writer = BufWriter::with_capacity(256 << 10, File::create(path).map_err(|e| e.to_string())?);
+            if fmp4(track) {
+                for bytes in retime(timed(tracks[track].whole, &parts[track], ft[track]), base).map(cancel) {
+                    writer.write_all(&bytes?).map_err(|e| e.to_string())?;
+                }
+            } else {
+                let mut buffer = vec![0; 256 << 10];
+                for piece in paths(track) {
+                    let mut reader = File::open(piece).map_err(|e| e.to_string())?;
+                    loop {
+                        if stop() { return Err("stopped".into()); }
+                        let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+                        if n == 0 { break; }
+                        writer.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
                     }
-                    w.flush().map_err(|e| e.to_string())?;
-                    Ok(out)
-                })
-                .collect::<Result<_, String>>()?;
-            if joined.len() == 1 || !ffmpeg(&joined[0], &joined[1], &dest) {
-                move_file(&joined[0], &dest)?;
-                if let Some(a) = joined.get(1) {
-                    // ponytail: formats without a native muxer here; ffmpeg on PATH makes them one file
-                    let stem = dest.file_stem().unwrap_or_default().to_string_lossy();
-                    move_file(a, &dest.with_file_name(format!("{stem}.audio.{}", ext(1))))?;
                 }
             }
+            writer.flush().map_err(|e| e.to_string())
+        };
+        if n == 1 && target == ext(0) {
+            write_track(0, staged)?;
+            return Ok(true);
         }
-        Ok(dest)
-    })?;
-    let _ = fs::remove_dir_all(&dir);
+        if let Some(ffmpeg) = &ffmpeg {
+            let video = dir.join(format!("track0.{}", ext(0)));
+            let audio = (n == 2).then(|| dir.join(format!("track1.{}", ext(1))));
+            write_track(0, &video)?;
+            if let Some(audio) = &audio { write_track(1, audio)?; }
+            match crate::media::mux(job, ffmpeg, &video, audio.as_deref(), staged, target, output == "mp4") {
+                Ok(()) => return Ok(true),
+                Err(err) if n > 1 || !output.is_empty() || stop() => return Err(err),
+                Err(_) => {} // Automatic output may preserve a single unsupported TS source.
+            }
+        }
+        if n == 1 && ext(0) == "ts" && output.is_empty() {
+            write_track(0, staged)?;
+            return Ok(false);
+        }
+        Err("Could not assemble the selected media tracks. Install FFmpeg and ffprobe, then resume.".into())
+    });
+    if job.stopping() && !live { return Ok(false); }
+    if !result? {
+        let folder = dest.parent().unwrap_or(Path::new(".")).to_string_lossy();
+        let fallback = with_ext(dest.file_name().unwrap_or_default().to_string_lossy().as_ref(), "ts");
+        dest = dest.with_file_name(engine::unique_name(&folder, &fallback, &|_| false));
+    }
+    stage.finish(&dest)?;
+    let _ = fs::remove_dir_all(&root);
     let size = fs::metadata(&dest).map_err(|e| e.to_string())?.len();
     let mut i = job.info();
+    i.name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
     i.size = Some(size);
     i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
     Ok(true)
@@ -805,14 +1015,22 @@ pub(crate) fn with_post<T>(job: &Job, label: &str, out: &[PathBuf], expected: u6
             while !stop.load(Relaxed) {
                 if expected > 0 {
                     let have: u64 = out.iter().filter_map(|p| fs::metadata(p).ok()).map(|m| m.len()).sum();
-                    job.set_post(label, (have as f64 / expected as f64).min(0.99) as f32);
+                    let mut info = job.info();
+                    if let Some((current, progress)) = &mut info.post {
+                        if current == label {
+                            *progress = (have as f64 / expected as f64).min(0.99) as f32;
+                        }
+                    }
                 }
                 thread::sleep(Duration::from_millis(150));
             }
         });
-        let r = work();
-        stop.store(true, Relaxed);
-        r
+        struct StopWatch<'a>(&'a AtomicBool);
+        impl Drop for StopWatch<'_> {
+            fn drop(&mut self) { self.0.store(true, Relaxed); }
+        }
+        let _stop_watch = StopWatch(&stop);
+        work()
     });
     job.info().post = None;
     r
@@ -973,15 +1191,6 @@ fn moof_shift(m: &[u8], delta: i64) -> Vec<u8> {
     out
 }
 
-fn move_file(from: &Path, to: &Path) -> Result<(), String> {
-    if fs::rename(from, to).is_err() {
-        fs::copy(from, to).map_err(|e| e.to_string())?;
-        let _ = fs::remove_file(from);
-    }
-    Ok(())
-}
-
-/// mms / rtmp / rtsp links.
 pub fn is_media_url(url: &str) -> bool {
     let u = url.to_ascii_lowercase();
     ["mms://", "mmsh://", "mmst://", "rtmp://", "rtmps://", "rtmpe://", "rtmpt://", "rtsp://"].iter().any(|p| u.starts_with(p))
@@ -990,68 +1199,66 @@ pub fn is_media_url(url: &str) -> bool {
 /// Records an mms / rtmp / rtsp stream with ffmpeg (on PATH), copying the streams as they come; the
 /// file grows as `<file>` and Stop ends the recording (kept, like a stopped live stream).
 // ponytail: ffmpeg speaks these protocols; a native MMS/RTMP client if ffmpeg can't be assumed
-pub fn run_media(job: &Job) -> Result<bool, String> {
+pub fn run_media(job: &Job, agent: &engine::Agent) -> Result<bool, String> {
     use std::io::BufRead;
-    #[cfg(windows)]
-    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+    if agent.invalid_proxy || !agent.proxy.is_empty() {
+        return Err("This recording protocol cannot use the configured proxy".into());
+    }
     let (url, dest) = {
         let mut i = job.info();
         if Path::new(&i.name).extension().is_none() {
-            let e = if i.url.to_ascii_lowercase().starts_with("rtmp") { "flv" } else if i.url.to_ascii_lowercase().starts_with("mms") { "wmv" } else { "mp4" };
-            i.name = format!("{}.{e}", if i.name.is_empty() { "stream" } else { &i.name });
+            let ext = if i.url.to_ascii_lowercase().starts_with("rtmp") { "flv" }
+                else if i.url.to_ascii_lowercase().starts_with("mms") { "wmv" } else { "mp4" };
+            i.name = format!("{}.{ext}", if i.name.is_empty() { "stream" } else { &i.name });
         }
-        fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
         (i.url.clone(), i.path())
     };
-    let mut ffmpeg = std::process::Command::new("ffmpeg");
-    crate::win::clean_env(&mut ffmpeg);
-    let mut child = ffmpeg
-        .args(["-y", "-v", "error", "-nostdin", "-progress", "pipe:1", "-i"])
-        .arg(&url)
-        .args(["-c", "copy"])
-        .arg(&dest)
-        .stdout(std::process::Stdio::piped())
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+    let stage = crate::media::Stage::new(&dest)?;
+    let ffmpeg = crate::ytdlp::beside_or_path("ffmpeg");
+    let mut child = crate::ytdlp::command(&ffmpeg)
+        .args(["-y", "-v", "error", "-rw_timeout", "30000000", "-progress", "pipe:1", "-nostats", "-i"])
+        .arg(&url).args(["-c", "copy"]).arg(stage.path())
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn()
-        // without ffmpeg NDM can't speak the protocol: NDM's own message for that (string 20516)
         .map_err(|_| crate::i18n::trf_os("\"%s\" data transmission protocol is not supported by NDM at this time. Or it might be a spelling error, therefore please check the spelling, and try again.", &[&url.split("://").next().unwrap_or("")]))?;
-    let out = child.stdout.take().unwrap();
-    let mut stopped = false;
-    for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-        if let Some(n) = line.strip_prefix("total_size=").and_then(|n| n.parse::<u64>().ok()) {
-            job.info().segs = vec![Seg { start: 0, next: n, stop: None, info: "Receiving data...".into(), owned: false, ..Default::default() }];
+    let stdout = child.stdout.take().unwrap();
+    let result = thread::scope(|scope| {
+        scope.spawn(|| {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(bytes) = line.strip_prefix("total_size=").and_then(|size| size.parse().ok()) {
+                    let mut info = job.info();
+                    info.status = Status::Downloading;
+                    info.segs = vec![Seg { next: bytes, info: "Receiving data...".into(), ..Default::default() }];
+                }
+            }
+        });
+        let mut stop_at = None;
+        loop {
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                return Ok::<bool, String>(status.success());
+            }
+            if job.stopping() && stop_at.is_none() {
+                // Let FFmpeg write the trailer for a stopped live recording.
+                if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(b"q\n"); }
+                stop_at = Some(Instant::now());
+            }
+            if stop_at.is_some_and(|at| at.elapsed() > Duration::from_secs(3)) {
+                crate::ytdlp::kill_child(&mut child);
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(100));
         }
-        if job.stopping() {
-            let _ = child.kill();
-            stopped = true;
-            break;
-        }
+    })?;
+    if !result {
+        return if job.stopping() { Ok(false) } else { Err(crate::i18n::tr_os("Cannot download this file.")) };
     }
-    let ok = child.wait().is_ok_and(|s| s.success()) || stopped;
-    let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-    if !ok || size == 0 {
-        return Err(crate::i18n::tr_os("Cannot download this file."));
-    }
+    stage.finish(&dest)?;
+    let size = fs::metadata(&dest).map_err(|e| e.to_string())?.len();
     let mut i = job.info();
     i.size = Some(size);
-    i.segs = vec![Seg { start: 0, next: size, stop: Some(size), info: String::new(), owned: false, ..Default::default() }];
+    i.segs = vec![Seg { next: size, stop: Some(size), ..Default::default() }];
     Ok(true)
-}
-
-/// Mix video and audio with ffmpeg if it is installed (on PATH).
-fn ffmpeg(v: &Path, a: &Path, out: &Path) -> bool {
-    #[cfg(windows)]
-    use std::os::windows::process::CommandExt;
-    std::process::Command::new("ffmpeg")
-        .args(["-y", "-v", "error", "-i"])
-        .arg(v)
-        .arg("-i")
-        .arg(a)
-        .args(["-map", "0:v:0?", "-map", "1:a:0", "-c", "copy"])
-        .arg(out)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .status()
-        .is_ok_and(|s| s.success())
 }
 
 // ---- fragmented MP4 muxing ----
@@ -1259,6 +1466,44 @@ fn mux_mp4<'a>(v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a), a
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn fragment_write_failure_rolls_back_progress() {
+        use std::io::{BufRead, BufReader, Error, ErrorKind};
+        use std::net::TcpListener;
+        struct LimitedDisk(usize);
+        impl Write for LimitedDisk {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.0 == 0 { return Err(Error::new(ErrorKind::StorageFull, "disk full")); }
+                let amount = self.0.min(bytes.len());
+                self.0 -= amount;
+                Ok(amount)
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/segment.ts", server.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let (mut socket, _) = server.accept().unwrap();
+            let mut reader = BufReader::new(&socket);
+            while reader.read_line(&mut String::new()).unwrap() > 2 {}
+            let data = vec![0x47; 2 * engine::CHUNK];
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", data.len()).unwrap();
+            let _ = socket.write_all(&data);
+        });
+        let job = Job::new(engine::Info::default());
+        let agent = engine::agent("", "");
+        let limit = Limiter::default();
+        let ctx = Ctx { job: &job, agent: &agent, global: &limit, referrer: String::new(), cookies: String::new(),
+            origin: url.clone(), keys: Mutex::default() };
+        let got = AtomicU64::new(0);
+        let part = Part { url, range: None, key: None, seq: 0, shift: 0.0 };
+        let result = ctx.transfer(&part, &mut LimitedDisk(engine::CHUNK), &got, &|| {}, u64::MAX);
+        assert_eq!(result, Err("disk full".into()));
+        assert_eq!(got.load(Relaxed), 0);
+        handle.join().unwrap();
+    }
+
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -1641,17 +1886,5 @@ pub(crate) mod tests {
         assert_eq!(fs::read_to_string(i.path()).unwrap(), "s5.tss5.tss5.tss6.tss6.tss6.tss7.tss7.tss7.ts");
         assert!(fetches.load(Relaxed) >= 5, "the live playlist was fetched again");
         let _ = fs::remove_dir_all(&dir);
-    }
-}
-
-/// Windows' process creation flags (CREATE_NO_WINDOW) mean nothing elsewhere.
-#[cfg(not(windows))]
-trait CommandExt {
-    fn creation_flags(&mut self, _flags: u32) -> &mut Self;
-}
-#[cfg(not(windows))]
-impl CommandExt for std::process::Command {
-    fn creation_flags(&mut self, _flags: u32) -> &mut Self {
-        self
     }
 }

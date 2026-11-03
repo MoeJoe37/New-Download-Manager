@@ -50,7 +50,7 @@ pub fn wants(i: &Info) -> bool {
 }
 
 /// A program next to NDM's exe, else NDM's own copy (Downloads -> Set yt-dlp), else the name to find on PATH.
-fn beside_or_path(name: &str) -> PathBuf {
+pub(crate) fn beside_or_path(name: &str) -> PathBuf {
     let file = exe_file(name);
     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(&file))).filter(|p| p.is_file());
     beside.or_else(|| Some(tools_dir().join(&file)).filter(|p| p.is_file())).unwrap_or_else(|| PathBuf::from(file))
@@ -60,7 +60,7 @@ fn exe_file(name: &str) -> String {
     if cfg!(windows) { format!("{name}.exe") } else { name.to_string() }
 }
 
-fn command(program: &Path) -> Command {
+pub(crate) fn command(program: &Path) -> Command {
     let mut c = Command::new(program);
     crate::win::clean_env(&mut c);
     #[cfg(windows)]
@@ -78,7 +78,7 @@ fn command(program: &Path) -> Command {
 }
 
 /// Also stop a downloader/postprocessor yt-dlp started, so it cannot keep writing after Stop.
-fn kill_child(child: &mut Child) {
+pub(crate) fn kill_child(child: &mut Child) {
     #[cfg(unix)]
     unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
     #[cfg(windows)]
@@ -102,7 +102,7 @@ fn yt_dlp() -> Result<PathBuf, String> {
     Err(crate::i18n::tr_os("Downloading videos from this site needs yt-dlp: choose Downloads → Set yt-dlp, or put yt-dlp next to NDM or on PATH."))
 }
 
-fn ffmpeg() -> Option<PathBuf> {
+pub(crate) fn ffmpeg() -> Option<PathBuf> {
     let ff = beside_or_path("ffmpeg");
     runs(&ff).then_some(ff)
 }
@@ -133,9 +133,9 @@ fn base_args(url: &str, referrer: &str, cookies: &str) -> Vec<String> {
 fn last_error(err: &str) -> String {
     let e = err.lines().rev().find_map(|l| l.strip_prefix("ERROR: ")).unwrap_or(err.lines().last().unwrap_or("yt-dlp failed")).trim().to_string();
     if e.starts_with("[generic]") || e.contains("Unsupported URL") {
-        return format!("{}\n{e}", crate::i18n::tr_os("There is no video at this address that yt-dlp knows: open the video's own page (click the video or its date) and download it from there."));
+        return format!("{}\n{}", crate::i18n::tr_os("There is no video at this address that yt-dlp knows: open the video's own page (click the video or its date) and download it from there."), crate::transport::redact(&e));
     }
-    e
+    crate::transport::redact(&e)
 }
 
 /// With ffmpeg: the best video and audio, merged by yt-dlp into an MP4.
@@ -240,12 +240,14 @@ fn video_name(v: &serde_json::Value) -> String {
 }
 
 /// The video's file name (title and type) and size, if yt-dlp knows it.
-pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
+pub fn probe(agent: &crate::engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
+    if agent.invalid_proxy { return Err("Invalid proxy configuration".into()); }
     let p = yt_dlp()?;
-    let ff = ffmpeg();
+    let ff = crate::media::toolchain();
     let fmt = formats(url, ff.is_some());
     let out = command(&p)
         .args(base_args(url, referrer, cookies))
+        .args(["--proxy", &crate::transport::external_proxy(&agent.proxy), "--socket-timeout", "20"])
         .args(["-f", &fmt, "-J"])
         .arg("--")
         .arg(url)
@@ -257,7 +259,7 @@ pub fn probe(url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> 
     let v = video_info(serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?)?;
     let name = video_name(&v);
     // the size shows as the streams arrive (video and audio come separately)
-    Ok(Probe { name, size: None, ranges: false, modified: String::new(), stream: false, page: false, ytdlp: true })
+    Ok(Probe { name, size: None, ranges: false, modified: String::new(), etag: String::new(), stream: false, page: false, ytdlp: true })
 }
 
 /// Arguments for yt-dlp's own downloader. Its native HLS/DASH fetcher otherwise uses one fragment
@@ -385,7 +387,7 @@ fn template(p: &Path) -> String {
 }
 
 /// A yt-dlp run's output, unless the download is stopped meanwhile (None: yt-dlp ended at once).
-fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::process::Output>, String> {
+pub(crate) fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::process::Output>, String> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -395,7 +397,7 @@ fn output_unless_stopped(job: &Job, mut cmd: Command) -> Result<Option<std::proc
     let read = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut v = Vec::new();
-            let _ = r.read_to_end(&mut v);
+            let _ = r.by_ref().take(32 << 20).read_to_end(&mut v);
             v
         })
     };
@@ -437,18 +439,76 @@ impl Drop for SavedInfo {
     fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MergeReceipt {
+    source: String,
+    tracks: [(String, u64); 2],
+}
+
+fn receipt_path(dest: &Path) -> PathBuf {
+    let name = dest.file_name().unwrap_or_default().to_string_lossy();
+    dest.with_file_name(format!(".{name}.ndm-merge.json"))
+}
+
+fn source_identity(job: &Job) -> String {
+    use sha2::{Digest, Sha256};
+    let info = job.info();
+    format!("{:x}", Sha256::digest(format!("{}:{}", info.id, info.url)))
+}
+
+fn restore_tracks(job: &Job, dest: &Path) -> Option<(PathBuf, PathBuf)> {
+    let receipt = receipt_path(dest);
+    if std::fs::metadata(&receipt).ok()?.len() > 8192 { return None; }
+    let receipt: MergeReceipt = serde_json::from_slice(&std::fs::read(receipt).ok()?).ok()?;
+    if receipt.source != source_identity(job) { return None; }
+    let stem = dest.file_stem()?.to_str()?;
+    let resolve = |(name, size): &(String, u64), tag| {
+        if Path::new(name).file_name()?.to_str()? != name || !name.starts_with(&format!("{stem}.{tag}.")) {
+            return None;
+        }
+        let path = dest.with_file_name(name);
+        (path.is_file() && *size > 0 && std::fs::metadata(&path).ok()?.len() == *size).then_some(path)
+    };
+    Some((resolve(&receipt.tracks[0], "ndm-video")?, resolve(&receipt.tracks[1], "ndm-audio")?))
+}
+
+fn record_tracks(job: &Job, dest: &Path, video: &Path, audio: &Path) -> Result<(), String> {
+    let track = |path: &Path| -> Result<(String, u64), String> {
+        let name = path.file_name().ok_or("Media track has no filename")?.to_string_lossy().into_owned();
+        Ok((name, std::fs::metadata(path).map_err(|e| e.to_string())?.len()))
+    };
+    let receipt = MergeReceipt { source: source_identity(job), tracks: [track(video)?, track(audio)?] };
+    let path = receipt_path(dest);
+    let stage = crate::media::Stage::new(&path)?;
+    let bytes = serde_json::to_vec(&receipt).map_err(|e| e.to_string())?;
+    std::fs::write(stage.path(), bytes).map_err(|e| e.to_string())?;
+    stage.finish(&path)
+}
+
 /// Downloads the video into the job's file. yt-dlp looks the page up and picks the streams (the best
 /// video and its audio, or the one file that has both); plain files among them are fetched by NDM itself,
 /// each over the download's connections in segments and both at once, others by yt-dlp. The video and
 /// audio are then joined (NDM's own joiner, else ffmpeg) as a processing step of its own.
-pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, String> {
+pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<bool, String> {
+    let existing = { let i = job.info(); (!i.name.is_empty()).then(|| i.path()) };
+    if let Some(dest) = existing {
+        if let Some((video, audio)) = restore_tracks(job, &dest) {
+            let merged = join(job, &video, &audio, &dest, crate::media::toolchain().as_deref());
+            if job.stopping() { return Ok(false); }
+            merged?;
+            let _ = std::fs::remove_file(receipt_path(&dest));
+            return finish_job(job, &dest);
+        }
+    }
     let p = yt_dlp()?;
     let (url, referrer, cookies) = {
         let i = job.info();
         (i.url.clone(), i.referrer.clone(), i.cookies.clone())
     };
-    let args = base_args(&url, &referrer, &cookies);
-    let ff = ffmpeg();
+    if agent.invalid_proxy { return Err("Invalid proxy configuration".into()); }
+    let mut args = base_args(&url, &referrer, &cookies);
+    args.extend(["--proxy".into(), crate::transport::external_proxy(&agent.proxy), "--socket-timeout".into(), "20".into()]);
+    let ff = crate::media::toolchain();
     let fmt = formats(&url, ff.is_some());
     let mut look = command(&p);
     look.args(&args).args(["-J", "-f", &fmt, "--"]).arg(&url);
@@ -484,9 +544,17 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
         return Ok(false);
     }
     if let [video, audio] = &outs[..] {
-        join(job, video, audio, &dest, ff.as_deref())?;
+        record_tracks(job, &dest, video, audio)?;
+        let merged = join(job, video, audio, &dest, ff.as_deref());
+        if job.stopping() { return Ok(false); }
+        merged?;
+        let _ = std::fs::remove_file(receipt_path(&dest));
     }
-    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    finish_job(job, &dest)
+}
+
+fn finish_job(job: &Job, dest: &Path) -> Result<bool, String> {
+    let size = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
     if size == 0 {
         return Err("yt-dlp finished without a file".into());
     }
@@ -499,31 +567,34 @@ pub fn run(job: &Job, agent: &ureq::Agent, global: &Limiter) -> Result<bool, Str
 /// The video and audio streams joined into `dest` after the download, with the bar showing it: NDM's own
 /// joiner (MP4, WebM), else ffmpeg; failing both, keep the sources and report the failure.
 fn join(job: &Job, video: &Path, audio: &Path, dest: &Path, ff: Option<&Path>) -> Result<(), String> {
-    let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    let expected = size(video) + size(audio);
-    let watch = [dest.to_path_buf()];
-    let label = "Joining video and audio...";
-    let mut joined = crate::stream::with_post(job, label, &watch, expected, || crate::stream::join_files(video, audio, dest)).unwrap_or(false);
-    if !joined {
-        if let Some(ff) = ff {
-            let _ = std::fs::remove_file(dest);
-            joined = crate::stream::with_post(job, label, &watch, expected, || {
-                command(ff).args(["-y", "-v", "error", "-i"]).arg(video).arg("-i").arg(audio).args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy"]).arg(dest).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
-            });
+    let stage = crate::media::Stage::new(dest)?;
+    let ext = dest.extension().and_then(|ext| ext.to_str()).unwrap_or("").to_ascii_lowercase();
+    let can_use_native = matches!(ext.as_str(), "mp4" | "webm")
+        && (ext == "webm") == video.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("webm"));
+    if let Some(ff) = ff {
+        crate::media::mux(job, ff, video, Some(audio), stage.path(), &ext, false)?;
+    } else if can_use_native {
+        let expected = [video, audio].iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+        let watch = [stage.path().to_path_buf()];
+        let joined = crate::stream::with_post(job, "Joining video and audio...", &watch, expected, || {
+            crate::stream::join_files(video, audio, stage.path())
+        })?;
+        if !joined {
+            return Err(crate::i18n::tr_os("Could not join video and audio. Install ffmpeg next to NDM or on PATH, then resume the download. The separate streams have been kept."));
         }
+    } else {
+        return Err(crate::i18n::tr_os("Could not join video and audio. Install ffmpeg next to NDM or on PATH, then resume the download. The separate streams have been kept."));
     }
-    if joined {
-        let _ = std::fs::remove_file(video);
-        let _ = std::fs::remove_file(audio);
-        return Ok(());
-    }
-    let _ = std::fs::remove_file(dest);
-    Err(crate::i18n::tr_os("Could not join video and audio. Install ffmpeg next to NDM or on PATH, then resume the download. The separate streams have been kept."))
+    if job.stopping() { return Err("stopped".into()); }
+    stage.finish(dest)?;
+    let _ = std::fs::remove_file(video);
+    let _ = std::fs::remove_file(audio);
+    Ok(())
 }
 
 /// Fetch each stream concurrently with its appropriate backend. A failed native fetch switches only
 /// that stream to yt-dlp. The parent's bar combines both streams, including mixed native/yt-dlp jobs.
-fn fetch_streams(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf],
+fn fetch_streams(job: &Job, agent: &crate::engine::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf],
     fallback: &(dyn Fn(&Job, &Stream, &Path) -> Result<bool, String> + Sync)) -> Result<bool, String> {
     let (conns, referrer, limit) = {
         let i = job.info();
@@ -605,7 +676,7 @@ fn stream_limit(job: &Job, global: &Limiter, live: usize) -> u64 {
 }
 
 #[cfg(test)]
-fn fetch_direct(job: &Job, agent: &ureq::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
+fn fetch_direct(job: &Job, agent: &crate::engine::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
     fetch_streams(job, agent, global, streams, outs, &|_, _, _| Err("unexpected fallback".into()))
 }
 
@@ -1403,6 +1474,16 @@ mod tests {
         let job = Job::new(crate::engine::Info { url: format!("{base}gone.mp4"), folder: dir.display().to_string(), name: "gone.mp4".into(), ..Default::default() });
         let e = run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()).unwrap_err();
         assert!(e.contains("404"), "{e}");
+        // An offline merge retry uses the completed tracks before starting the extractor.
+        let retry = Job::new(Info { id: 42, url: "http://127.0.0.1:1/offline".into(),
+            folder: dir.display().to_string(), name: "retry.mp4".into(), ..Default::default() });
+        let (video, audio) = (dir.join("retry.ndm-video.mp4"), dir.join("retry.ndm-audio.m4a"));
+        std::fs::write(&video, [init(1, 1000), frag(1, 0, b'v')].concat()).unwrap();
+        std::fs::write(&audio, [init(1, 48000), frag(1, 0, b'a')].concat()).unwrap();
+        let dest = retry.info().path();
+        record_tracks(&retry, &dest, &video, &audio).unwrap();
+        assert_eq!(run(&retry, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert!(dest.is_file() && !video.exists() && !audio.exists() && !receipt_path(&dest).exists());
         let _ = std::fs::remove_dir_all(&home);
     }
     /// Deno's real release zip (NDM_TEST_DENO_ZIP=<path>, NDM_TEST_DENO_SHA256=<the program's SHA-256>).

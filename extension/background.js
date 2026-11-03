@@ -2,36 +2,57 @@
 // The app listens on the first free one of these ports (Windows can reserve one for Hyper-V, WSL or Docker)
 // and marks its replies "X-NDM: 1"; versions before 2.0 listen on 9614 only, without the mark.
 const PORTS = [9614, 19614, 29614, 39614];
-let port = PORTS[0];
-// A request to the app: the port that answered last first, then the others. Throws when none answers.
+let port = null;
+let finding = null;
+const configRequest = { method: 'POST', headers: { 'X-NDM': '1' } };
+const local = (p, path, init, ms) => fetch(`http://127.0.0.1:${p}${path}`, {
+  ...init, redirect: 'error', signal: AbortSignal.timeout(ms),
+});
+const marked = r => r.headers.get('X-NDM') === '1';
+
+function findApp() {
+  if (finding) return finding;
+  const candidates = port === null ? PORTS : [port, ...PORTS.filter(p => p !== port)];
+  finding = Promise.any(candidates.map(async p => {
+    const response = await local(p, '/config', configRequest, 1500);
+    if (!response.ok || !marked(response)) throw new Error('Not NDM');
+    return { p, response };
+  })).then(found => {
+    port = found.p;
+    return found;
+  }).finally(() => { finding = null; });
+  return finding;
+}
+
 async function ndm(path, init) {
-  let old = null; // an unmarked reply on 9614: an older app, unless a marked one answers elsewhere
-  for (const p of [port, ...PORTS.filter(x => x !== port)]) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${p}${path}`, init);
-      if (r.headers.get('X-NDM')) {
-        port = p;
-        return r;
-      }
-      if (p === PORTS[0]) old = r;
-    } catch {}
+  if (path === '/config') return (await findApp()).response.clone();
+  const p = port ?? (await findApp()).p;
+  try {
+    const response = await local(p, path, init, 20000);
+    if (!marked(response)) throw new Error('Not NDM');
+    return response;
+  } catch (error) {
+    if (port === p) port = null;
+    // The desktop may have taken the request before the connection was lost.
+    // Discovery can retry, but never replay a download or a file chunk on another port.
+    throw Object.assign(new Error('NDM connection interrupted'), { sent: true, cause: error });
   }
-  if (old) return old;
-  throw new Error('New Download Manager is not running');
 }
 // The file type of a media response, as named in the app's download panel list.
 const MIME_TYPE = { 'audio/mpeg': 'MP3', 'video/mpeg': 'MPG', 'video/x-flv': 'FLV', 'video/quicktime': 'MOV', 'video/x-matroska': 'MKV',
   'video/x-ms-wmv': 'WMV', 'audio/x-ms-wma': 'WMA', 'video/x-ms-asf': 'ASF', 'video/3gpp': '3GP', 'audio/mp4': 'M4A', 'audio/x-m4a': 'M4A',
-  'video/x-msvideo': 'AVI', 'audio/wav': 'WAV', 'audio/x-wav': 'WAV', 'audio/vnd.wave': 'WAV' };
+  'video/mp2t': 'TS', 'audio/aac': 'AAC', 'video/x-msvideo': 'AVI', 'audio/wav': 'WAV', 'audio/x-wav': 'WAV', 'audio/vnd.wave': 'WAV' };
 function mediaType(mime, path, types) {
   const ext = ((path.match(/\.(\w{2,5})$/) || [])[1] || '').toUpperCase();
   const byMime = MIME_TYPE[mime] || (/^(video|audio)\//.test(mime) ? mime.split('/')[1].toUpperCase() : '');
-  return [ext, byMime].find(t => t && types.includes(t)) || '';
+  return [byMime, ext].find(t => t && types.includes(t)) || '';
 }
 
 // The app's native messaging host (ndm.exe itself, registered by the app at startup) starts the app when
 // it isn't running.
-const launch = () => chrome.runtime.sendNativeMessage('com.ndm.host', { kind: 'launch' }).catch(() => {});
+let launching = null;
+const launch = () => launching ??= chrome.runtime.sendNativeMessage('com.ndm.host', { kind: 'launch' })
+  .catch(() => {}).finally(() => { launching = null; });
 chrome.action.onClicked.addListener(launch);
 
 // The browser's own proxy, for the app's "Use proxy/socks from a browser's request" (Options -> Proxy / Socks).
@@ -50,15 +71,25 @@ async function browserProxy() {
 // With extra.check the app first makes sure the server sends it the same file the browser gets (size, type);
 // pages that make their files themselves (a service worker, as Telegram Web does), expired one-time links and
 // login pages give the app something else, and those stay with the browser.
+function webUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return /^https?:$/.test(parsed.protocol) && !parsed.username && !parsed.password;
+  } catch { return false; }
+}
 async function post(url, extra) {
+  if (!webUrl(url)) return false;
   const cookies = (await chrome.cookies.getAll({ url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
   const body = JSON.stringify({ url, cookies, proxy: await browserProxy(), ...extra });
-  for (let i = 0; i < 40; i++) {
+  const until = Date.now() + 10000;
+  for (let i = 0; Date.now() < until; i++) {
     try {
       const r = await ndm('/add', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body });
       return r.status === 200 ? true : r.status === 409 ? 'page' : false;
-    } catch {}
-    if (i === 0) await launch();
+    } catch (error) {
+      if (error.sent) return null;
+    }
+    if (i === 0) launch();
     await new Promise(r => setTimeout(r, 250)); // up to 10 s for the app to start
   }
   return null;
@@ -236,7 +267,13 @@ async function selfUpdate(app) {
 
 // The app's Options decide the context menu items and the panel exceptions (370).
 let config = { menu_dl: true, menu_all: true, panel_skip: '', keys: null }, configAt = 0, menus = '';
-async function refreshConfig() {
+let configPending;
+function refreshConfig() {
+  if (configPending) return configPending;
+  configPending = readConfig().finally(() => { configPending = null; });
+  return configPending;
+}
+async function readConfig() {
   if (Date.now() - configAt < 10000) return config;
   configAt = Date.now();
   try {
@@ -299,44 +336,109 @@ async function onMenu(info, tab) {
 }
 chrome.contextMenus.onClicked.addListener(onMenu);
 
-// ---- Video grabber: remember media responses per tab (session storage survives worker restarts) ----
+// Store a bounded list per tab, with frame/document identity. Serialize writes: two responses
+// arriving together must not read and overwrite the same old list.
 const key = tabId => `media:${tabId}`;
+const mediaWrites = new Map();
+const mediaGeneration = new Map();
+const DEFAULT_TYPES = ['MP4', 'WEBM', 'MP3', 'M4A', 'OGG', 'MKV', 'MOV', 'FLV', 'TS', 'AAC'];
 
-async function mediaFor(tabId) {
-  return (await chrome.storage.session.get(key(tabId)))[key(tabId)] || [];
+function updateMedia(tabId, work) {
+  const pending = (mediaWrites.get(tabId) || Promise.resolve()).catch(() => {}).then(work);
+  mediaWrites.set(tabId, pending);
+  return pending.finally(() => {
+    if (mediaWrites.get(tabId) === pending) mediaWrites.delete(tabId);
+  });
+}
+async function storedMedia(tabId) {
+  return (await chrome.storage.session.get(key(tabId)).catch(() => ({})))[key(tabId)] || [];
+}
+
+function visibleMedia(media, settings) {
+  const min = ((settings.panel_min || {})[media.ext] || 0) * 1024;
+  return (media.stream || (settings.panel_types || DEFAULT_TYPES).includes(media.ext)) && (!media.size || media.size >= min);
+}
+async function mediaFor(sender) {
+  const tabId = sender.tab.id;
+  await mediaWrites.get(tabId)?.catch(() => {});
+  const settings = await refreshConfig();
+  const items = await storedMedia(tabId);
+  return {
+    types: settings.panel_types || DEFAULT_TYPES,
+    minimums: settings.panel_min || {},
+    items: items.filter(item => item.frameId === (sender.frameId || 0) &&
+      (!item.documentId || !sender.documentId || item.documentId === sender.documentId) &&
+      (!item.documentUrl || !sender.url || item.documentUrl.split('#')[0] === sender.url.split('#')[0]) &&
+      visibleMedia(item, settings)),
+  };
 }
 
 function header(d, name) {
   return (d.responseHeaders || []).find(h => h.name.toLowerCase() === name)?.value || '';
 }
 
-chrome.webRequest.onResponseStarted.addListener(async d => {
-  if (d.tabId < 0 || d.statusCode >= 400) return;
-  const type = header(d, 'content-type').split(';')[0].trim().toLowerCase();
-  const path = new URL(d.url).pathname;
-  // HLS / DASH: the playlist is listed (the app fetches and joins its pieces); the pieces themselves aren't.
-  // Known by the .m3u8/.mpd path or the Content-Type, like the app (stream::is_manifest, is_manifest_type).
-  const stream = /\.(m3u8|mpd)$/i.test(path) || /mpegurl$|^application\/dash\+xml$/.test(type);
-  if (!stream && (/mp2t/.test(type) || /\.(ts|m4s)$/i.test(path))) return;
-  const c = await refreshConfig();
-  const types = c.panel_types || ['MP4', 'WEBM', 'MP3', 'M4A', 'OGG', 'MKV', 'MOV', 'FLV'];
-  const kind = stream ? 'MP4' : mediaType(type, path, types);
-  if (!kind) return; // not a ticked type
-  const total = header(d, 'content-range').split('/')[1];
-  const size = Number(total && total !== '*' ? total : header(d, 'content-length')) || 0;
-  const min = ((c.panel_min || {})[kind] || 0) * 1024;
-  if (size && size < min) return;
-  const list = await mediaFor(d.tabId);
-  if (list.some(m => m.url === d.url)) return;
-  list.push({ url: d.url, type: stream ? (/mpd$/i.test(path) || /dash/.test(type) ? 'dash' : 'hls') : type || path.split('.').pop(), size });
-  await chrome.storage.session.set({ [key(d.tabId)]: list.slice(-20) });
-  // "Don't capture downloads from web-players automatically" turned off: hand it over right away
-  if (c.panel_nocap === false && !stream) send(d.url, { referrer: d.initiator || d.originUrl || '', mime: type, size, check: true }); // originUrl: Firefox
-  chrome.tabs.sendMessage(d.tabId, { kind: 'media', count: list.length }).catch(() => {});
+function detectedMedia(d) {
+  if (d.tabId < 0 || ![200, 206].includes(d.statusCode) || !webUrl(d.url)) return null;
+  const url = new URL(d.url);
+  const path = url.pathname;
+  if (/(^|\.)(doubleclick\.net|googlesyndication\.com)$/i.test(url.hostname) ||
+      /\/(ads?|preroll|midroll|vast|vpaid)(?:\/|$)/i.test(path)) return null;
+  const mime = header(d, 'content-type').split(';')[0].trim().toLowerCase();
+  const stream = /\.mpd$/i.test(path) || mime === 'application/dash+xml' ? 'dash'
+    : /\.m3u8$/i.test(path) || /mpegurl$/.test(mime) ? 'hls' : '';
+  if ((/^(text|image)\//.test(mime) && !(stream && mime === 'text/plain')) || /(?:javascript|json)$/.test(mime)) return null;
+  if (!stream && /\.(m4s|cmfv|cmfa)$/i.test(path)) return null;
+  const ext = stream ? '' : mediaType(mime, path, [...new Set([...DEFAULT_TYPES, ...(config.panel_types || [])])]);
+  if (!stream && !ext) return null;
+  // Segment fetches typically use XHR and a .ts name. Native player TS and standalone
+  // downloadable TS files are valid sources, but avoid offering each HLS fragment.
+  if (ext === 'TS' && d.type !== 'media' && !/^attachment/i.test(header(d, 'content-disposition'))) return null;
+  const range = header(d, 'content-range').split('/')[1];
+  const size = Number(range && range !== '*' ? range : d.statusCode === 200 ? header(d, 'content-length') : 0) || 0;
+  url.hash = '';
+  return { url: url.href, mime, ext, stream, size, frameId: d.frameId || 0, documentId: d.documentId,
+    documentUrl: d.documentUrl, etag: header(d, 'etag') };
+}
+
+async function recordMedia(d) {
+  const item = detectedMedia(d);
+  if (!item) return;
+  const generation = mediaGeneration.get(d.tabId);
+  const changed = await updateMedia(d.tabId, async () => {
+    if (generation !== mediaGeneration.get(d.tabId)) return false;
+    const list = await storedMedia(d.tabId);
+    const same = old => old.frameId === item.frameId && old.documentId === item.documentId &&
+      (old.url === item.url || item.etag && old.etag === item.etag && old.size === item.size &&
+        old.mime === item.mime && old.url.split('?')[0] === item.url.split('?')[0]);
+    const previous = list.find(same);
+    if (previous?.url === item.url && previous.size >= item.size) return false;
+    const next = list.filter(old => !same(old));
+    next.push(item);
+    await chrome.storage.session.set({ [key(d.tabId)]: next.slice(-32) });
+    return !previous;
+  });
+  if (!changed || generation !== mediaGeneration.get(d.tabId)) return;
+  const settings = await refreshConfig();
+  if (settings.panel_nocap === false && !item.stream && visibleMedia(item, settings)) {
+    send(item.url, { referrer: d.documentUrl || d.initiator || d.originUrl || '', mime: item.mime, size: item.size, check: true });
+  }
+  chrome.tabs.sendMessage(d.tabId, { kind: 'media' }, { frameId: item.frameId }).catch(() => {});
+}
+
+chrome.webRequest.onResponseStarted.addListener(d => {
+  recordMedia(d).catch(() => {});
 }, { urls: ['<all_urls>'], types: ['media', 'xmlhttprequest', 'other', 'object'] }, ['responseHeaders']);
 
+function clearMedia(tabId) {
+  mediaGeneration.set(tabId, Symbol());
+  return updateMedia(tabId, () => chrome.storage.session.remove(key(tabId))).catch(() => {});
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
-  if (change.url) chrome.storage.session.remove(key(tabId));
+  if (change.url || change.status === 'loading') {
+    await clearMedia(tabId);
+    chrome.tabs.sendMessage(tabId, { kind: 'ndm-navigation' }).catch(() => {});
+  }
   // the Site Grabber's manual login page: once the user has logged in, the app explores with these cookies
   if (change.status !== 'complete' || !/^https?:/i.test(tab.url || '')) return;
   const want = (await refreshConfig()).want_cookies;
@@ -346,11 +448,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   const cookies = (await chrome.cookies.getAll({ url: tab.url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
   ndm('/cookies', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ url: tab.url, cookies }) }).catch(() => {});
 });
-chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove(key(tabId)));
+chrome.tabs.onRemoved.addListener(tabId => clearMedia(tabId).finally(() => mediaGeneration.delete(tabId)));
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const tab = sender.tab;
-  if (!tab) return;
+  if (!tab || !msg || typeof msg.kind !== 'string' || (sender.id && sender.id !== chrome.runtime.id)) return;
   if (msg.kind === 'keys') {
     held = msg.held || [];
     return;
@@ -359,15 +461,30 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     refreshConfig().then(reply);
     return true;
   }
+  if (msg.kind === 'media-list') {
+    mediaFor(sender).then(reply, () => reply({ items: [], types: DEFAULT_TYPES }));
+    return true;
+  }
   if (msg.kind === 'list') {
-    mediaFor(tab.id).then(reply);
+    mediaFor(sender).then(result => reply(result.items.map(item => ({ ...item, type: item.stream || item.mime || item.ext }))), () => reply([]));
     return true;
   }
   if (msg.kind === 'video-page') {
+    if (!webUrl(msg.url)) return reply(false);
     // the panel on a video site, or on any page whose video the browser can't hand over (a player that
     // streams it in pieces): the page itself, for the app's yt-dlp
     if (!msg.any && !isVideoSite(msg.url)) return reply(false);
     send(msg.url, { referrer: '', force: true, video: true }).then(ok => reply(ok ? 'sent' : 'off'));
+    return true;
+  }
+  if (msg.kind === 'formats') {
+    if (!webUrl(msg.url) || !msg.stream && msg.mime !== 'video/mp2t') return reply([]);
+    (async () => {
+      const cookies = (await chrome.cookies.getAll({ url: msg.url }).catch(() => [])).map(c => `${c.name}=${c.value}`).join('; ');
+      const response = await ndm('/formats', { method: 'POST', headers: { 'X-NDM': '1', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: msg.url, referrer: sender.url || tab.url, cookies, stream: !!msg.stream, mime: msg.mime || '', force: true }) });
+      return response.ok ? response.json() : [];
+    })().then(reply, () => reply([]));
     return true;
   }
   if (msg.kind === 'options') {
@@ -376,16 +493,26 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   }
   if (msg.kind === 'sel') {
     // the selected-links panel: like "Download all links", for the links in the selection
-    send(tab.url, { referrer: tab.url, links: msg.links, force: true }).then(reply);
+    const links = Array.isArray(msg.links) ? msg.links.slice(0, 5000).filter(link => webUrl(link?.url)) : [];
+    if (!links.length) return reply(false);
+    send(tab.url, { referrer: tab.url, links, force: true }).then(reply);
     return true;
   }
   if (msg.kind === 'download') {
     // a file the app can't get as the page did: the browser's own download takes it
-    send(msg.url, { referrer: tab.url, filename: msg.filename || '', force: true, check: true, size: msg.size || 0, mime: msg.mime || '' }).then(ok => {
-      if (!ok) {
+    if (!webUrl(msg.url)) return reply(false);
+    const stream = msg.stream === 'hls' || msg.stream === 'dash';
+    send(msg.url, { referrer: sender.url || tab.url, filename: msg.filename || '', force: true,
+      check: !stream, size: msg.size || 0, mime: msg.mime || '', stream,
+      output: (stream || msg.mime === 'video/mp2t') && ['mp4', 'ts', 'mkv', 'webm'].includes(msg.output) ? msg.output : '',
+      variant: stream && Number.isSafeInteger(msg.variant) && msg.variant >= 0 ? msg.variant : null }).then(ok => {
+      if (!ok && !stream && !msg.output) {
         ours.add(msg.url);
         ours.add('det:' + msg.url);
-        chrome.downloads.download({ url: msg.url, ...(msg.filename ? { filename: msg.filename } : {}) }).catch(() => {});
+        chrome.downloads.download({ url: msg.url, ...(msg.filename ? { filename: msg.filename } : {}) }).catch(() => {
+          ours.delete(msg.url);
+          ours.delete('det:' + msg.url);
+        });
       }
       reply(ok);
     });

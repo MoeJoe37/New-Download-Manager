@@ -120,7 +120,7 @@ pub fn local_proxy(route: &str) -> String {
         use std::hash::BuildHasher;
         format!("{:016x}", std::collections::hash_map::RandomState::new().hash_one((route, std::time::SystemTime::now())))
     };
-    let Ok(l) = TcpListener::bind("127.0.0.1:0") else { return String::new() };
+    let Ok(l) = TcpListener::bind("127.0.0.1:0") else { return "invalid-proxy://".into() };
     let url = format!("socks5://{token}:{token}@127.0.0.1:{}", l.local_addr().map(|a| a.port()).unwrap_or(0));
     let route = route.to_string();
     servers.push((route.clone(), url.clone()));

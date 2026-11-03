@@ -480,7 +480,7 @@ struct Work {
 /// Breadth-first crawl. `levels` = link hops explored past the start page within its site;
 /// `levels_other` = hops allowed onto other sites. Files are collected from every explored page;
 /// `t.explore` pages are fetched at the same time.
-pub fn run(opts: Opts, agent: ureq::Agent, c: Arc<Crawl>, t: Tuning) {
+pub fn run(opts: Opts, agent: crate::engine::Agent, c: Arc<Crawl>, t: Tuning) {
     let set = |f: &dyn Fn(&mut State)| f(&mut c.state.lock().unwrap());
     let mut start = match Url::parse(opts.start.trim()) {
         Ok(u) if u.scheme().starts_with("http") => u,
@@ -733,7 +733,7 @@ mod tests {
         let crawl = |levels| {
             let c = Arc::new(Crawl::default());
             let opts = Opts { start: format!("{base}/"), levels, masks: "*.zip".into(), ..Opts::default() };
-            run(opts, ureq::agent(), c.clone(), Tuning::default());
+            run(opts, crate::engine::agent("", ""), c.clone(), Tuning::default());
             let s = c.state.lock().unwrap();
             (s.pages, s.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>())
         };
@@ -743,7 +743,7 @@ mod tests {
         // four explorers at once; web pages wanted too (the offline templates save them)
         let c = Arc::new(Crawl::default());
         let opts = Opts { start: format!("{base}/"), levels: 5, masks: "*.zip,*.html".into(), ..Opts::default() };
-        run(opts, ureq::agent(), c.clone(), Tuning { explore: 4, adv: true });
+        run(opts, crate::engine::agent("", ""), c.clone(), Tuning { explore: 4, adv: true });
         let mut names: Vec<String> = c.state.lock().unwrap().files.iter().map(|f| f.name.clone()).collect();
         names.sort();
         assert_eq!(names, ["a.zip", "b.zip", "c.zip", "deeper.html", "index.html", "index.html"]);

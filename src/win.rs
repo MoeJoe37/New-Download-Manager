@@ -295,24 +295,28 @@ pub fn system_proxy() -> (bool, String, String) {
 /// non-Latin names); "explorer /select," is the fall-back, its path in quotes of its own (a quoted
 /// "/select,..." argument makes Explorer open Documents instead).
 pub fn show_in_folder(path: &std::path::Path) {
-    use windows_sys::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
     let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()).display().to_string().replace('/', "\\");
-    let w = wide(&full);
-    unsafe {
-        let pidl = ILCreateFromPathW(w.as_ptr());
-        if !pidl.is_null() {
-            // the UI thread already has COM (S_FALSE); a thread without it gets it here
-            CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
-            let hr = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
-            ILFree(pidl);
-            if hr >= 0 {
-                return;
-            }
+    std::thread::spawn(move || {
+        let selected = unsafe {
+            let initialized = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0;
+            if initialized {
+                let pidl = ILCreateFromPathW(wide(&full).as_ptr());
+                let selected = if pidl.is_null() { false } else {
+                    let hr = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
+                    ILFree(pidl);
+                    hr >= 0
+                };
+                CoUninitialize();
+                selected
+            } else { false }
+        };
+        if !selected {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{full}\"")).spawn();
         }
-    }
-    use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{full}\"")).spawn();
+    });
 }
 
 /// Adds `dir` to the user's Path (HKCU\Environment) unless it is there, and tells running programs (new
@@ -483,9 +487,11 @@ pub fn pac_proxy(pac: &str, url: &str) -> Option<String> {
             t
         };
         let (list, _) = (take(info.lpszProxy), take(info.lpszProxyBypass));
+        if !ok { return None; }
+        if info.dwAccessType == WINHTTP_ACCESS_TYPE_NO_PROXY { return Some(String::new()); }
         // "[scheme=]host:port; ..." -> the first host:port
         let first = list.split([';', ' ']).find(|x| !x.is_empty())?;
-        Some(first.rsplit('=').next().unwrap_or(first).to_string()).filter(|_| ok)
+        Some(first.rsplit('=').next().unwrap_or(first).to_string())
     }
 }
 

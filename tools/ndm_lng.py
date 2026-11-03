@@ -36,6 +36,7 @@ NOT_UI = re.compile(
     r"|\.(app|AppImage|zip|tar\.gz)$|\.so(\.\d+)*$|\.dll,|^Xdnd|^(org|com)\.|^(BraveSoftware|Yandex)/|^(application|text|video|audio|image)/"
     r"|^(NAME,TYPE|AppleInterfaceStyle|NameHasOwner|ShowItems|httpProxy|Read|DejaVu Sans|Negotiate|Proxy Settings|Brave Browser"
     r"|Microsoft Edge (Beta|Dev)|BaseURL|Representation|Segment(Base|List|Template|URL)|Period|Initialization)$"
+    r"|^HTTP(?: [0-9]+)? $|^(AdaptationSet|ETag|Location|bad route)$"
     r"|^POSIX path|^tell application|\d\d:\d\d:\d\d GMT"
     # yt-dlp's arguments and output, the extension's feed protocol (src/ytdlp.rs, core.rs `feed`)
     r"|^download:ndm |^ERROR: $|^ndm $|^no (at|id)$|^no such download$|^unknown op$|^%\("

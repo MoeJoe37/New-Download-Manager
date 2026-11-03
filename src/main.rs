@@ -6,8 +6,10 @@ mod engine;
 mod grabber;
 mod i18n;
 mod net;
+mod media;
 mod remux;
 mod stream;
+mod transport;
 mod ytdlp;
 use i18n::{tr, tr_os};
 #[cfg(unix)]
@@ -2562,6 +2564,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             // /n: no questions; /a only adds it to the queue
             let mut i = self.core.new_info(&inc.url);
             i.ytdlp = inc.video;
+            i.stream = inc.stream;
+            i.media_output = inc.output.clone();
+            i.media_variant = inc.variant;
             (i.referrer, i.cookies, i.browser_proxy) = (inc.referrer.clone(), inc.cookies.clone(), inc.proxy.clone());
             if !inc.folder.is_empty() {
                 i.folder = inc.folder.clone();
@@ -2684,6 +2689,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         // a video page (YouTube..., or any page from the download panel): the Video category until yt-dlp
         // names the file from the video's title
         info.ytdlp = inc.video;
+        info.stream = inc.stream;
+        info.media_output = inc.output.clone();
+        info.media_variant = inc.variant;
         let video_page = info.ytdlp || ytdlp::is_video_page(&info.url);
         let name = if !hint.is_empty() {
             hint.clone()
@@ -2715,12 +2723,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             let (s, c, agent) = (slot.clone(), ctx.clone(), self.core.agent(&info.url));
             let (url, r, k) = (info.url.clone(), info.referrer.clone(), info.cookies.clone());
             std::thread::spawn(move || {
-                let found = if video_page { ytdlp::probe(&url, &r, &k) } else { engine::probe(&agent, &url, &r, &k) };
+                let found = if video_page { ytdlp::probe(&agent, &url, &r, &k) } else { engine::probe(&agent, &url, &r, &k) };
                 // a web page from any of the sites yt-dlp knows (well beyond the ones NDM names): its video
                 let found = match found {
-                    Ok(p) if p.page => ytdlp::probe(&url, &r, &k).or(Ok(p)),
+                    Ok(p) if p.page => ytdlp::probe(&agent, &url, &r, &k).or(Ok(p)),
                     // Some extractors can read a page whose ordinary HTTP request is rejected.
-                    Err(e) if !video_page && (url.starts_with("https://") || url.starts_with("http://")) => ytdlp::probe(&url, &r, &k).map_err(|_| e),
+                    Err(e) if !video_page && (url.starts_with("https://") || url.starts_with("http://")) => ytdlp::probe(&agent, &url, &r, &k).map_err(|_| e),
                     other => other,
                 };
                 *s.lock().unwrap() = Some(found);
@@ -4461,7 +4469,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let i = j.info();
                     let res = match &i.status {
                         Status::Error(e) => Some(Err(e.clone())),
-                        _ if i.probed => Some(Ok(engine::Probe { name: i.name.clone(), size: i.size, ranges: i.ranges, modified: i.modified.clone(), stream: i.stream, page: i.page, ytdlp: i.ytdlp })),
+                        _ if i.probed => Some(Ok(engine::Probe { name: i.name.clone(), size: i.size, ranges: i.ranges, modified: i.modified.clone(), etag: i.etag.clone(), stream: i.stream, page: i.page, ytdlp: i.ytdlp })),
                         _ => None,
                     };
                     drop(i);
@@ -4483,6 +4491,8 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 }
                                 (info.size, info.ranges, info.probed, info.stream) = (p.size, p.ranges, true, p.stream);
                                 info.page = p.page;
+                                info.modified = p.modified;
+                                info.etag = p.etag;
                                 info.ytdlp |= p.ytdlp;
                             }
                             Err(e) => {
@@ -4576,8 +4586,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                             if from != ji.part() {
                                 let _ = std::fs::create_dir_all(&ji.folder);
                                 if std::fs::rename(&from, ji.part()).is_err() {
-                                    ji.segs.clear(); // couldn't move it: start over at the new place
-                                    let _ = std::fs::remove_file(&from);
+                                    // Leave the partial at its original location if the chosen folder
+                                    // cannot take it. It can still be recovered from that location.
+                                    ji.segs.clear();
                                 }
                             }
                             drop(ji);

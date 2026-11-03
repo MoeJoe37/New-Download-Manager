@@ -180,6 +180,26 @@ lets yt-dlp find the complete media and then uses the appropriate parallel downl
 captures show their File Info/progress and Download complete popups while the main window stays in
 the notification area; open it yourself from the tray when you need the download list.
 
+## Browser media formats and download recovery
+
+The browser panel follows the current player as its source changes. When the desktop app can read
+a manifest, the panel lists detected HLS variants or single-period DASH representations with their
+known resolution, codecs and audio. Use the existing **Options → General → Customize** video panel
+settings to hide individual formats, including TS. This changes the menu without changing the
+download engine's format support.
+
+Compatible HLS transport streams can offer TS and MP4 separately. For a standalone TS source,
+NDM checks a limited sample before offering MP4 or MKV. The panel marks MP4 conversion when the
+inspected codecs require it. FFmpeg and ffprobe validate the selected output before NDM publishes
+it. If a separate video and audio merge fails, **Resume** can use the completed tracks.
+
+Direct HTTPS file and media transfers negotiate HTTP/2 with servers that offer it. Existing proxy
+and connection-based authentication routes use HTTP/1.1. When a signed address returns 403, reopen
+its source page and use **Refresh download address** to capture a fresh authorized link. NDM checks
+the resource before using any saved partial bytes.
+
+[Full changes and verification](docs/v-codex-2.8.0.md)
+
 ## Custom toolbars
 
 A custom toolbar replaces the pictures on NDM's toolbar buttons with your own. It is a folder of PNG files, one

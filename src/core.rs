@@ -467,6 +467,14 @@ fn proxy_url(scheme: &str, host: &str, port: &str, user: &str, pass: &str) -> St
     if port.is_empty() || host.contains(':') { format!("{scheme}://{auth}{host}") } else { format!("{scheme}://{auth}{host}:{port}") }
 }
 
+fn pac_route(pac: &str, url: &str) -> String {
+    match crate::win::pac_proxy(pac, url) {
+        Some(route) if route.is_empty() || route.contains("://") => route,
+        Some(host) => proxy_url("http", &host, "", "", ""),
+        None => "invalid-proxy://".into(),
+    }
+}
+
 /// The host matches one of the space separated patterns ("10.*", "intranet", "*.corp.com").
 fn bypassed(patterns: &str, host: &str) -> bool {
     !host.is_empty() && patterns.split_whitespace().any(|p| crate::grabber::mask_match(p, host) || host.starts_with(p))
@@ -635,7 +643,7 @@ impl Settings {
         let (scheme, host) = (u.as_ref().map_or("", |u| u.scheme()), u.as_ref().and_then(|u| u.host_str()).unwrap_or(""));
         match self.proxy_mode {
             // PAC: Windows' WinHTTP runs FindProxyForURL; the first proxy it names is used
-            2 => crate::win::pac_proxy(&self.pac_url, url).map_or(String::new(), |hp| proxy_url("http", &hp, "", "", "")),
+            2 => pac_route(&self.pac_url, url),
             1 => {
                 // NDM's own downloads don't go through NDM's proxy
                 let (on, server, bypass) = self.saved_proxy.clone().unwrap_or_else(crate::win::system_proxy);
@@ -750,6 +758,9 @@ pub struct Incoming {
     /// The download panel on a page whose video the browser can't hand over (a player streaming it in
     /// pieces): the page goes to yt-dlp, whatever the site.
     pub video: bool,
+    pub stream: bool,
+    pub output: String,
+    pub variant: Option<usize>,
     /// "Download all links": the page's links; `url` is the page.
     pub links: Vec<Link>,
     /// From the command line:
@@ -813,7 +824,7 @@ pub struct Core {
     running: Mutex<BTreeSet<u32>>,
     pub limiter: Arc<Limiter>,
     /// One HTTP agent per proxy in use ("" = direct); rebuilt when the settings change.
-    agents: Mutex<HashMap<String, ureq::Agent>>,
+    agents: Mutex<HashMap<String, engine::Agent>>,
     next_id: AtomicU64,
     /// Per queue: the days its start / stop time last fired.
     fired: Mutex<HashMap<u32, (Option<NaiveDate>, Option<NaiveDate>)>>,
@@ -961,23 +972,27 @@ impl Core {
     }
 
     /// The agent for downloading `url`, with the proxy the settings choose for it.
-    pub fn agent(&self, url: &str) -> ureq::Agent {
-        let (proxy, ua) = {
+    pub fn agent(&self, url: &str) -> engine::Agent {
+        let (proxy, ua, use_routes) = {
             let s = self.settings();
-            (s.proxy_for(url), s.user_agent.clone())
+            (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0)
         };
         let proxy = crate::net::agent_proxy(&proxy);
-        self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone()
+        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone();
+        if use_routes {
+            agent.routes = engine::FTP.lock().unwrap().route.clone();
+        }
+        agent
     }
 
     /// The networks `url` is downloaded over, each with its agent: none unless the setting is on, the
     /// address goes direct, NDM can choose the network and at least two ticked networks are up.
-    pub fn lanes(&self, url: &str) -> Vec<(String, ureq::Agent)> {
+    pub fn lanes(&self, url: &str) -> Vec<(String, engine::Agent)> {
         self.lanes_from(url, 2)
     }
 
     /// `lanes` once a download is spread: one network left is enough to keep its connections.
-    fn lanes_from(&self, url: &str, least: usize) -> Vec<(String, ureq::Agent)> {
+    fn lanes_from(&self, url: &str, least: usize) -> Vec<(String, engine::Agent)> {
         let (on, off, ua) = {
             let s = self.settings();
             (s.use_lanes(url), s.nets_off.clone(), s.user_agent.clone())
@@ -1038,11 +1053,12 @@ impl Core {
             (i.path(), i.name.clone(), i.folder.clone(), i.url.clone(), i.category.clone())
         };
         let known = self.settings().category_for(&name, &url) != GENERAL;
-        if known || !path.is_file() {
+        if !path.is_file() {
             return false;
         }
         let Some(ext) = engine::sniff(&path) else { return false };
-        let typed = engine::typed_name(&name, Some(ext));
+        let typed = engine::media_name(&name, ext);
+        if known && typed == name { return false; }
         let new_cat = self.settings().category_for(&typed, &url);
         if typed == name && new_cat == category {
             return false;
@@ -1188,12 +1204,12 @@ impl Core {
         let bp = job.info().browser_proxy.clone();
         let (ua, on) = { let s = self.settings(); (s.user_agent.clone(), s.proxy_browser) }; // one lock: a second one in the same statement deadlocks
         let bp = match bp.strip_prefix("pac:") {
-            Some(pac) => crate::win::pac_proxy(pac, &url).map_or(String::new(), |hp| proxy_url("http", &hp, "", "", "")),
+            Some(pac) => pac_route(pac, &url),
             None => bp,
         };
         // ponytail: used from the next start (Resume, queue retries), not by restarting the failed one at once
         let browser = on && !bp.is_empty() && job.fails.load(Relaxed) > 0;
-        let agent = if browser { engine::agent(&bp, &ua) } else { self.agent(&url) };
+        let agent = if browser { engine::agent(&crate::net::agent_proxy(&bp), &ua) } else { self.agent(&url) };
         job.multi_ok.store(!browser, Relaxed);
         *job.lanes.lock().unwrap() = if browser { vec![] } else { self.lanes(&url) };
         job.start(agent, self.limiter.clone());
@@ -1341,7 +1357,7 @@ impl Core {
             for j in &mine {
                 let status = j.info().status.clone();
                 // failed after the queue's retries: the user decides
-                let failed = matches!(status, Status::Error(_)) && j.fails.load(Relaxed) > retries;
+                let failed = matches!(&status, Status::Error(error) if engine::permanent_error(error) || j.fails.load(Relaxed) > retries);
                 let id = j.info().id;
                 if status == Status::Complete && sync && !self.synced.lock().unwrap().contains_key(&id) {
                     // synchronization: ask the server whether the file changed (size or date); if so it is
@@ -1356,7 +1372,7 @@ impl Core {
                         };
                         if let Ok(p) = engine::probe(&agent, &url, &referrer, &cookies) {
                             let i = j.info().clone();
-                            if p.size != i.size || (!p.modified.is_empty() && p.modified != i.modified) || !i.path().exists() {
+                            if p.size != i.size || (!p.etag.is_empty() && !i.etag.is_empty() && p.etag != i.etag) || (!p.modified.is_empty() && p.modified != i.modified) || !i.path().exists() {
                                 j.reset();
                             }
                         }
@@ -1821,6 +1837,7 @@ impl Core {
     /// Web pages can't send that header cross-origin without a CORS preflight, which we refuse,
     /// and we also reject any Origin that isn't a browser extension.
     pub fn spawn_server(self: &Arc<Self>, tx: Sender<Incoming>, notify: impl Fn() + Send + Sync + 'static) {
+        let inspections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let notify = Arc::new(notify);
         if let Ok(l) = TcpListener::bind(("127.0.0.1", PROXY_PORT)) {
             let (core, tx, notify) = (self.clone(), tx.clone(), notify.clone());
@@ -1878,6 +1895,34 @@ impl Core {
                     reply("200 OK", &c.to_string());
                     continue;
                 }
+                if let Some((_, body, _)) = req.as_ref().filter(|(path, ..)| path == "/formats") {
+                    let inc: Incoming = serde_json::from_slice(body).unwrap_or_default();
+                    if (!inc.stream && inc.mime != "video/mp2t") || inc.cookies.len() > 32 * 1024 || !core.wants(&inc) {
+                        reply("400 Bad Request", "");
+                        continue;
+                    }
+                    if inspections.fetch_add(1, Relaxed) >= 4 {
+                        inspections.fetch_sub(1, Relaxed);
+                        reply("503 Service Unavailable", "");
+                        continue;
+                    }
+                    let (core, inspections) = (core.clone(), inspections.clone());
+                    thread::spawn(move || {
+                        let agent = core.agent(&inc.url);
+                        let result = if inc.stream {
+                            crate::stream::formats(&agent, &inc.url, &inc.referrer, &inc.cookies)
+                        } else {
+                            crate::stream::transport_formats(&agent, &inc.url, &inc.referrer, &inc.cookies)
+                        };
+                        inspections.fetch_sub(1, Relaxed);
+                        let (status, body) = match result {
+                            Ok(choices) => ("200 OK", serde_json::to_string(&choices).unwrap_or_else(|_| "[]".into())),
+                            Err(error) => ("422 Unprocessable Content", serde_json::json!({"error": crate::transport::redact(&error)}).to_string()),
+                        };
+                        let _ = (&s).write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-NDM: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                    });
+                    continue;
+                }
                 if let Some((_, body, _)) = req.as_ref().filter(|(path, ..)| path == "/cookies") {
                     // the grabber's manual login page: the browser's cookies for the site the user logged in to
                     let inc: Incoming = serde_json::from_slice(body).unwrap_or_default();
@@ -1891,6 +1936,8 @@ impl Core {
                 }
                 let accepted = req.and_then(|(_, body, ua)| serde_json::from_slice::<Incoming>(&body).ok().map(|i| (i, ua)))
                     .filter(|(inc, ua)| inc.cli || core.captures(ua) && core.wants(inc))
+                    .filter(|(inc, _)| matches!(inc.output.as_str(), "" | "mp4" | "ts" | "mkv" | "webm") && (inc.stream || inc.variant.is_none() && (inc.output.is_empty() || inc.mime == "video/mp2t" && matches!(inc.output.as_str(), "mp4" | "mkv"))) &&
+                        inc.links.len() <= 5000 && inc.cookies.len() <= 32 * 1024 && inc.url.len() <= 32 * 1024)
                     .map(|(inc, _)| inc);
                 let inc = match accepted {
                     Some(inc) if inc.check => inc,
@@ -1915,7 +1962,7 @@ impl Core {
                     });
                     let same = wait.recv_timeout(Duration::from_secs(15)).unwrap_or_else(|_| Err("no answer".into()));
                     if let Err(e) = &same {
-                        eprintln!("left to the browser: {} ({e})", inc.url);
+                        eprintln!("Left to the browser: {}", crate::transport::redact(e));
                     }
                     // 409: the server sends NDM something else; the extension may fetch it in the page (`feed`)
                     let _ = (&s).write_all(format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\nX-NDM: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", if same.is_ok() { "200 OK" } else { "409 Conflict" }).as_bytes());
@@ -1994,20 +2041,31 @@ fn proxy_conn(core: &Core, client: std::net::TcpStream) -> Option<Incoming> {
 fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
     let mut r = BufReader::new(s);
     let mut line = String::new();
-    r.read_line(&mut line).ok()?;
     let mut h = HashMap::new();
-    loop {
-        let mut l = String::new();
-        if r.read_line(&mut l).ok()? == 0 || l.trim().is_empty() {
-            break;
+    {
+        let mut headers = (&mut r).take(32 << 10);
+        if headers.read_line(&mut line).ok()? == 0 || !line.ends_with('\n') {
+            return None;
         }
-        if let Some((k, v)) = l.split_once(':') {
-            h.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+        loop {
+            let mut l = String::new();
+            if headers.read_line(&mut l).ok()? == 0 || !l.ends_with('\n') {
+                return None;
+            }
+            if l.trim().is_empty() { break; }
+            let (k, v) = l.split_once(':')?;
+            if h.insert(k.trim().to_ascii_lowercase(), v.trim().to_string()).is_some() {
+                return None; // no ambiguous lengths, origins or control headers
+            }
         }
     }
-    let origin_ok = h.get("origin").is_none_or(|o| o.starts_with("chrome-extension://") || o.starts_with("moz-extension://"));
+    let origin_ok = h.get("origin").is_none_or(|origin| {
+        origin == "chrome-extension://fjkomnlijmdmohmlbfgkepgdieleinoa" || origin.strip_prefix("moz-extension://").is_some_and(|id| {
+            id.len() == 36 && id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+        })
+    });
     let path = line.strip_prefix("POST ")?.split(' ').next()?.to_string();
-    if !["/add", "/config", "/cookies", "/show", "/feed"].contains(&path.split('?').next().unwrap_or("")) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok {
+    if (!["/add", "/config", "/cookies", "/show", "/formats"].contains(&path.as_str()) && !path.starts_with("/feed?")) || h.get("x-ndm").map(String::as_str) != Some("1") || !origin_ok || h.contains_key("transfer-encoding") {
         return None;
     }
     // the extension sends at most 512 KB at a time (`feed`): a bigger body is refused, not cut short
@@ -2020,6 +2078,23 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localhost_rejects_web_origins_and_ambiguous_messages() {
+        let parse = |headers: &str| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            write!(client, "POST /add HTTP/1.1\r\nX-NDM: 1\r\n{headers}\r\n").unwrap();
+            handle(&listener.accept().unwrap().0)
+        };
+        assert!(parse("Origin: https://unrelated.example\r\n").is_none());
+        assert!(parse("Origin: chrome-extension://unrelated\r\n").is_none());
+        assert!(parse("Content-Length: 0\r\nContent-Length: 0\r\n").is_none());
+        assert!(parse("Transfer-Encoding: chunked\r\n").is_none());
+        assert!(parse("Origin: chrome-extension://fjkomnlijmdmohmlbfgkepgdieleinoa\r\n").is_some());
+        assert!(parse("Origin: moz-extension://824f4499-377a-4127-8cc0-c11758bf683a\r\n").is_some());
+    }
+
 
     /// Changes Windows' real proxy setting for a moment: run by hand (`cargo test -- --ignored`).
     #[test]

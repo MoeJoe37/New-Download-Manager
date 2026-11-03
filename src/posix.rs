@@ -170,11 +170,19 @@ fn find_proxy(script: &str, url: &str, host: &str) -> Option<String> {
     })
 }
 
-/// The first entry of "PROXY a:1; DIRECT": a proxy's "host:port", None for DIRECT (or SOCKS).
+/// First PAC route. An empty result explicitly requests DIRECT; None means evaluation failed.
 fn pac_pick(answer: &str) -> Option<String> {
     let first = answer.split(';').map(str::trim).find(|e| !e.is_empty())?;
     let (kind, hp) = first.split_once(char::is_whitespace).unwrap_or((first, ""));
-    ["PROXY", "HTTP", "HTTPS"].iter().any(|k| kind.eq_ignore_ascii_case(k)).then(|| hp.trim().to_string())
+    let host = hp.trim();
+    match kind.to_ascii_uppercase().as_str() {
+        "DIRECT" => Some(String::new()),
+        "PROXY" | "HTTP" if !host.is_empty() => Some(host.into()),
+        "HTTPS" if !host.is_empty() => Some(format!("https://{host}")),
+        "SOCKS" | "SOCKS5" if !host.is_empty() => Some(format!("socks5h://{host}")),
+        "SOCKS4" if !host.is_empty() => Some(format!("socks4://{host}")),
+        _ => None,
+    }
 }
 
 #[test]
@@ -186,9 +194,11 @@ fn pac_scripts() {
     }"#;
     let pick = |host: &str| pac_pick(&find_proxy(s, &format!("http://{host}/f"), host).expect("script runs"));
     assert_eq!(pick("a.example.com").as_deref(), Some("px.example.com:3128"));
-    for host in ["intranet", "box.local", "10.1.2.3", "other.org"] {
-        assert_eq!(pick(host), None, "{host}");
+    for host in ["intranet", "box.local", "10.1.2.3"] {
+        assert_eq!(pick(host).as_deref(), Some(""), "{host}");
     }
+    assert_eq!(pick("other.org").as_deref(), Some("socks5h://s:1080"));
+    assert_eq!(pac_pick("bad route"), None);
 }
 
 // ---------- clipboard and locale ----------

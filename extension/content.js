@@ -111,7 +111,7 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
   // the extension's own options (and the panel's right-click menu): off everywhere, or on these sites
   const store = chrome.storage.local;
   const hidden = s => s.panel_off || (s.panel_sites_off || []).includes(site);
-  if (hidden(await store.get(['panel_off', 'panel_sites_off']).catch(() => ({})))) return;
+  const initiallyHidden = hidden(await store.get(['panel_off', 'panel_sites_off']).catch(() => ({})));
 
   const host = document.createElement('div');
   host.style.cssText = 'position:absolute;z-index:2147483647;display:none;top:0;left:0';
@@ -139,19 +139,34 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     say.t = setTimeout(() => (label.textContent = target && target.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video'), 3000);
   };
   if (panel_mini) label.style.display = 'none'; // Panel view: Mini mode
-  let target = null, hideTimer = 0, off = false;
-  const dismissed = new WeakSet();
+  let target = null, hideTimer = 0, off = initiallyHidden;
+  let media = { items: [], types: [], minimums: {} }, mediaRevision = 0;
+  let url = location.href;
+  const dismissed = new WeakMap();
+  const encrypted = new WeakSet();
+  const sources = new WeakMap();
+  const source = el => el?.currentSrc || el?.src || el?.querySelector?.('source[src]')?.src || '';
+  const playerKey = el => `${url}\n${source(el)}`;
+  const isProtected = el => !!el && (el.mediaKeys || encrypted.has(el));
+  const isWeb = value => /^https?:\/\//i.test(value || '');
+  const eligible = el => el?.isConnected && (!isProtected(el) ? isWeb(source(el)) ||
+    isVideoUrl(videoPage(el)) || media.items.some(item => item.stream) : panel_drm);
+  const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(() => schedulePlace()) : null;
+  let placement = 0;
+  const schedulePlace = () => {
+    if (!placement) placement = requestAnimationFrame(() => { placement = 0; place(); });
+  };
 
   const human = n => !n ? '' : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   const title = () => (document.title || 'video').replace(/[\\/:*?"<>|]+/g, '_').trim().slice(0, 120);
-  const ext = m => /^(hls|dash)$/.test(m.type) ? 'mp4' : (m.url.split('?')[0].match(/\.(\w{2,4})$/) || [0, (m.type || '').split('/').pop() || 'mp4'])[1];
+
 
   function hide() {
     host.style.display = 'none';
     menu.style.display = 'none';
   }
   function place() {
-    if (!target || !target.isConnected) return hide();
+    if (!target || off || !eligible(target) || dismissed.get(target) === playerKey(target)) return hide();
     const r = target.getBoundingClientRect();
     if (r.width < 120 || r.height < 40) return hide();
     host.style.display = 'block';
@@ -161,23 +176,50 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     host.style.top = `${(fixed ? 0 : window.scrollY) + r.top + 6}px`;
     host.style.left = `${(fixed ? 0 : window.scrollX) + r.right - host.offsetWidth - 6}px`;
   }
-  async function list() {
-    const items = (await chrome.runtime.sendMessage({ kind: 'list' }).catch(() => [])) || [];
-    const src = target && target.currentSrc;
-    if (src && /^https?:/.test(src) && !items.some(m => m.url === src)) items.unshift({ url: src, type: target.tagName === 'AUDIO' ? 'audio' : 'video', size: 0 });
-    return items;
+  async function refreshMedia() {
+    const revision = ++mediaRevision;
+    const result = await chrome.runtime.sendMessage({ kind: 'media-list' }).catch(() => null);
+    if (revision === mediaRevision && Array.isArray(result?.items)) {
+      media = result;
+      scheduleScan();
+    }
   }
-  function download(m) {
-    // the size and type the page got, so the app can tell whether it gets the same file
-    chrome.runtime.sendMessage({ kind: 'download', url: m.url, filename: `${title()}.${ext(m)}`, size: m.size || 0, mime: /\//.test(m.type) ? m.type : '' });
+
+  function choices(el) {
+    const src = source(el);
+    const direct = isWeb(src);
+    const normalized = value => { const parsed = new URL(value, location.href); parsed.hash = ''; return parsed.href; };
+    // For a direct player only attribute its own response. A MediaSource/blob player can
+    // use a manifest captured in its frame. Never offer another player's direct file.
+    const items = media.items.filter(item => direct ? normalized(item.url) === normalized(src) : item.stream);
+    if (direct && !items.length) {
+      const path = new URL(src, location.href).pathname;
+      const ext = (path.match(/\.([a-z0-9]{2,5})$/i)?.[1] || '').toUpperCase();
+      const stream = ext === 'M3U8' ? 'hls' : ext === 'MPD' ? 'dash' : '';
+      if (stream || media.types.includes(ext)) items.push({ url: normalized(src), ext, stream, size: 0 });
+    }
+    return items.map(item => ({
+      ...item,
+      resolution: direct && el.videoWidth && el.videoHeight ? `${el.videoWidth}×${el.videoHeight}` : '',
+    }));
+  }
+
+  async function download(m) {
     menu.style.display = 'none';
+    const filename = m.output ? `${title()}.${m.output}` : m.stream ? '' : m.ext ? `${title()}.${m.ext.toLowerCase()}` : '';
+    const ok = await chrome.runtime.sendMessage({ kind: 'download', url: m.url, filename,
+      size: m.size || 0, mime: m.mime || '', stream: m.stream || '', output: m.output, variant: m.variant }).catch(() => false);
+    if (!ok && (m.stream || m.output)) say('Could not send this format to New Download Manager');
   }
   function show(el) {
-    if (off || dismissed.has(el)) return;
-    if (el.mediaKeys && !panel_drm) return; // protected (EME) content: "Show download panel for protected content" off
+    if (off || !eligible(el) || dismissed.get(el) === playerKey(el)) return;
+    if (target !== el) {
+      resize?.disconnect();
+      resize?.observe(el);
+      menu.style.display = 'none';
+    }
     target = el;
     label.textContent = el.tagName === 'AUDIO' ? 'Download this audio' : 'Download this video';
-    // in full screen only the full-screen element shows: the panel goes inside it
     const holder = document.fullscreenElement || document.documentElement;
     if (host.parentNode !== holder) holder.appendChild(host);
     clearTimeout(hideTimer);
@@ -189,25 +231,44 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     // the extension was updated or reloaded since this page opened: this copy can't reach it any more
     if (!chrome.runtime?.id) return say('Reload the page to use New Download Manager');
     if (e.target.classList.contains('x')) {
-      dismissed.add(target);
+      if (target) dismissed.set(target, playerKey(target));
       return hide();
     }
+    const player = target;
+    if (!player || isProtected(player)) return say('This media is protected');
+    const clicked = playerKey(player);
     // YouTube and other sites that play videos in their own player: the stream pieces the page fetches
     // aren't the video, so the app gets the page and its yt-dlp finds the video
-    const page = await chrome.runtime.sendMessage({ kind: 'video-page', url: videoPage(target) }).catch(() => false);
+    const page = await chrome.runtime.sendMessage({ kind: 'video-page', url: videoPage(player) }).catch(() => false);
     if (page) return say(page === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first');
-    const items = await list();
+    await refreshMedia();
+    if (target !== player || clicked !== playerKey(player)) return;
+    const found = choices(player);
+    const manifests = found.filter(item => item.stream || item.mime === 'video/mp2t').slice(0, 3);
+    if (manifests.length) say('Checking stream formats…');
+    const variants = await Promise.all(manifests.map(async item => {
+      const result = await chrome.runtime.sendMessage({ kind: 'formats', url: item.url, stream: item.stream, mime: item.mime }).catch(() => []);
+      return (Array.isArray(result) ? result : []).flatMap(format => {
+        const outputs = (format.outputs || []).filter(ext => media.types.includes(ext.toUpperCase()));
+        return outputs.map(output => ({ ...item, ...format, output }));
+      });
+    }));
+    if (target !== player || clicked !== playerKey(player)) return;
+    const items = [...found, ...variants.flat()];
     if (!items.length) {
-      // nothing played yet, or a player that streams in pieces: the page goes to yt-dlp, which knows
-      // most players without the video having to play
-      const any = await chrome.runtime.sendMessage({ kind: 'video-page', url: videoPage(target), any: true }).catch(() => false);
+      // A known video page can use its extractor. An unknown player with no usable source
+      // should not save a random response from the frame.
+      if (!isVideoUrl(videoPage(player))) return say('No downloadable format detected');
+      const any = await chrome.runtime.sendMessage({ kind: 'video-page', url: videoPage(player), any: true }).catch(() => false);
       return say(any === 'sent' ? 'Sent to New Download Manager' : 'Start New Download Manager first');
     }
     if (items.length === 1) return download(items[0]);
     menu.replaceChildren(...items.map(m => {
       const d = document.createElement('div');
-      d.textContent = `${(m.type || 'media').toUpperCase()}  ${human(m.size)}  ${m.url.split('?')[0].split('/').pop()}`;
-      d.title = m.url;
+      const format = m.output
+        ? `${m.output.toUpperCase()} (${m.output === 'mp4' && m.transcode ? 'convert' : 'assemble/remux'})`
+        : m.stream ? `${m.stream.toUpperCase()} stream (automatic container)` : m.ext;
+      d.textContent = [format, m.resolution, m.bandwidth ? `${Math.round(m.bandwidth / 1000)} kbps` : '', m.codecs, m.audio ? 'audio' : '', human(m.size), new URL(m.url).pathname.split('/').pop()].filter(Boolean).join('  ');
       d.onclick = ev => { ev.stopPropagation(); download(m); };
       return d;
     }));
@@ -232,7 +293,7 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     hint.className = 'hint';
     hint.textContent = "Turn it back on in the extension's options (right-click the extension's button).";
     menu.replaceChildren(
-      item('Hide for now', () => { dismissed.add(target); hide(); }),
+      item('Hide for now', () => { if (target) dismissed.set(target, playerKey(target)); hide(); }),
       item(`Don't show on ${site}`, async () => { await store.set({ panel_sites_off: [...new Set([...(await sites()), site])] }); hide(); }),
       item('Disable the download panel', async () => { await store.set({ panel_off: true }); hide(); }),
       document.createElement('hr'),
@@ -246,43 +307,89 @@ chrome.runtime.onMessage.addListener((m, _, reply) => {
     off = hidden(await store.get(['panel_off', 'panel_sites_off']).catch(() => ({})));
     if (off) {
       target = null;
+      resize?.disconnect();
       hide();
+    } else {
+      scheduleScan();
     }
   });
   host.addEventListener('mouseenter', () => clearTimeout(hideTimer));
   host.addEventListener('mouseleave', () => (hideTimer = setTimeout(hide, 1500)));
 
-  // Show over a media element when the pointer is on it, or when it starts playing.
-  // the pointer's moves (a few times a second), not only entering an element: a pointer already resting on
-  // the player when the page loads (YouTube's) never enters it
-  let lastCheck = 0;
-  const pointer = e => {
-    if (e.timeStamp - lastCheck < 120) return;
-    lastCheck = e.timeStamp;
-    const el = [...document.querySelectorAll('video,audio')].find(v => {
-      const r = v.getBoundingClientRect();
-      return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  // Observe player lifecycle and source changes. Coalesce mutations and layout work
+  // to animation frames. Scrolling only repositions the active panel.
+  let scanPending = false;
+  function scheduleScan() {
+    if (scanPending) return;
+    scanPending = true;
+    requestAnimationFrame(() => {
+      scanPending = false;
+      if (url !== location.href) {
+        url = location.href;
+        media = { ...media, items: [] };
+        refreshMedia();
+        menu.style.display = 'none';
+      }
+      if (target && eligible(target) && dismissed.get(target) !== playerKey(target)) {
+        if (sources.get(target) !== source(target)) {
+          sources.set(target, source(target));
+          menu.style.display = 'none';
+          show(target);
+        } else if (!target.paused) {
+          show(target);
+        }
+        return;
+      }
+      target = null;
+      resize?.disconnect();
+      hide();
+      const candidates = [...document.querySelectorAll('video,audio')].filter(el => eligible(el) && dismissed.get(el) !== playerKey(el));
+      const player = candidates.find(el => !el.paused) || candidates.find(el => el.readyState >= 1);
+      if (player) {
+        sources.set(player, source(player));
+        show(player);
+      }
     });
-    if (el) {
-      if (el !== target || host.style.display === 'none') show(el);
-      else clearTimeout(hideTimer);
-    } else if (target && !host.matches(':hover') && host.style.display !== 'none') {
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(hide, 1500);
-    }
+  }
+
+  const pointer = e => {
+    const el = e.composedPath().find(node => node.matches?.('video,audio'));
+    if (el && (el !== target || host.style.display === 'none')) show(el);
   };
-  document.addEventListener('mouseover', pointer, true);
-  document.addEventListener('mousemove', pointer, { capture: true, passive: true });
-  document.addEventListener('play', e => e.target.matches && e.target.matches('video,audio') && show(e.target), true);
-  window.addEventListener('scroll', place, true);
+  document.addEventListener('pointerover', pointer, true);
+  for (const event of ['play', 'playing', 'loadedmetadata', 'loadstart', 'emptied']) {
+    document.addEventListener(event, e => {
+      if (!e.target.matches?.('video,audio')) return;
+      if (event === 'play' || event === 'playing') show(e.target);
+      scheduleScan();
+    }, true);
+  }
+  document.addEventListener('encrypted', e => {
+    encrypted.add(e.target);
+    scheduleScan();
+  }, true);
+  const containsPlayer = node => node.matches?.('video,audio,source') || node.querySelector?.('video,audio,source');
+  new MutationObserver(records => {
+    if (records.some(record => record.type === 'attributes' ? containsPlayer(record.target) :
+      [...record.addedNodes, ...record.removedNodes].some(containsPlayer))) scheduleScan();
+  }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
+  window.addEventListener('scroll', schedulePlace, { capture: true, passive: true });
   document.addEventListener('fullscreenchange', () => target && show(target));
-  window.addEventListener('resize', place);
+  window.addEventListener('resize', schedulePlace);
+  window.addEventListener('popstate', scheduleScan);
+  window.addEventListener('hashchange', scheduleScan);
   chrome.runtime.onMessage.addListener(m => {
-    if (m.kind === 'media' && !target) {
-      const v = document.querySelector('video');
-      if (v) show(v);
+    if (m.kind === 'media') refreshMedia();
+    if (m.kind === 'ndm-navigation') {
+      mediaRevision++;
+      media = { ...media, items: [] };
+      menu.style.display = 'none';
+      scheduleScan();
+      refreshMedia();
     }
   });
+  refreshMedia();
+  scheduleScan();
 })();
 
 // Download panel for selected links: selecting text that holds links shows a button
