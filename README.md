@@ -153,8 +153,8 @@ NDM checks the Releases page for new versions (Help → Check for updates, and b
 2. Paste the video's own page address into **Add URL**, click the extension's **Download this video**
    panel, or right-click the page → **Download this video with New Download Manager**. This page menu
    is available on every HTTP/HTTPS site, including sites outside NDM's automatic detection list.
-   On a feed, open the individual video's page first. Audio-only pages work too. A playlist-only or
-   multi-video page adds its first entry as one NDM download.
+   On a feed, open the individual video's page first. Audio-only pages work too. The single-video
+   action takes the first item from a playlist-only page.
 3. Choose the file's folder and start. NDM uses its segmented engine for ordinary HTTP/HTTPS media,
    fetching video and audio at the same time. When a stream needs yt-dlp's own downloader, it keeps
    the extracted format's URLs, headers and cookies and downloads HLS/DASH fragments concurrently.
@@ -179,6 +179,43 @@ necessary when a site changes.
 lets yt-dlp find the complete media and then uses the appropriate parallel download path. Browser
 captures show their File Info/progress and Download complete popups while the main window stays in
 the notification area; open it yourself from the tray when you need the download list.
+
+### Download selected videos from a playlist
+
+Choose **Downloads → Download video playlist**, enter the playlist address and choose **List videos**.
+Select the videos you want and choose **Queue selected videos**. NDM lists up to the first 200 playlist
+positions and resolves each queued video separately when its download starts. Each output name includes
+its NDM job ID so videos with the same title can run concurrently.
+
+Public access is the default. For a playlist or video that requires sign-in, explicitly choose a browser
+whose default profile can open it. yt-dlp loads that profile separately for each lookup and applies its
+cookie scopes. Browser profile access depends on the browser and operating system. Some browsers must be
+closed before yt-dlp can read their profile.
+
+### Checksum verification and diagnostic reports
+
+For a completed download, open **File Properties → Verify checksum**. Paste a checksum, choose a local
+SHA-256 file, or enter the publisher’s HTTPS checksum-list address and click **Fetch checksum**.
+Publisher lists must name the downloaded file exactly. Review the matched filename and hash, then
+choose **Verify matched hash**. SHA-1 and MD5 are available for pasted values.
+
+**Help → Report a problem** opens an editable local preview. It includes version and platform details
+and, when available, an NDM crash module and line number. Review and copy the report, then paste it
+into the issue form. Raw panic messages and stack traces stay in the local logs.
+
+### HTTP connection and macOS capture options
+
+Direct HTTPS negotiates HTTP/2 by default. **Options → Connection → HTTP/1.1...** accepts exact hosts
+separated by spaces. Use it for a host where a comparison shows HTTP/1.1 works better. Proxy routing
+and authentication continue to use their existing connection paths. The local comparison fixture
+runs with `cargo test --release http_protocol_benchmark -- --ignored --nocapture`.
+
+On macOS, **Options → General → macOS HTTP capture** can enable plain HTTP capture for one selected
+network service until NDM quits. macOS may ask for administrator authorization. The browser extension
+continues to handle HTTPS. NDM saves the service’s previous web proxy values before applying the change,
+restores them on exit or at the next startup after a crash, and offers **Restore web proxy** in the
+same dialog. Existing web proxies, automatic proxy settings and SOCKS on the selected service block
+activation. Other proxy fields are preserved.
 
 ## Browser media formats and download recovery
 

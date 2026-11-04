@@ -12,6 +12,7 @@ pub struct Agent {
     pub(crate) proxy: String,
     user_agent: String,
     pub(crate) invalid_proxy: bool,
+    http1_hosts: Arc<[url::Host<String>]>,
     pub(crate) routes: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
 }
 
@@ -29,8 +30,18 @@ impl Agent {
             proxy: proxy.into(),
             user_agent: user_agent.into(),
             invalid_proxy,
+            http1_hosts: Arc::default(),
             routes: None,
         }
+    }
+
+    pub(crate) fn with_http1_hosts(mut self, hosts: &str) -> Self {
+        self.http1_hosts = hosts.split_whitespace().filter_map(|host| url::Host::parse(host).ok()).collect();
+        self
+    }
+
+    fn http1_only(&self, url: &Url) -> bool {
+        url.host().is_some_and(|host| self.http1_hosts.iter().any(|entry| entry == &host))
     }
 
     fn for_url(&self, url: &str) -> Self {
@@ -42,6 +53,7 @@ impl Agent {
             return self.clone();
         }
         let mut agent = crate::engine::agent(&proxy, &self.user_agent);
+        agent.http1_hosts = self.http1_hosts.clone();
         agent.routes = self.routes.clone();
         agent
     }
@@ -58,9 +70,15 @@ pub struct Request {
     agent: Agent,
     url: String,
     headers: Vec<(String, String)>,
+    https_only: bool,
 }
 
 impl Request {
+    pub(crate) fn https_only(mut self) -> Self {
+        self.https_only = true;
+        self
+    }
+
     pub fn set(mut self, key: &str, value: &str) -> Self {
         self.headers
             .retain(|(name, _)| !name.eq_ignore_ascii_case(key));
@@ -74,6 +92,7 @@ pub fn request(agent: &Agent, url: &str, referrer: &str, cookies: &str) -> Reque
         agent: agent.for_url(url),
         url: url.into(),
         headers: vec![],
+        https_only: false,
     };
     if let (Ok(source), Ok(mut page)) = (Url::parse(url), Url::parse(referrer)) {
         if matches!(page.scheme(), "http" | "https")
@@ -131,15 +150,17 @@ pub(crate) fn redact(text: &str) -> String {
         .collect()
 }
 
-fn tls_client() -> Option<&'static reqwest::blocking::Client> {
-    static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            client_builder().build().or_else(|_| {
-                client_builder().tls_built_in_native_certs(false).build()
-            }).ok()
-        })
-        .as_ref()
+fn tls_client(http1_only: bool) -> Option<&'static reqwest::blocking::Client> {
+    static AUTO: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+    static HTTP1: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+    let cell = if http1_only { &HTTP1 } else { &AUTO };
+    let builder = || {
+        let builder = client_builder();
+        if http1_only { builder.http1_only() } else { builder }
+    };
+    cell.get_or_init(|| {
+        builder().build().or_else(|_| builder().tls_built_in_native_certs(false).build()).ok()
+    }).as_ref()
 }
 
 fn client_builder() -> reqwest::blocking::ClientBuilder {
@@ -222,7 +243,7 @@ pub fn call(request: Request) -> Result<Response, String> {
 
 fn call_with<'a>(
     request: Request,
-    tls: impl Fn() -> Option<&'a reqwest::blocking::Client>,
+    tls: impl Fn(bool) -> Option<&'a reqwest::blocking::Client>,
 ) -> Result<Response, String> {
     if request.agent.invalid_proxy {
         return Err("Invalid proxy configuration".into());
@@ -231,12 +252,15 @@ fn call_with<'a>(
     let mut headers = request.headers;
     let mut agent = request.agent;
     for _ in 0..=10 {
+        if request.https_only && url.scheme() != "https" {
+            return Err("An HTTPS-only request was redirected to an insecure address".into());
+        }
         if !matches!(url.scheme(), "http" | "https") {
             return Err("Unsupported HTTP redirect protocol".into());
         }
         let client =
             if url.scheme() == "https" && agent.proxy.is_empty() && url.username().is_empty() {
-                tls()
+                tls(agent.http1_only(&url))
             } else {
                 None
             };
@@ -499,6 +523,28 @@ mod tests {
     }
 
     #[test]
+    fn protocol_override_matches_exact_hosts_after_routing() {
+        let mut agent = crate::engine::agent("", "").with_http1_hosts("EXAMPLE.org [::1] bücher.example");
+        agent.routes = Some(Arc::new(|_| "http://127.0.0.1:9876".into()));
+        let agent = agent.for_url("https://example.org:8443/media");
+        assert_eq!(agent.proxy, "http://127.0.0.1:9876");
+        let matches = |url: &str| agent.http1_only(&Url::parse(url).unwrap());
+        assert!(matches("https://example.org:8443/media"));
+        assert!(matches("https://[::1]/file"));
+        assert!(matches("https://xn--bcher-kva.example/file"));
+        assert!(!matches("https://cdn.example.org/file"));
+        assert!(!matches("https://example.org.invalid/file"));
+        assert!(!crate::engine::agent("", "").http1_only(&Url::parse("https://example.org/").unwrap()));
+    }
+
+    #[test]
+    fn publisher_request_refuses_a_plain_http_route() {
+        let agent = crate::engine::agent("", "");
+        let request = request(&agent, "http://127.0.0.1:1/", "", "").https_only();
+        assert_eq!(call(request).err().as_deref(), Some("An HTTPS-only request was redirected to an insecure address"));
+    }
+
+    #[test]
     fn negotiates_http2_and_multiplexes_within_server_limit() {
         use tokio_rustls::rustls::{self, pki_types::PrivatePkcs8KeyDer};
         let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -577,7 +623,7 @@ mod tests {
             .unwrap();
         let agent = crate::engine::agent("", "");
         let read = |path| {
-            let response = call_with(request(&agent, &format!("{url}{path}"), "", ""), || {
+            let response = call_with(request(&agent, &format!("{url}{path}"), "", ""), |_| {
                 Some(&client)
             })
             .unwrap();
@@ -598,3 +644,7 @@ mod tests {
         assert_eq!(accepted.load(SeqCst), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "transport_bench.rs"]
+mod benchmark;

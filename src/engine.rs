@@ -158,6 +158,9 @@ pub struct YtOpts {
     pub quality: String,
     pub subs: bool,
     pub thumb: bool,
+    pub playlist_entry: bool,
+    /// A browser's cookie jar, loaded by yt-dlp for this entry alone.
+    pub browser: String,
 }
 
 impl Info {

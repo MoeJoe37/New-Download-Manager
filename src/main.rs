@@ -14,6 +14,8 @@ mod remux;
 mod stream;
 mod transport;
 mod ytdlp;
+#[cfg(target_os = "macos")]
+mod mac_capture;
 use i18n::{tr, tr_os};
 #[cfg(unix)]
 mod posix;
@@ -319,6 +321,65 @@ fn issue_text(version: &str, lang: &str) -> (String, String) {
     (format!("[{version}] "), text)
 }
 
+const CRASH_MODULES: &[&str] = &[
+    "checksum", "core", "dlu", "engine", "grabber", "i18n", "linux", "mac", "mac_capture",
+    "main", "media", "net", "posix", "remux", "stream", "transport", "win", "ytdlp",
+];
+
+fn crash_location(file: &str, line: u32) -> String {
+    let module = file.strip_prefix("src/").or_else(|| file.strip_prefix("src\\"))
+        .and_then(|name| name.strip_suffix(".rs"));
+    match module.filter(|name| CRASH_MODULES.contains(name)) {
+        Some(name) => format!("{name}:{line}"),
+        None => "unavailable".into(),
+    }
+}
+
+fn crash_diagnostics(store: &Path) -> String {
+    use std::io::Read;
+    let mut report = String::new();
+    for (file, label) in [("crash.log", "Application crash"), ("renderer-crash.log", "Renderer crash")] {
+        let path = store.with_file_name(file);
+        if !path.is_file() { continue; }
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        let mut prefix = Vec::new();
+        if file.take(128).read_to_end(&mut prefix).is_err() { continue; }
+        let header = prefix.split(|byte| *byte == b'\n').next()
+            .and_then(|line| std::str::from_utf8(line).ok())
+            .and_then(|line| line.strip_prefix("NDM crash location "))
+            .and_then(|line| line.split_once(':'))
+            .and_then(|(module, line)| {
+                CRASH_MODULES.contains(&module).then_some(())?;
+                Some((module, line.parse::<u32>().ok()?))
+            });
+        if report.is_empty() {
+            report.push_str("\n### Local diagnostics\n");
+        }
+        if let Some((module, line)) = header {
+            report.push_str(&format!("- {label} recorded (module {module}, line {line}).\n"));
+        } else {
+            report.push_str(&format!("- {label} recorded.\n"));
+        }
+    }
+    report
+}
+
+#[test]
+fn problem_report_excludes_raw_crash_data() {
+    let dir = std::env::temp_dir().join(format!("ndm-crash-report-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("state.json");
+    assert!(crash_diagnostics(&store).is_empty());
+    assert_eq!(crash_location("src/engine.rs", 42), "engine:42");
+    assert_eq!(crash_location(r"C:\private\engine.rs", 42), "unavailable");
+    std::fs::write(dir.join("crash.log"),
+        "NDM crash location engine:42\nhttps://user:secret@example.com/private?token=123\nCookie: session=private\n/home/user/file").unwrap();
+    std::fs::write(dir.join("renderer-crash.log"), "NDM crash location private:15\nAuthorization: Bearer secret").unwrap();
+    assert_eq!(crash_diagnostics(&store),
+        "\n### Local diagnostics\n- Application crash recorded (module engine, line 42).\n- Renderer crash recorded.\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon.
 fn tray_start() -> bool {
     std::env::args().any(|a| a.eq_ignore_ascii_case("/tray"))
@@ -328,7 +389,8 @@ fn main() -> eframe::Result {
     // no console: a panic would vanish without a trace, so it goes to crash.log next to state.json
     std::panic::set_hook(Box::new(|p| {
         let bt = std::backtrace::Backtrace::force_capture();
-        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("{p}\n{bt}"));
+        let location = p.location().map_or_else(|| "unavailable".into(), |loc| crash_location(loc.file(), loc.line()));
+        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("NDM crash location {location}\n{p}\n{bt}"));
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     if win::is_host_launch(&args) {
@@ -687,6 +749,31 @@ const GUIDES: [&str; 2] = [
 
 fn integration(b: &core::Browser) -> &'static str {
     if extension_page(b).is_some() { "Extension" } else { "Not supported" }
+}
+
+/// RichText keeps the filename's already-shaped text out of the translation and bidi pass in D::label.
+fn file_info_name(name: &str) -> RichText {
+    RichText::new(i18n::shown(name)).strong()
+}
+
+#[test]
+fn file_info_renders_both_logical_hebrew_names() {
+    let ctx = egui::Context::default();
+    let output = ctx.run(egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 200.0))),
+        ..Default::default()
+    }, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut d = dlu::D::new(ui);
+            d.label(7.0, 7.0, 200.0, 12.0, file_info_name("שלום"));
+            d.label(7.0, 24.0, 200.0, 12.0, file_info_name("םולש"));
+        });
+    });
+    let rendered: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) => Some(text.galley.text()),
+        _ => None,
+    }).collect();
+    assert_eq!(rendered, ["םולש", "שלום"]);
 }
 
 /// The rows File Info adds: the name as it reads (`i18n::shown`) when the edit box can't show it so
@@ -1658,6 +1745,34 @@ impl Row {
 
 type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 
+#[derive(Default)]
+struct PlaylistPicker {
+    url: String,
+    browser: String,
+    pending: Option<PlaylistLookup>,
+    list: Option<ytdlp::Playlist>,
+    selected: Vec<bool>,
+    error: String,
+}
+
+struct PlaylistLookup {
+    job: Arc<engine::Job>,
+    results: Receiver<Result<ytdlp::Playlist, String>>,
+}
+
+impl Drop for PlaylistLookup {
+    fn drop(&mut self) {
+        self.job.stop();
+    }
+}
+
+#[derive(Default)]
+struct ChecksumSource {
+    url: String,
+    pending: Option<Receiver<Result<String, String>>>,
+    preview: Option<Result<String, String>>,
+}
+
 // a handful of dialogs is open at a time: their size doesn't matter, boxing each would only add noise
 #[allow(clippy::large_enum_variant)]
 enum Dialog {
@@ -1708,7 +1823,17 @@ enum Dialog {
     /// File Properties (template 135) for a finished download.
     FileProps { id: u64, url: String, desc: String, referer: String, login: String, pass: String },
     /// File Properties -> Checksum...: the file's SHA-256, SHA-1 and MD5, and a checksum to compare them with.
-    Checksum { name: String, run: Arc<checksum::Run>, expect: String },
+    Checksum { name: String, run: Arc<checksum::Run>, expect: String, source: ChecksumSource },
+    Playlist(Box<PlaylistPicker>),
+    ProblemReport { text: String },
+    Http1Hosts { hosts: String },
+    #[cfg(target_os = "macos")]
+    MacCapture {
+        services: Vec<(String, String)>,
+        selected: Option<usize>,
+        pending: Option<Receiver<Result<(), String>>>,
+        message: String,
+    },
     /// Downloads -> Set yt-dlp: downloading it (bytes so far, of, the version installed or the error).
     YtDlp { got: Arc<std::sync::atomic::AtomicU64>, total: Arc<std::sync::atomic::AtomicU64>, done: Arc<Mutex<Option<Result<String, String>>>> },
     /// NDM categories (template 204). `orig` = name of the edited category, None when adding.
@@ -2152,8 +2277,11 @@ impl Res {
 impl App {
     fn new(ctx: &egui::Context) -> App {
         let core = Core::load();
-        let on = core.settings().adv_integration;
-        core.apply_integration(on);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let on = core.settings().adv_integration;
+            core.apply_integration(on);
+        }
         let dark =core.settings().dark_support && win::system_dark();
         *LIST_FONT.lock().unwrap() = core.settings().list_font.clone();
         i18n::load(&core.settings().language.clone());
@@ -2224,6 +2352,10 @@ impl App {
             theme_check: 0,
             langs: i18n::list(),
         };
+        #[cfg(target_os = "macos")]
+        if let Err(error) = mac_capture::restore() {
+            app.open(Dialog::Info { title: "Restore macOS web proxy".into(), text: error });
+        }
         if app.core.settings().tips_startup && !tray_start() {
             let text = app.next_tip();
             app.open(Dialog::Tip { text });
@@ -3137,6 +3269,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 });
                 ui.separator();
+                if ui.button(tr("Download video playlist...")).clicked() {
+                    self.open(Dialog::Playlist(Box::new(PlaylistPicker {
+                        url: links(&clipboard()).into_iter().next().unwrap_or_default(),
+                        ..Default::default()
+                    })));
+                    ui.close_menu();
+                }
                 if ui.button(tr("Set yt-dlp")).on_hover_text(tr("Downloads yt-dlp and ffmpeg for YouTube and other video sites, adds them to PATH and keeps yt-dlp up to date")).clicked() {
                     self.set_ytdlp(ctx);
                     ui.close_menu();
@@ -3288,7 +3427,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 }
                 if ui.button(tr("Report a problem...")).clicked() {
-                    App::report_problem();
+                    let (_, mut text) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current());
+                    text.push_str(&crash_diagnostics(&core::store_path()));
+                    self.open(Dialog::ProblemReport { text });
                     ui.close_menu();
                 }
                 ui.separator();
@@ -4435,7 +4576,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::CatDelete { .. } => ("Deleting a category from New Download Manager categories list".into(), tpl(260.0, 60.0)),
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
-            Dialog::Checksum { .. } => ("Checksum".into(), tpl(300.0, 134.0)),
+            Dialog::Checksum { .. } => ("Verify checksum".into(), tpl(300.0, 220.0)),
+            Dialog::Playlist(_) => ("Download video playlist".into(), None),
+            Dialog::ProblemReport { .. } => ("Report a problem".into(), None),
+            Dialog::Http1Hosts { .. } => ("HTTP/1.1 hosts".into(), tpl(270.0, 75.0)),
+            #[cfg(target_os = "macos")]
+            Dialog::MacCapture { .. } => ("macOS HTTP capture".into(), None),
             Dialog::YtDlp { .. } => ("Set yt-dlp".into(), tpl(186.0, 44.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
             Dialog::Scale { .. } => ("Custom scale".into(), tpl(232.0, 100.0)),
@@ -4453,7 +4599,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::GrabSettings { .. } => ("Settings of NDM Grabber".into(), tpl(292.0, 139.0)),
             Dialog::GrabManual { .. } => ("Manual login page".into(), tpl(260.0, 70.0)),
         };
-        let size = fixed.unwrap_or(if matches!(d, Dialog::Help { .. }) { Vec2::new(980.0, 660.0) } else { Vec2::new(380.0, 170.0) });
+        let size = fixed.unwrap_or(match d {
+            Dialog::Help { .. } => Vec2::new(980.0, 660.0),
+            Dialog::Playlist(_) | Dialog::ProblemReport { .. } => Vec2::new(550.0, 430.0),
+            #[cfg(target_os = "macos")]
+            Dialog::MacCapture { .. } => Vec2::new(500.0, 250.0),
+            _ => Vec2::new(380.0, 170.0),
+        });
         let id = ViewportId::from_hash_of(("dlg", key));
         // centred on the main window when it is first shown; kept there so the user can move it
         if !self.dlg_pos.contains_key(&key) {
@@ -4597,7 +4749,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if pv > 0.0 {
                     // the name as it reads; the edit box below shows it in the order it is typed
                     let name = Path::new(path.as_str()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    d.label(66.0, 39.0, 240.0, 10.0, RichText::new(i18n::shown(&name)).strong());
+                    d.label(66.0, 39.0, 240.0, 10.0, file_info_name(&name));
                 }
                 d.label_r(5.0, 41.0 + pv, 54.0, 10.0, "Save As");
                 d.edit(64.0, 39.0 + pv, 223.0, 14.0, path, true);
@@ -5003,7 +5155,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.page_header(res.0, 48.0, "Browser/System Integration");
                         d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup");
                         d2.check(13.0, 39.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
+                        #[cfg(not(target_os = "macos"))]
                         d2.check(13.0, 53.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
+                        #[cfg(target_os = "macos")]
+                        if d2.button(13.0, 52.0, 128.0, 14.0, "macOS HTTP capture...", true) {
+                            let (services, message) = match mac_capture::services() {
+                                Ok(services) => (services, String::new()),
+                                Err(error) => (vec![], error),
+                            };
+                            open = Some(Dialog::MacCapture { services, selected: None, pending: None, message });
+                        }
                         d2.group(4.0, 73.0, 261.0, 144.0, "Capture downloads from the following browsers:");
                         let list = d2.listview(13.0, 84.0, 241.0, 84.0, &[("Browser", 120.0), ("Type of integration", 119.0)]);
                         let sel_id = egui::Id::new("browser_sel");
@@ -5207,6 +5368,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         if d2.button(205.0, 113.0, 50.0, 14.0, "Edit", sel.is_some()) {
                             edit = sel;
+                        }
+                        if d2.button(205.0, 132.0, 50.0, 14.0, "HTTP/1.1...", true) {
+                            open = Some(Dialog::Http1Hosts { hosts: s.http1_hosts.clone() });
                         }
                         if let Some(k) = edit {
                             let (server, n) = s.server_conns[k].clone();
@@ -5444,6 +5608,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let dark_changed = self.core.settings().dark_support != s.dark_support;
                     *self.core.settings() = (**s).clone();
                     self.core.apply_settings();
+                    #[cfg(not(target_os = "macos"))]
                     self.core.apply_integration(s.adv_integration);
                     self.core.save();
                     if autostart_changed {
@@ -5723,11 +5888,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.label(7.0, 48.0, 43.0, 9.0, "Status:");
                 d.label(58.0, 48.0, 253.0, 9.0, "Complete");
                 d.label(7.0, 60.0, 43.0, 9.0, "Size:");
-                d.label(58.0, 60.0, 196.0, 9.0, i.size.map(|s| i18n::line(&format!("{} ({s} {})", human_os(s), tr_os("Bytes")))).unwrap_or_default());
+                d.label(58.0, 60.0, 172.0, 9.0, i.size.map(|s| i18n::line(&format!("{} ({s} {})", human_os(s), tr_os("Bytes")))).unwrap_or_default());
                 // the file's checksums, to compare with the one the site publishes
                 let file = i.path();
-                if d.button(261.0, 57.0, 50.0, 14.0, "Checksum...", file.is_file()) {
-                    self.open(Dialog::Checksum { name: i.name.clone(), run: checksum::start(file), expect: String::new() });
+                if d.button(234.0, 57.0, 77.0, 14.0, "Verify checksum...", file.is_file()) {
+                    self.open(Dialog::Checksum { name: i.name.clone(), run: checksum::start(file), expect: String::new(), source: ChecksumSource::default() });
                 }
                 d.label(7.0, 77.0, 45.0, 9.0, "Save To:");
                 d.readonly(58.0, 74.0, 197.0, 14.0, &i.path().display().to_string());
@@ -5759,7 +5924,195 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 !ok
             }
-            Dialog::Checksum { name, run, expect } => {
+            Dialog::Playlist(pick) => {
+                if let Some(lookup) = &pick.pending {
+                    match lookup.results.try_recv() {
+                        Ok(Ok(list)) => {
+                            pick.selected = vec![false; list.entries.len()];
+                            pick.list = Some(list);
+                            pick.pending = None;
+                        }
+                        Ok(Err(error)) => {
+                            pick.error = error;
+                            pick.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            pick.error = tr_os("Playlist lookup stopped unexpectedly.");
+                            pick.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                    }
+                }
+                ui.label(tr("Playlist address"));
+                let busy = pick.pending.is_some();
+                let edited = ui.add_enabled(!busy, egui::TextEdit::singleline(&mut pick.url).desired_width(f32::INFINITY)).changed();
+                let old_browser = pick.browser.clone();
+                let (mut load, mut stop) = (false, false);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!busy, |ui| {
+                        let label = ytdlp::PLAYLIST_BROWSERS.iter().find(|(_, b)| *b == pick.browser)
+                            .map_or("Public access", |(label, _)| *label);
+                        egui::ComboBox::from_id_salt("playlist-browser").selected_text(tr(label)).show_ui(ui, |ui| {
+                            for &(label, browser) in ytdlp::PLAYLIST_BROWSERS {
+                                ui.selectable_value(&mut pick.browser, browser.to_string(), tr(label));
+                            }
+                        });
+                    });
+                    load = ui.add_enabled(!busy && !pick.url.trim().is_empty(), egui::Button::new(tr("List videos"))).clicked();
+                    if busy {
+                        ui.spinner();
+                        stop = ui.button(tr("Stop")).clicked();
+                    }
+                });
+                ui.label(tr("Selecting a browser lets yt-dlp use its default profile for this playlist and each queued video."));
+                if edited || old_browser != pick.browser {
+                    pick.list = None;
+                    pick.error.clear();
+                }
+                if stop {
+                    pick.pending = None;
+                }
+                if load {
+                    pick.list = None;
+                    pick.error.clear();
+                    if let Some(url) = ytdlp::playlist_url(&pick.url) {
+                        let core = self.core.clone();
+                        let browser = pick.browser.clone();
+                        let (tx, rx) = channel();
+                        let job = engine::Job::new(Info::default());
+                        let worker = job.clone();
+                        std::thread::spawn(move || {
+                            let result = ytdlp::list_playlist(&worker, &core.agent(&url), &url, &browser);
+                            let _ = tx.send(result);
+                        });
+                        pick.pending = Some(PlaylistLookup { job, results: rx });
+                    } else {
+                        pick.error = tr_os("Enter an HTTP or HTTPS playlist address without embedded credentials.");
+                    }
+                }
+                if !pick.error.is_empty() {
+                    ui.label(tr(&pick.error));
+                }
+                if let Some(list) = &pick.list {
+                    if list.limited {
+                        ui.label(i18n::trf("Showing entries from the first %d playlist positions.", &[&ytdlp::PLAYLIST_LIMIT]));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("Select all")).clicked() { pick.selected.fill(true); }
+                        if ui.button(tr("Clear selection")).clicked() { pick.selected.fill(false); }
+                    });
+                    egui::ScrollArea::vertical().max_height((ui.available_height() - 42.0).max(70.0)).show(ui, |ui| {
+                        for (entry, selected) in list.entries.iter().zip(&mut pick.selected) {
+                            ui.checkbox(selected, i18n::shown(&entry.title));
+                        }
+                    });
+                }
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(pick.list.is_some() && pick.selected.contains(&true),
+                        egui::Button::new(tr("Queue selected videos"))).clicked()
+                    {
+                        let mut ids = Vec::new();
+                        if let Some(list) = &pick.list {
+                            for (entry, &selected) in list.entries.iter().zip(&pick.selected) {
+                                if !selected { continue; }
+                                let mut info = self.core.new_info(&entry.url);
+                                info.url.clone_from(&entry.url);
+                                info.ytdlp = true;
+                                info.yt.playlist_entry = true;
+                                info.yt.browser.clone_from(&pick.browser);
+                                info.queued = true;
+                                ids.push(info.id);
+                                self.core.add(info);
+                            }
+                        }
+                        self.core.save();
+                        self.pick_queue(ids, true);
+                        close = true;
+                    }
+                    close |= ui.button(tr("Close")).clicked();
+                });
+                !close
+            }
+            #[cfg(target_os = "macos")]
+            Dialog::MacCapture { services, selected, pending, message } => {
+                if let Some(rx) = pending {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            *message = result.err().unwrap_or_else(|| {
+                                tr_os(if mac_capture::has_journal() { "HTTP capture is enabled for this session." } else { "Web proxy settings restored." })
+                            });
+                            *pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            *message = tr_os("The network preferences operation stopped unexpectedly.");
+                            *pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                    }
+                }
+                ui.label(tr("Capture plain HTTP on one network service until NDM quits. The browser extension still handles HTTPS."));
+                ui.label(tr("macOS may require an administrator to enable or restore this setting."));
+                let recovery = mac_capture::has_journal();
+                let busy = pending.is_some();
+                let label = selected.and_then(|index| services.get(index)).map(|(_, name)| i18n::shown(name))
+                    .unwrap_or_else(|| tr("Choose a network service"));
+                ui.add_enabled_ui(!busy && !recovery, |ui| {
+                    egui::ComboBox::from_id_salt("mac-capture-service").selected_text(label).show_ui(ui, |ui| {
+                        for (index, (_, name)) in services.iter().enumerate() {
+                            ui.selectable_value(selected, Some(index), i18n::shown(name));
+                        }
+                    });
+                });
+                let enable = ui.add_enabled(!busy && !recovery && selected.is_some(),
+                    egui::Button::new(tr("Enable for this session"))).clicked();
+                let restore = ui.add_enabled(!busy && recovery, egui::Button::new(tr("Restore web proxy"))).clicked();
+                if enable || restore {
+                    let id = selected.and_then(|index| services.get(index)).map(|(id, _)| id.clone());
+                    let core = self.core.clone();
+                    let (tx, rx) = channel();
+                    std::thread::spawn(move || {
+                        let result = if enable {
+                            id.ok_or_else(|| "Choose a network service.".to_string())
+                                .and_then(|id| mac_capture::enable(&id, &core.proxy_ready))
+                        } else {
+                            mac_capture::restore()
+                        };
+                        let _ = tx.send(result);
+                    });
+                    message.clear();
+                    *pending = Some(rx);
+                }
+                if busy { ui.spinner(); }
+                if !message.is_empty() { ui.label(tr(message)); }
+                !ui.button(tr("Close")).clicked()
+            }
+            Dialog::Http1Hosts { hosts } => {
+                let mut d = dlu::D::new(ui);
+                d.text(7.0, 7.0, 256.0, 23.0, "Use HTTP/1.1 for direct HTTPS downloads from these exact hosts. Separate hosts with spaces.");
+                d.edit(7.0, 32.0, 256.0, 14.0, hosts, true);
+                let valid = hosts.split_whitespace().all(|host| url::Host::parse(host).is_ok());
+                if d.button(155.0, 53.0, 50.0, 14.0, "OK", valid) {
+                    let hosts = hosts.split_whitespace().collect::<Vec<_>>().join(" ");
+                    self.opt_patch.push(Box::new(move |settings| settings.http1_hosts.clone_from(&hosts)));
+                    return false;
+                }
+                !d.button(213.0, 53.0, 50.0, 14.0, "Cancel", true)
+            }
+            Dialog::ProblemReport { text } => {
+                ui.label(tr("Review and edit the report before copying it. Paste it into the issue form when you are ready."));
+                egui::ScrollArea::vertical().max_height((ui.available_height() - 44.0).max(80.0)).show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(text).desired_rows(13).desired_width(f32::INFINITY));
+                });
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Copy report")).clicked() { ui.ctx().copy_text(text.clone()); }
+                    if ui.button(tr("Open issue form")).clicked() { App::report_problem(); }
+                    close = ui.button(tr("Close")).clicked();
+                });
+                !close
+            }
+            Dialog::Checksum { name, run, expect, source } => {
                 let mut d = dlu::D::new(ui);
                 d.label(7.0, 7.0, 286.0, 9.0, name.as_str());
                 let done = run.result.lock().unwrap().as_ref().map(|r| r.as_ref().map(|s| (s.sha256.clone(), s.sha1.clone(), s.md5.clone())).map_err(Clone::clone));
@@ -5792,7 +6145,57 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if done.is_none() {
                     d.ui.ctx().request_repaint_after(Duration::from_millis(150));
                 }
-                !d.button(243.0, 116.0, 50.0, 14.0, "Close", true)
+                if let Some(rx) = &source.pending {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            source.preview = Some(result);
+                            source.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            source.preview = Some(Err("Checksum lookup stopped unexpectedly.".into()));
+                            source.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                    }
+                }
+                d.label(7.0, 115.0, 286.0, 9.0, "Publisher checksum list (HTTPS)");
+                if d.edit(7.0, 127.0, 286.0, 14.0, &mut source.url, source.pending.is_none()).changed() {
+                    source.preview = None;
+                }
+                let idle = source.pending.is_none();
+                if d.button(7.0, 147.0, 86.0, 14.0, "Choose checksum file...", idle) {
+                    if let Some(path) = rfd::FileDialog::new().set_title(tr_os("Choose checksum file...")).pick_file() {
+                        source.preview = Some(checksum::from_file(&path, name));
+                    }
+                }
+                if d.button(99.0, 147.0, 69.0, 14.0, "Fetch checksum", idle && !source.url.trim().is_empty()) {
+                    if let Some(url) = checksum::publisher_url(&source.url) {
+                        let core = self.core.clone();
+                        let name = name.clone();
+                        let (tx, rx) = channel();
+                        std::thread::spawn(move || {
+                            let result = checksum::from_publisher(&core.agent(url.as_str()), url.as_str(), &name);
+                            let _ = tx.send(result);
+                        });
+                        source.preview = None;
+                        source.pending = Some(rx);
+                    } else {
+                        source.preview = Some(Err("Enter the publisher's HTTPS checksum-list address.".into()));
+                    }
+                }
+                match &source.preview {
+                    Some(Ok(hash)) => {
+                        d.label(7.0, 168.0, 286.0, 9.0, RichText::new(i18n::trf("Matched SHA-256 for %s", &[name])));
+                        d.readonly(7.0, 180.0, 286.0, 14.0, hash);
+                        if d.button(7.0, 200.0, 87.0, 14.0, "Verify matched hash", sums.is_some()) {
+                            expect.clone_from(hash);
+                        }
+                    }
+                    Some(Err(error)) => d.text(7.0, 167.0, 286.0, 27.0, error),
+                    None if !idle => d.text(7.0, 167.0, 286.0, 19.0, "Looking up checksum..."),
+                    None => {}
+                }
+                !d.button(243.0, 200.0, 50.0, 14.0, "Close", true)
             }
             Dialog::Category { orig, cat, folder, error } => {
                 let mut d = dlu::D::new(ui);

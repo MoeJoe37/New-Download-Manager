@@ -188,7 +188,12 @@ pub fn system_dark() -> bool {
 /// The system's proxy (System Settings -> Network -> Proxies, as `scutil --proxy` shows it) in Windows'
 /// Internet Settings shape: (on, "http=host:port;https=host:port", bypass list).
 pub fn system_proxy() -> (bool, String, String) {
-    scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default())
+    let (on, mut server, bypass) = scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default());
+    if on && crate::mac_capture::has_journal() {
+        let local = format!("http=127.0.0.1:{}", crate::core::PROXY_PORT);
+        server = server.split(';').filter(|entry| *entry != local).collect::<Vec<_>>().join(";");
+    }
+    (!server.is_empty(), server, bypass)
 }
 
 fn scutil_proxy(text: &str) -> (bool, String, String) {
@@ -224,10 +229,6 @@ fn scutil_proxy_output() {
     assert_eq!(scutil_proxy(t), (true, "http=10.0.0.1:3128".into(), "*.local;169.254/16".into()));
     assert!(!scutil_proxy("<dictionary> {\n  HTTPEnable : 0\n}\n").0);
 }
-
-/// Changing the system's proxy needs an administrator on macOS: "Use advanced browser integration" leaves it
-/// alone (the browser extension takes the downloads).
-pub fn set_system_proxy(_on: bool, _server: &str, _bypass: &str) {}
 
 // ---------- Dial Up / VPN: the system's VPN services through scutil --nc ----------
 

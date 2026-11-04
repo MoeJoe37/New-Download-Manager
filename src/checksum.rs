@@ -60,9 +60,94 @@ pub fn compare(sums: &Sums, expected: &str) -> Option<(&'static str, bool)> {
     })
 }
 
+const MAX_MANIFEST: u64 = 1024 * 1024;
+
+fn read_manifest(reader: impl Read) -> Result<String, String> {
+    let mut text = String::new();
+    reader.take(MAX_MANIFEST + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_MANIFEST {
+        return Err("Checksum lists must be at most 1 MiB.".into());
+    }
+    Ok(text)
+}
+
+pub fn from_file(path: &std::path::Path, name: &str) -> Result<String, String> {
+    if !path.is_file() { return Err("Choose a regular checksum file.".into()); }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let text = read_manifest(file)?;
+    if is_sha256(text.trim()) {
+        return Ok(text.trim().to_ascii_lowercase());
+    }
+    matching_sha256(&text, name)
+}
+
+pub fn from_publisher(agent: &crate::engine::Agent, url: &str, name: &str) -> Result<String, String> {
+    let url = publisher_url(url).ok_or("Enter the publisher's HTTPS checksum-list address.")?;
+    let req = crate::transport::request(agent, url.as_str(), "", "").https_only();
+    let response = crate::transport::call(req)?;
+    matching_sha256(&read_manifest(response.into_reader())?, name)
+}
+
+pub fn publisher_url(text: &str) -> Option<url::Url> {
+    let url = url::Url::parse(text.trim()).ok()?;
+    (url.scheme() == "https" && url.host_str().is_some()
+        && url.username().is_empty() && url.password().is_none()).then_some(url)
+}
+
+fn is_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// GNU sha256sum and BSD SHA256 listings. A publisher result must explicitly name the file.
+fn matching_sha256(text: &str, name: &str) -> Result<String, String> {
+    let mut found = None;
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        let (hash, filename) = if let Some((file, hash)) = line.strip_prefix("SHA256 (").and_then(|s| s.rsplit_once(") = ")) {
+            (hash.trim(), file)
+        } else if let Some((hash, file)) = line.split_once(char::is_whitespace) {
+            let file = file.trim_start();
+            (hash, file.strip_prefix('*').unwrap_or(file))
+        } else {
+            continue;
+        };
+        let filename = filename.strip_prefix("./").unwrap_or(filename);
+        if !is_sha256(hash) || filename != name {
+            continue;
+        }
+        let hash = hash.to_ascii_lowercase();
+        if found.as_ref().is_some_and(|previous| previous != &hash) {
+            return Err("The checksum list contains conflicting hashes for this filename.".into());
+        }
+        found = Some(hash);
+    }
+    found.ok_or_else(|| "The checksum list has no SHA-256 entry for this exact filename.".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checksum_lists_require_an_unambiguous_exact_filename() {
+        let one = "a".repeat(64);
+        let two = "b".repeat(64);
+        let list = format!("{two}  app-old.zip\n{one} *./NDM إصدار.zip\nSHA256 (NDM إصدار.zip) = {}\n", one.to_uppercase());
+        assert_eq!(matching_sha256(&list, "NDM إصدار.zip"), Ok(one.clone()));
+        assert!(matching_sha256(&list, "ndm إصدار.zip").is_err());
+        assert!(matching_sha256(&one, "NDM إصدار.zip").is_err());
+        assert!(matching_sha256(&format!("{list}{two}  NDM إصدار.zip"), "NDM إصدار.zip").is_err());
+        assert!(publisher_url("http://example.org/checksums").is_none());
+        assert!(publisher_url("https://user:pass@example.org/checksums").is_none());
+        assert!(publisher_url("https://example.org/checksums").is_some());
+        assert!(read_manifest(std::io::repeat(b'a').take(MAX_MANIFEST + 1)).is_err());
+
+        let file = std::env::temp_dir().join(format!("ndm-checksum-list-{}", std::process::id()));
+        std::fs::write(&file, list).unwrap();
+        assert_eq!(from_file(&file, "NDM إصدار.zip"), Ok(one.clone()));
+        std::fs::write(&file, &one).unwrap();
+        assert_eq!(from_file(&file, "explicit.zip"), Ok(one));
+        std::fs::remove_file(file).unwrap();
+    }
 
     #[test]
     fn sums_and_compare() {

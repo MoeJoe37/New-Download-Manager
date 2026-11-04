@@ -181,6 +181,8 @@ pub const MAIN_QUEUE: u32 = 0;
 pub struct Settings {
     pub base_dir: String,
     pub conns: usize,
+    /// Exact hosts that opt out of HTTP/2 for direct HTTPS downloads.
+    pub http1_hosts: String,
     pub limit_on: bool,
     pub limit_kb: u64,
     pub show_progress: bool,
@@ -515,6 +517,7 @@ impl Default for Settings {
         Settings {
             base_dir: Path::new(&home).join("Downloads").display().to_string(),
             conns: 8,
+            http1_hosts: String::new(),
             limit_on: false,
             limit_kb: 500,
             show_progress: true,
@@ -833,6 +836,8 @@ pub struct Core {
     pub limiter: Arc<Limiter>,
     /// One HTTP agent per proxy in use ("" = direct); rebuilt when the settings change.
     agents: Mutex<HashMap<String, engine::Agent>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) proxy_ready: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
     /// Per queue: the days its start / stop time last fired.
     fired: Mutex<HashMap<u32, (Option<NaiveDate>, Option<NaiveDate>)>>,
@@ -893,6 +898,11 @@ impl Core {
 
     fn from_saved(mut saved: Saved, store: PathBuf) -> Arc<Core> {
         let s = &mut saved.settings;
+        #[cfg(target_os = "macos")]
+        {
+            // The old macOS integration recorded this snapshot without changing system preferences.
+            s.saved_proxy = None;
+        }
         s.limit_on |= s.limit_startup;
         if !s.queues.iter().any(|q| q.id == MAIN_QUEUE) {
             s.queues.insert(0, Queue::default());
@@ -925,6 +935,8 @@ impl Core {
         let core = Arc::new(Core {
             jobs: Mutex::new(jobs),
             agents: Mutex::default(),
+            #[cfg(target_os = "macos")]
+            proxy_ready: Default::default(),
             settings: Mutex::new(saved.settings),
             running: Mutex::new(on_startup),
             queue_finished: Mutex::default(),
@@ -981,12 +993,12 @@ impl Core {
 
     /// The agent for downloading `url`, with the proxy the settings choose for it.
     pub fn agent(&self, url: &str) -> engine::Agent {
-        let (proxy, ua, use_routes) = {
+        let (proxy, ua, use_routes, http1_hosts) = {
             let s = self.settings();
-            (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0)
+            (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0, s.http1_hosts.clone())
         };
         let proxy = crate::net::agent_proxy(&proxy);
-        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone();
+        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua).with_http1_hosts(&http1_hosts)).clone();
         if use_routes {
             agent.routes = engine::FTP.lock().unwrap().route.clone();
         }
@@ -1778,6 +1790,7 @@ impl Core {
     /// plain http is set to NDM's (`proxy_conn`) and the user's own proxy kept for the other protocols;
     /// off puts the old setting back. Run at start (on), on Options OK and at exit (off, so http works
     /// while NDM isn't running).
+    #[cfg(not(target_os = "macos"))]
     pub fn apply_integration(&self, on: bool) {
         let mut s = self.settings();
         match (on, s.saved_proxy.clone()) {
@@ -1803,7 +1816,15 @@ impl Core {
 
     /// Puts the user's proxy back (every exit path comes here), stops the downloads and saves.
     pub fn shutdown(&self) {
+        #[cfg(not(target_os = "macos"))]
         self.apply_integration(false);
+        #[cfg(target_os = "macos")]
+        {
+            self.proxy_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Err(error) = crate::mac_capture::restore() {
+                eprintln!("NDM: {error}");
+            }
+        }
         let jobs = self.jobs();
         jobs.iter().for_each(|j| j.stop());
         let until = Instant::now() + Duration::from_secs(5);
@@ -1875,6 +1896,8 @@ impl Core {
         let inspections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let notify = Arc::new(notify);
         if let Ok(l) = TcpListener::bind(("127.0.0.1", PROXY_PORT)) {
+            #[cfg(target_os = "macos")]
+            self.proxy_ready.store(true, std::sync::atomic::Ordering::SeqCst);
             let (core, tx, notify) = (self.clone(), tx.clone(), notify.clone());
             thread::spawn(move || {
                 for c in l.incoming().flatten() {
@@ -2134,6 +2157,7 @@ mod tests {
     /// Changes Windows' real proxy setting for a moment: run by hand (`cargo test -- --ignored`).
     #[test]
     #[ignore]
+    #[cfg(not(target_os = "macos"))]
     fn integration_restores_system_proxy() {
         let core = Core::load();
         core.settings().saved_proxy = None;
