@@ -103,9 +103,9 @@ fn image_rgba(img: &NSImage, px: usize) -> Option<Rgba> {
     let bytes = unsafe { std::slice::from_raw_parts(data, row * px) };
     let mut out = Vec::with_capacity(px * px * 4);
     for y in 0..px {
-        for p in bytes[y * row..y * row + px * 4].chunks_exact(4) {
+        for p in bytes[y * row..y * row + px * 4].as_chunks::<4>().0 {
             let a = p[3] as u32;
-            let un = |c: u8| if a == 0 { 0 } else { ((c as u32 * 255 + a / 2) / a).min(255) as u8 };
+            let un = |c: u8| (c as u32 * 255 + a / 2).checked_div(a).unwrap_or(0).min(255) as u8;
             out.extend([un(p[0]), un(p[1]), un(p[2]), p[3]]);
         }
     }
@@ -122,7 +122,7 @@ fn image_of((w, h, px): &Rgba, size: f64) -> Option<Retained<NSImage>> {
     let row = rep.bytesPerRow() as usize;
     for y in 0..*h {
         let dst = unsafe { std::slice::from_raw_parts_mut(data.add(y * row), w * 4) };
-        for (d, s) in dst.chunks_exact_mut(4).zip(px[y * w * 4..(y + 1) * w * 4].chunks_exact(4)) {
+        for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(px[y * w * 4..(y + 1) * w * 4].as_chunks::<4>().0) {
             let a = s[3] as u32;
             let pre = |c: u8| ((c as u32 * a + 127) / 255) as u8;
             d.copy_from_slice(&[pre(s[0]), pre(s[1]), pre(s[2]), s[3]]);
@@ -729,13 +729,13 @@ fn file_type_icons() {
     for (ext, folder) in [("pdf", false), ("zip", false), ("", false), ("/", true)] {
         let (w, h, px) = shell_icon(ext, folder).unwrap_or_else(|| panic!("no icon for {ext:?}"));
         assert_eq!((w, h, px.len()), (32, 32, 32 * 32 * 4));
-        assert!(px.chunks_exact(4).filter(|p| p[3] > 200).count() > 100, "{ext:?}: mostly see-through");
+        assert!(px.as_chunks::<4>().0.iter().filter(|p| p[3] > 200).count() > 100, "{ext:?}: mostly see-through");
     }
     assert!(exe_icon(Path::new("/System/Applications/TextEdit.app")).or_else(|| exe_icon(Path::new("/Applications/Safari.app"))).is_some());
     // NDM's own picture survives the trip into an NSImage (the drop target) and back
     let red = (2, 2, [255u8, 0, 0, 255].repeat(4));
     let (_, _, px) = image_rgba(&image_of(&red, 2.0).unwrap(), 4).unwrap();
-    assert!(px.chunks_exact(4).all(|p| p[0] > 240 && p[1] < 16 && p[3] == 255), "{px:?}");
+    assert!(px.as_chunks::<4>().0.iter().all(|p| p[0] > 240 && p[1] < 16 && p[3] == 255), "{px:?}");
 }
 
 #[test]

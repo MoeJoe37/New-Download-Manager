@@ -1467,8 +1467,9 @@ fn mux_mp4<'a>(v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a), a
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::test_support::{frag, init, mk};
 
     #[test]
     fn fragment_write_failure_rolls_back_progress() {
@@ -1691,22 +1692,6 @@ pub(crate) mod tests {
         assert_eq!((t[0].ext.as_str(), t[1].ext.as_str()), ("mp4", "m4a"));
         assert_eq!(with_ext("My video.m3u8", "ts"), "My video.ts");
         assert_eq!(with_ext("Ep. 5", "mp4"), "Ep. 5.mp4");
-    }
-
-    pub(crate) fn mk(t: &[u8; 4], parts: &[&[u8]]) -> Vec<u8> {
-        mkbox(t, &parts.concat())
-    }
-    pub(crate) fn init(id: u32, scale: u32) -> Vec<u8> {
-        let tkhd = mk(b"tkhd", &[&[0; 12], &id.to_be_bytes(), &[0; 4]]);
-        let mdhd = mk(b"mdhd", &[&[0; 12], &scale.to_be_bytes(), &[0; 4]]);
-        let trak = mk(b"trak", &[&tkhd, &mk(b"mdia", &[&mdhd])]);
-        let mvhd = mk(b"mvhd", &[&[0; 96], &(id + 1).to_be_bytes()]);
-        let trex = mk(b"trex", &[&[0; 4], &id.to_be_bytes(), &[0; 12]]);
-        [mk(b"ftyp", &[b"iso6"]), mk(b"moov", &[&mvhd, &trak, &mk(b"mvex", &[&trex])])].concat()
-    }
-    pub(crate) fn frag(id: u32, t: u32, payload: u8) -> Vec<u8> {
-        let traf = mk(b"traf", &[&mk(b"tfhd", &[&[0; 4], &id.to_be_bytes()]), &mk(b"tfdt", &[&[0; 4], &t.to_be_bytes()])]);
-        [mk(b"styp", &[b"msdh"]), mk(b"moof", &[&traf]), mk(b"mdat", &[&[payload]])].concat()
     }
 
     #[test]

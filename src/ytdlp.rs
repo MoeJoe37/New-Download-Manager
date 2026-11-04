@@ -1662,7 +1662,7 @@ mod tests {
     #[test]
     #[ignore = "needs the real yt-dlp: NDM_TEST_YTDLP=/path/to/yt-dlp cargo test real_ytdlp -- --ignored"]
     fn real_ytdlp_separate_streams() {
-        use crate::stream::tests::{frag, init};
+        use crate::test_support::{frag, init};
         use std::io::{BufRead, BufReader, Write};
         let bin = std::env::var("NDM_TEST_YTDLP").expect("NDM_TEST_YTDLP");
         let home = std::env::temp_dir().join(format!("ndm-real-ytdlp-{}", std::process::id()));
@@ -1910,7 +1910,7 @@ mod tests {
     fn ndm_fetches_both_streams() {
         use std::sync::Arc;
         let data: Vec<u8> = (0..4_000_000u32).map(|i| (i % 251) as u8).collect();
-        let base = crate::engine::tests::serve(Arc::new(data.clone()));
+        let base = crate::test_support::serve(Arc::new(data.clone()));
         let dir = std::env::temp_dir().join(format!("ndm-direct-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

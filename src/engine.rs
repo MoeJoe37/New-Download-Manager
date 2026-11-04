@@ -2077,57 +2077,12 @@ impl Job {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
 
-    /// Tiny HTTP server: paths starting with /r honour Range, others always send 200 + full body.
-    pub(crate) fn serve(data: Arc<Vec<u8>>) -> String {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}/", l.local_addr().unwrap());
-        thread::spawn(move || {
-            for s in l.incoming().flatten() {
-                let data = data.clone();
-                thread::spawn(move || {
-                    let mut r = BufReader::new(&s);
-                    let mut line = String::new();
-                    r.read_line(&mut line).unwrap();
-                    let path = line.split(' ').nth(1).unwrap_or("").to_string();
-                    let mut range = None;
-                    loop {
-                        let mut h = String::new();
-                        if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
-                            break;
-                        }
-                        if let Some(v) = strip_ci(&h, "range: bytes=") {
-                            let (a, b) = v.trim().split_once('-').unwrap();
-                            let a: usize = a.parse().unwrap();
-                            let b = b.parse().unwrap_or(data.len() - 1).min(data.len() - 1);
-                            range = Some((a, b));
-                        }
-                    }
-                    let mut w = &s;
-                    let (head, body) = match range.filter(|_| path.starts_with("/r")) {
-                        Some((a, b)) => (format!("HTTP/1.1 206 Partial\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\nLast-Modified: Sun, 06 Nov 1994 08:49:37 GMT\r\n\r\n", data.len(), b + 1 - a), &data[a..=b]),
-                        None => (format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", data.len()), &data[..]),
-                    };
-                    let _ = w.write_all(head.as_bytes());
-                    // "/rslow..." paths trickle ~1.3 MB/s per connection, so extra connections pay off
-                    let step = if path.starts_with("/rslow") { 64 * 1024 } else { body.len().max(1) };
-                    for c in body.chunks(step) {
-                        if w.write_all(c).is_err() {
-                            break;
-                        }
-                        if step < body.len() {
-                            thread::sleep(Duration::from_millis(50));
-                        }
-                    }
-                });
-            }
-        });
-        base
-    }
+    use crate::test_support::serve;
 
     #[test]
     fn retries_wait_longer() {

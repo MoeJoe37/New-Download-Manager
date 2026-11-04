@@ -509,16 +509,8 @@ mod tests {
 
     #[test]
     fn legacy_https_accepts_a_configured_root_and_rejects_an_unknown_root() {
-        use rustls::pki_types::PrivatePkcs8KeyDer;
-        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let der = certificate.cert.der().clone();
-        let config = Arc::new(
-            rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions().unwrap()
-                .with_no_client_auth()
-                .with_single_cert(vec![der.clone()], PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into())
-                .unwrap(),
-        );
+        let (config, der) = crate::test_support::localhost_tls(&[]);
+        let config = Arc::new(config);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         // Userinfo selects the HTTP/1.1 transport, as do authenticated proxy routes.
         let url = format!("https://user:pass@localhost:{}/file", listener.local_addr().unwrap().port());
@@ -571,21 +563,7 @@ mod tests {
 
     #[test]
     fn negotiates_http2_and_multiplexes_within_server_limit() {
-        use tokio_rustls::rustls::{self, pki_types::PrivatePkcs8KeyDer};
-        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let der = certificate.cert.der().clone();
-        let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![der.clone()],
-            PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into(),
-        )
-        .unwrap();
-        tls.alpn_protocols = vec![b"h2".to_vec()];
+        let (tls, der) = crate::test_support::localhost_tls(&[b"h2"]);
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("https://localhost:{}", server.local_addr().unwrap().port());

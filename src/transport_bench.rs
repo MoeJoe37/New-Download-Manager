@@ -1,6 +1,5 @@
 //! Local TLS fixtures for negotiated HTTPS and extra connections.
 use super::*;
-use rustls::pki_types::PrivatePkcs8KeyDer;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -68,23 +67,8 @@ fn with_server<T>(
     delay: Duration,
     run: impl FnOnce(&str, &reqwest::blocking::Client, &reqwest::blocking::Client) -> T,
 ) -> (T, usize) {
-    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let der = certificate.cert.der().clone();
-    let mut tls = rustls::ServerConfig::builder_with_provider(
-        rustls::crypto::ring::default_provider().into(),
-    )
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![der.clone()],
-        PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into(),
-    )
-    .unwrap();
-    tls.alpn_protocols = vec![b"h2".to_vec()];
-    if !h2_only {
-        tls.alpn_protocols.push(b"http/1.1".to_vec());
-    }
+    let protocols: &[&[u8]] = if h2_only { &[b"h2"] } else { &[b"h2", b"http/1.1"] };
+    let (tls, der) = crate::test_support::localhost_tls(protocols);
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(

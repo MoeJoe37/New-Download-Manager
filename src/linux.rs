@@ -504,7 +504,7 @@ pub fn install_desktop_entry() {
             let _ = std::fs::write(&file, bytes);
         }
     };
-    write(data.join("icons/hicolor/256x256/apps/ndm.png"), include_bytes!("../assets/ndm.png"));
+    write(data.join("icons/hicolor/256x256/apps/ndm.png"), include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ndm.png")));
     write(data.join("applications/ndm.desktop"), desktop_entry(&img).as_bytes());
 }
 
