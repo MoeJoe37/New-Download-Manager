@@ -122,6 +122,11 @@ jobs:
       - name: Test inventory
         if: matrix.runner == 'ubuntu-latest'
         run: python3 tools/test_inventory.py --check
+      - name: Dialog snapshots
+        if: matrix.runner == 'ubuntu-latest'
+        env:
+          TZ: UTC
+        run: cargo test --release --locked dialog_snapshots -- --ignored --test-threads=1
       - name: Clippy (no warnings)
         run: cargo clippy --release --locked --all-targets -- -D warnings
       - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg)

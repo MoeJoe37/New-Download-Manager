@@ -19,6 +19,7 @@ dash_templates
 dead_lane_doesnt_fail_download
 default_routes
 desktop_entry_quotes
+dialog_snapshots (ignored)
 domains
 download_limits
 downloads_resumes_and_splits

@@ -1634,6 +1634,14 @@ enum Dialog {
     Find { text: String, flags: u32 },
 }
 
+fn dialog_panel_frame(ctx: &egui::Context, d: &Dialog, fixed: Option<Vec2>) -> egui::Frame {
+    if fixed.is_some() { egui::Frame::new().fill(ctx.style().visuals.panel_fill) } else if matches!(d, Dialog::Help { .. }) { egui::Frame::new() } else { egui::Frame::central_panel(&ctx.style()) }
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod dialog_snapshots;
+
 struct App {
     core: Arc<Core>,
     rx: Receiver<Incoming>,
@@ -1722,7 +1730,7 @@ static ALL_CJK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// The list font's face (View -> Font), read by `style`.
 static LIST_FONT: Mutex<String> = Mutex::new(String::new());
 
-fn style(ctx: &egui::Context, dark: bool) {
+fn load_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for (name, file) in [("tahoma", r"C:\Windows\Fonts\tahoma.ttf"), ("segoe", r"C:\Windows\Fonts\segoeui.ttf")] {
         if let Ok(b) = std::fs::read(file) {
@@ -1776,6 +1784,14 @@ fn style(ctx: &egui::Context, dark: bool) {
     }
     fonts.families.insert(egui::FontFamily::Name("list".into()), list_fam);
     ctx.set_fonts(fonts);
+}
+
+fn style(ctx: &egui::Context, dark: bool) {
+    load_fonts(ctx);
+    apply_style(ctx, dark);
+}
+
+fn apply_style(ctx: &egui::Context, dark: bool) {
     ctx.set_theme(if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
     // both themes are set up: NDM keeps most dialogs light while the main window is dark (`dialog`)
     for dark in [false, true] {
@@ -2020,8 +2036,35 @@ impl App {
             c.request_repaint();
         });
         let tray = App::tray(ctx, &core, &hwnd);
+        let mut app = Self::build(ctx, core, hwnd, rx, tray, dark);
+        #[cfg(target_os = "macos")]
+        if let Err(error) = mac_capture::restore() {
+            app.open(Dialog::Info { title: "Restore macOS web proxy".into(), text: error });
+        }
+        if app.core.settings().tips_startup && !tray_start() {
+            let text = app.next_tip();
+            app.open(Dialog::Tip { text });
+        }
+        // NDM checks for a new release every 2 weeks
+        let checked = app.core.settings().update_checked;
+        if !UPDATE_REPO.is_empty() && chrono::Local::now().timestamp() - checked > 14 * 86400 {
+            app.check_updates(ctx, true);
+        }
+        // Windows hooks drops up once it has the window (update); the Linux drop target only needs a repaint
+        #[cfg(not(windows))]
+        {
+            let c = ctx.clone();
+            win::accept_drops(0, move || c.request_repaint());
+        }
+        app
+    }
+
+    fn build(
+        ctx: &egui::Context, core: Arc<Core>, hwnd: Arc<AtomicIsize>, rx: Receiver<Incoming>,
+        tray: Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)>, dark: bool,
+    ) -> App {
         let expanded = core.settings().expanded.iter().cloned().collect();
-        let mut app = App {
+        App {
             core,
             rx,
             cat: Cat::Files(Which::All, None),
@@ -2068,27 +2111,7 @@ impl App {
             dark,
             theme_check: 0,
             langs: i18n::list(),
-        };
-        #[cfg(target_os = "macos")]
-        if let Err(error) = mac_capture::restore() {
-            app.open(Dialog::Info { title: "Restore macOS web proxy".into(), text: error });
         }
-        if app.core.settings().tips_startup && !tray_start() {
-            let text = app.next_tip();
-            app.open(Dialog::Tip { text });
-        }
-        // NDM checks for a new release every 2 weeks
-        let checked = app.core.settings().update_checked;
-        if !UPDATE_REPO.is_empty() && chrono::Local::now().timestamp() - checked > 14 * 86400 {
-            app.check_updates(ctx, true);
-        }
-        // Windows hooks drops up once it has the window (update); the Linux drop target only needs a repaint
-        #[cfg(not(windows))]
-        {
-            let c = ctx.clone();
-            win::accept_drops(0, move || c.request_repaint());
-        }
-        app
     }
 
     /// Linux: an AppIndicator on the GTK thread (tray-icon needs GTK's loop and keeps its items there), only
@@ -4229,8 +4252,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
 
     // ---------- dialogs ----------
 
-    /// Draw one dialog in its own OS window. Returns false once it should close.
-    fn dialog(&mut self, ctx: &egui::Context, key: u64, d: &mut Dialog) -> bool {
+    fn dialog_frame(&self, d: &Dialog) -> (String, Option<Vec2>, Vec2) {
         let tpl = |w: f32, h: f32| Some(dlu::size(w, h));
         let (title, fixed): (String, Option<Vec2>) = match d {
             Dialog::AddUrl { clip, .. } => (if *clip { "Download link was found in clipboard. Do you want to download it?" } else { "Enter new address to download" }.into(), tpl(373.0, 57.0)),
@@ -4323,6 +4345,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::MacCapture { .. } => Vec2::new(500.0, 250.0),
             _ => Vec2::new(380.0, 170.0),
         });
+        (title, fixed, size)
+    }
+
+    /// Draw one dialog in its own OS window. Returns false once it should close.
+    fn dialog(&mut self, ctx: &egui::Context, key: u64, d: &mut Dialog) -> bool {
+        let (title, fixed, size) = self.dialog_frame(d);
         let id = ViewportId::from_hash_of(("dlg", key));
         // centred on the main window when it is first shown; kept there so the user can move it
         if !self.dlg_pos.contains_key(&key) {
@@ -4364,7 +4392,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ctx.send_viewport_cmd(ViewportCommand::InnerSize(sz));
                 }
             }
-            let frame = if fixed.is_some() { egui::Frame::new().fill(ctx.style().visuals.panel_fill) } else if matches!(d, Dialog::Help { .. }) { egui::Frame::new() } else { egui::Frame::central_panel(&ctx.style()) };
+            let frame = dialog_panel_frame(ctx, d, fixed);
             egui::CentralPanel::default().frame(frame).show(ctx, |ui| keep = self.dialog_body(ctx, ui, d));
             let closed = ctx.input(|i| i.viewport().close_requested());
             if let (true, Dialog::FileInfo { early: Some(j), .. }) = (closed, &*d) {

@@ -896,6 +896,12 @@ impl Core {
         Core::from_saved(saved, store)
     }
 
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn for_dialog_snapshots(store: PathBuf, items: Vec<Info>) -> Arc<Self> {
+        Self::from_saved(Saved { items, next_id: 4, ..Default::default() }, store)
+    }
+
     fn from_saved(mut saved: Saved, store: PathBuf) -> Arc<Core> {
         let s = &mut saved.settings;
         #[cfg(target_os = "macos")]
