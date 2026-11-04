@@ -540,9 +540,8 @@ pub fn set_autostart(on: bool) {
     let _ = std::process::Command::new("reg").args(args).output();
 }
 
-/// The browser extension's native messaging host name and its (fixed, from the manifest's "key") id.
+/// The browser extension's native messaging host name (its ids: `core::extension_ids`).
 const HOST: &str = "com.ndm.host";
-const EXT_ID: &str = "fjkomnlijmdmohmlbfgkepgdieleinoa";
 
 /// Registers this exe as the extension's native messaging host (Chromium browsers and Firefox), so the
 /// extension can start the app when a download comes and it isn't running. Run at every start: the exe may move.
@@ -556,7 +555,7 @@ pub fn register_host(dir: &Path) {
         let p = dir.join(file);
         std::fs::write(&p, m.to_string()).ok().map(|_| p.display().to_string())
     };
-    let chrome = host("host-chrome.json", serde_json::json!({ "allowed_origins": [format!("chrome-extension://{EXT_ID}/")] }));
+    let chrome = host("host-chrome.json", crate::core::chrome_origins());
     let firefox = host("host-firefox.json", serde_json::json!({ "allowed_extensions": ["ndm@newdownloadmanager"] }));
     let keys = [(r"Google\Chrome", &chrome), (r"Microsoft\Edge", &chrome), ("Chromium", &chrome), (r"BraveSoftware\Brave-Browser", &chrome), ("Mozilla", &firefox)];
     for (browser, file) in keys {

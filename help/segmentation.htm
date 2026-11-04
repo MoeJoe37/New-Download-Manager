@@ -19,6 +19,7 @@
 <h2 id="Connection">Number of connections and speed</h2>
 <p>The default number of connections is set in <a href="options.htm#Connection">Options → Connection</a>: 1, 2, 4, 8, 16, 24 or 32. The same page sets a lower number for single servers.</p>
 <p><b>Downloads → Speed Limiter</b> limits how fast each file downloads, so the rest of your network stays usable. The icon in the notification area turns it on and off too. Tick <b>Turn on Speed Limiter only between</b> and set two times (for example 08:00 and 23:00) to limit downloads only during those hours; outside them NDM downloads at full speed.</p>
+<p>One download can have a limit of its own: right-click it in the list and choose <b>Speed limit...</b> (or use the progress window's Speed Limiter tab while it runs). A queue can limit each of its downloads while it runs: <b>Scheduler → Files in the queue → Limit to</b>. With the queue's start and stop times, that limits downloads by time of day; the lowest of the limits that apply is used.</p>
 <p>When a download in a queue fails, NDM tries it again after 15 seconds, then waits twice as long after each new failure, up to 10 minutes, as many times as the queue's retry setting allows.</p>
 
 <h2 id="Networks">Several networks at once</h2>

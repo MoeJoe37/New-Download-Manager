@@ -37,6 +37,8 @@ jobs:
         run: python tools/ndm_lng.py --check
       - name: Extension video handoff
         run: node tools/test-extension.mjs
+      - name: Extension store packages
+        run: python tools/extension-packages.py "$env:RUNNER_TEMP\ext"
       - name: "NDM starts (no graphics card here: OpenGL, else wgpu with Windows' software renderer)"
         run: powershell -File tools\smoke-windows.ps1 target\release\ndm.exe
       - name: Browser downloads show only their own windows (tray, closed, minimized)

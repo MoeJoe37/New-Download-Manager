@@ -780,6 +780,26 @@ pub struct Incoming {
     pub start_queue: bool,
 }
 
+/// The Chromium extension ids NDM answers: the unpacked extension's (fixed by its manifest's "key") and
+/// the stores' copies (Chrome Web Store, Edge Add-ons: ids of their own), given when NDM is built as
+/// NDM_EXTENSION_IDS="id,id" (release.yml passes the repository variable of that name). Firefox's id is
+/// the manifest's gecko id everywhere.
+pub fn extension_ids() -> Vec<&'static str> {
+    let mut ids = vec!["fjkomnlijmdmohmlbfgkepgdieleinoa"];
+    ids.extend(store_ids(option_env!("NDM_EXTENSION_IDS").unwrap_or("")));
+    ids
+}
+
+/// The well-formed Chromium extension ids in a comma-separated list (32 letters a..p).
+fn store_ids(list: &str) -> impl Iterator<Item = &str> {
+    list.split([',', ' ', '\n']).map(str::trim).filter(|id| id.len() == 32 && id.bytes().all(|c| (b'a'..=b'p').contains(&c)))
+}
+
+/// The native messaging host's "allowed_origins" for the Chromium browsers.
+pub fn chrome_origins() -> serde_json::Value {
+    serde_json::json!({ "allowed_origins": extension_ids().iter().map(|id| format!("chrome-extension://{id}/")).collect::<Vec<_>>() })
+}
+
 /// Whether `t` is in [from, to); a window that ends before it starts runs past midnight.
 pub fn in_window(t: chrono::NaiveTime, from: chrono::NaiveTime, to: chrono::NaiveTime) -> bool {
     if from <= to { from <= t && t < to } else { t >= from || t < to }
@@ -2086,7 +2106,7 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
         }
     }
     let origin_ok = h.get("origin").is_none_or(|origin| {
-        origin == "chrome-extension://fjkomnlijmdmohmlbfgkepgdieleinoa" || origin.strip_prefix("moz-extension://").is_some_and(|id| {
+        origin.strip_prefix("chrome-extension://").is_some_and(|id| extension_ids().contains(&id)) || origin.strip_prefix("moz-extension://").is_some_and(|id| {
             id.len() == 36 && id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
         })
     });
@@ -2419,4 +2439,12 @@ fn queue_speed_limit() {
     assert_eq!(queue_rate(0, 50), 50 * 1024);
     assert_eq!(queue_rate(100, 50), 50 * 1024);
     assert_eq!(queue_rate(20, 50), 20 * 1024);
+}
+
+#[test]
+fn extension_store_ids() {
+    let ids: Vec<&str> = store_ids("abcdefghijklmnopabcdefghijklmnop, bad, ponmlkjihgfedcbaponmlkjihgfedcba,qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq").collect();
+    assert_eq!(ids, ["abcdefghijklmnopabcdefghijklmnop", "ponmlkjihgfedcbaponmlkjihgfedcba"]);
+    assert!(extension_ids().contains(&"fjkomnlijmdmohmlbfgkepgdieleinoa"));
+    assert_eq!(chrome_origins()["allowed_origins"][0], "chrome-extension://fjkomnlijmdmohmlbfgkepgdieleinoa/");
 }

@@ -515,7 +515,6 @@ fn desktop_entry_quotes() {
 }
 
 const HOST: &str = "com.ndm.host";
-const EXT_ID: &str = "fjkomnlijmdmohmlbfgkepgdieleinoa";
 
 /// Writes the extension's native messaging host manifest where each browser looks for it.
 pub fn register_host(_dir: &Path) {
@@ -525,7 +524,7 @@ pub fn register_host(_dir: &Path) {
         m.as_object_mut().unwrap().extend(allow.as_object().unwrap().clone());
         m.to_string()
     };
-    let chrome = manifest(serde_json::json!({ "allowed_origins": [format!("chrome-extension://{EXT_ID}/")] }));
+    let chrome = manifest(crate::core::chrome_origins());
     let firefox = manifest(serde_json::json!({ "allowed_extensions": ["ndm@newdownloadmanager"] }));
     for (d, is_firefox) in host_dirs(&home(), &config_dir()) {
         let _ = std::fs::create_dir_all(&d);

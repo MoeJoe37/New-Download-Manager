@@ -37,9 +37,13 @@
 - http, https and ftp (passive and active); mms, rtmp and rtsp through ffmpeg
 - Sign-in: Basic, Digest, NTLM / Negotiate (your Windows account, or your Kerberos ticket on Linux), saved site logins
 - Proxies: Windows' settings, auto-configuration scripts, HTTP, HTTPS, FTP and SOCKS 4/5
-- Speed limiter (also only between set hours), download limits per period, per-server connection limits
+- Speed limiter (also only between set hours), a speed limit per download (right-click → *Speed limit...*)
+  and per queue while it runs (Scheduler → *Files in the queue*), download limits per period, per-server
+  connection limits
 - Failed downloads in a queue are tried again after a growing wait (15 s, 30 s, 1 min... up to 10 min)
-- File Properties → **Checksum...**: the file's SHA-256, SHA-1 and MD5, checked against one you paste
+- After a download, the SHA-256 its site publishes beside it (`file.sha256`, `SHA256SUMS`) is checked by
+  itself; File Properties → **Checksum...** gives the file's SHA-256, SHA-1 and MD5 to check against one you paste
+- Help → **Report a problem...** opens a GitHub issue with NDM's version, your system and the last crash report
 
 **Browser integration**
 - Extension for Chrome, Edge, Brave, Opera, Vivaldi and Firefox: downloads go to NDM, not the browser,
@@ -60,6 +64,8 @@
 - Video and audio websites through [yt-dlp](https://github.com/yt-dlp/yt-dlp), including YouTube,
   Vimeo, TikTok, Instagram, X, Reddit, Twitch and SoundCloud. Any website supported by the installed
   yt-dlp can be submitted; NDM's list of familiar sites is only a shortcut for automatic detection
+- A video's quality (up to 2160p ... 360p), its sound alone as M4A or MP3, its subtitles and thumbnail,
+  and the videos of a playlist you tick
 - Direct video and audio streams use NDM's parallel connections, adaptive file segmentation and
   connection reuse. Video and audio download together; HLS/DASH streams handled by yt-dlp use concurrent
   fragments, with the connection count from NDM's settings
@@ -130,9 +136,10 @@ Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager
    extension...** in NDM to save a copy anywhere and see the steps for your browser.
 3. Start NDM once, so the browser can reach it.
 
-**macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first
-time, right-click (or Control-click) NDM in Applications and choose **Open**, then **Open** again; after that
-it starts normally. (Or run `xattr -dr com.apple.quarantine /Applications/NDM.app` once in Terminal.) Its
+**macOS:** open the `.dmg` and drag *NDM* onto *Applications*. A release built without an Apple Developer ID
+isn't notarized, so the first time, right-click (or Control-click) NDM in Applications and choose **Open**,
+then **Open** again; after that it starts normally. (Or run `xattr -dr com.apple.quarantine /Applications/NDM.app`
+once in Terminal.) Its
 icon sits in the menu bar while it runs; links can be dropped on its window or on the drop target. Load the browser extension from
 `~/Library/Application Support/NewDownloadManager/extension`, the copy NDM keeps there so updates don't move
 it (*Options → General → Reintegrate All* shows the steps for each browser).
@@ -153,9 +160,12 @@ NDM checks the Releases page for new versions (Help → Check for updates, and b
 2. Paste the video's own page address into **Add URL**, click the extension's **Download this video**
    panel, or right-click the page → **Download this video with New Download Manager**. This page menu
    is available on every HTTP/HTTPS site, including sites outside NDM's automatic detection list.
-   On a feed, open the individual video's page first. Audio-only pages work too. A playlist-only or
-   multi-video page adds its first entry as one NDM download.
-3. Choose the file's folder and start. NDM uses its segmented engine for ordinary HTTP/HTTPS media,
+   On a feed, open the individual video's page first. Audio-only pages work too.
+3. In *Download File Info*, pick the **Quality** (best, or at most 2160p ... 360p; *Audio only* saves the
+   sound as M4A, or as MP3 with ffmpeg) and tick **Subtitles** and **Thumbnail** to save them next to the
+   video. For a playlist (YouTube's `&list=`, or a page with several videos) **Choose videos...** lists
+   them: each one you tick becomes a download with the same folder and choices.
+4. Choose the file's folder and start. NDM uses its segmented engine for ordinary HTTP/HTTPS media,
    fetching video and audio at the same time. When a stream needs yt-dlp's own downloader, it keeps
    the extracted format's URLs, headers and cookies and downloads HLS/DASH fragments concurrently.
    A stream rejected by NDM's engine falls back to yt-dlp without restarting its companion stream.
@@ -349,7 +359,7 @@ Installer ([Inno Setup 6](https://jrsoftware.org/isinfo.php)); `/DArch=arm64` ma
 | `help/` | Help pages, shown inside the app |
 | `Languages/` | Language files |
 | `installer/` | Inno Setup script |
-| `tools/` | `ndm_lng.py` (language file generator), `icon.py` (app icon), `appimage.sh`, `linux-packages.sh` and `macos.sh` (packages), `smoke*` (start-up tests CI runs) |
+| `tools/` | `ndm_lng.py` (language file generator), `icon.py` (app icon), `appimage.sh`, `linux-packages.sh` and `macos.sh` (packages), `extension-packages.py` (store packages), `smoke*` (start-up tests CI runs) |
 
 Linux packages (on Linux, x86_64 or aarch64, or in WSL on Windows; needs `build-essential pkg-config
 libgtk-3-dev libxdo-dev libayatana-appindicator3-dev`, `rpm` for the .rpm, and Rust):
@@ -367,7 +377,16 @@ bash tools/macos.sh            # installer/out/NDM-<version>-macOS.dmg, one app 
 ```
 
 GitHub Actions builds and tests all of them (`.github/workflows/ci.yml`) and attaches them to a release when
-a `v<version>` tag is pushed (`release.yml`).
+a `v<version>` tag is pushed (`release.yml`), with the browser extension packaged for the stores
+(`NDM-<version>-chrome-extension.zip` for the Chrome Web Store, Edge Add-ons and Opera,
+`NDM-<version>-firefox-extension.zip` for addons.mozilla.org; `python tools/extension-packages.py` makes them
+locally). Optional repository settings for a release:
+
+| Setting | What it does |
+|---|---|
+| Variable `NDM_EXTENSION_IDS` | The ids the stores gave the extension (`id,id`): NDM then answers those copies too, besides the unpacked one |
+| Secrets `MACOS_CERT_P12` (base64 of a *Developer ID Application* .p12) and `MACOS_CERT_PASSWORD` | The Mac app is signed with that certificate for the hardened runtime |
+| Secrets `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` (an app-specific password) | With the certificate: the disk image is notarized by Apple and stapled, so NDM opens like any app |
 
 ## Translating
 

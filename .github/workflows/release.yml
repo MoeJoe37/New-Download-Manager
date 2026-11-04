@@ -4,7 +4,14 @@
 #   Windows ARM64   NDM-ARM64-Setup-<v>.exe, ndm-arm64.exe, NDM-<v>-windows-arm64.zip
 #   Linux x86_64    NDM-x86_64.AppImage, ndm_<v>_amd64.deb, ndm-<v>-1.x86_64.rpm, ndm-<v>-x86_64.tar.gz
 #   Linux aarch64   NDM-aarch64.AppImage, ndm_<v>_arm64.deb, ndm-<v>-1.aarch64.rpm, ndm-<v>-aarch64.tar.gz
-#   macOS           NDM-<v>-macOS.dmg (Apple Silicon and Intel)
+#   macOS           NDM-<v>-macOS.dmg (Apple Silicon and Intel; signed and notarized when the secrets below exist)
+#   Extension       NDM-<v>-chrome-extension.zip, NDM-<v>-firefox-extension.zip (to upload to the stores)
+#
+# Repository settings it reads, all optional:
+#   variable NDM_EXTENSION_IDS   the stores' ids of the extension ("id,id"), which NDM then answers too
+#   secrets  MACOS_CERT_P12 (base64 of a "Developer ID Application" .p12), MACOS_CERT_PASSWORD,
+#            APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (an app-specific password): the Mac app is then
+#            signed with that certificate and notarized, so it opens without right click -> Open
 # NDM's "Check for updates" picks the file this copy came as, for its system and processor (main.rs,
 # update_asset); the ARM names never match what NDM 1.x looks for.
 name: Release
@@ -27,6 +34,7 @@ permissions:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
+  NDM_EXTENSION_IDS: ${{ vars.NDM_EXTENSION_IDS }}
 
 jobs:
   version:
@@ -121,11 +129,33 @@ jobs:
   macos:
     needs: version
     runs-on: macos-15
+    env:
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Signing certificate (when the repository has one)
+        if: env.MACOS_CERT_P12 != ''
+        run: |
+          kc="$RUNNER_TEMP/ndm-signing.keychain-db"
+          pw="$(uuidgen)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          id="$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)"
+          [ -n "$id" ] || { echo "no Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+          echo "MACOS_SIGN_IDENTITY=$id" >> "$GITHUB_ENV"
       - run: bash tools/macos.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -138,7 +168,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .github/release-notes
+          sparse-checkout: |
+            .github/release-notes
+            extension
+            tools
       - uses: actions/download-artifact@v4
         with:
           path: out
@@ -149,6 +182,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          python3 tools/extension-packages.py out
           ls -l out
           # hand-written notes (.github/release-notes/vX.Y.Z.md) are what NDM's update window shows
           notes=".github/release-notes/$TAG.md"

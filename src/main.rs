@@ -124,7 +124,8 @@ fn update_asset(name: &str) -> bool {
 #[test]
 fn update_assets() {
     let names = ["NDM-Setup-2.0.0.exe", "NDM-ARM64-Setup-2.0.0.exe", "ndm.exe", "ndm-arm64.exe", "NDM-x86_64.AppImage", "NDM-aarch64.AppImage", "ndm_2.0.0_amd64.deb", "ndm_2.0.0_arm64.deb",
-        "ndm-2.0.0-1.x86_64.rpm", "ndm-2.0.0-1.aarch64.rpm", "ndm-2.0.0-x86_64.tar.gz", "ndm-2.0.0-aarch64.tar.gz", "NDM-2.0.0-macOS.dmg", "NDM-2.0.0-windows-x64.zip"];
+        "ndm-2.0.0-1.x86_64.rpm", "ndm-2.0.0-1.aarch64.rpm", "ndm-2.0.0-x86_64.tar.gz", "ndm-2.0.0-aarch64.tar.gz", "NDM-2.0.0-macOS.dmg", "NDM-2.0.0-windows-x64.zip",
+        "NDM-2.0.0-chrome-extension.zip", "NDM-2.0.0-firefox-extension.zip"];
     // exactly one file is this build's (whatever way it was installed)
     assert_eq!(names.iter().filter(|n| update_asset(n)).count(), 1, "{:?}", names.iter().filter(|n| update_asset(n)).collect::<Vec<_>>());
     // what NDM 1.x looks for on x64 Windows (setup or loose exe) and x86_64 Linux never matches an ARM file
