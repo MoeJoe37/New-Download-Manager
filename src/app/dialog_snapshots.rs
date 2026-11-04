@@ -1,4 +1,5 @@
 use super::*;
+use super::resources::apply_style;
 use std::fmt::Write;
 
 #[test]
