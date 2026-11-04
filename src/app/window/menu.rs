@@ -176,10 +176,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 });
                 ui.separator();
                 if ui.button(tr("Download video playlist...")).clicked() {
-                    self.open(Dialog::Playlist(Box::new(PlaylistPicker {
-                        url: links(&clipboard()).into_iter().next().unwrap_or_default(),
-                        ..Default::default()
-                    })));
+                    self.open(Dialog::Playlist(Box::new(PlaylistPicker::new(links(&clipboard()).into_iter().next().unwrap_or_default()))));
                     ui.close_menu();
                 }
                 if ui.button(tr("Set yt-dlp")).on_hover_text(tr("Downloads yt-dlp and ffmpeg for YouTube and other video sites, adds them to PATH and keeps yt-dlp up to date")).clicked() {

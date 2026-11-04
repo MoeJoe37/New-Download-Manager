@@ -1,5 +1,5 @@
 use super::*;
-use super::resources::apply_style;
+use crate::app::resources::apply_style;
 use std::fmt::Write;
 
 #[test]
@@ -102,7 +102,7 @@ fn dialog_snapshots() {
         },
         Checksum: Dialog::Checksum { .. } => Dialog::Checksum {
             name: "complete.zip".into(),
-            run: Arc::new(checksum::Run { done: 512.into(), total: 1024, result: Mutex::new(None) }),
+            run: Arc::new(crate::checksum::Run { done: 512.into(), total: 1024, result: Mutex::new(None) }),
             expect: String::new(),
             source: Default::default(),
         },
