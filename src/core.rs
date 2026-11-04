@@ -131,11 +131,14 @@ pub struct Queue {
     pub sync: bool,
     /// NDM's built-in Synchronization queue: can't be deleted.
     pub fixed: bool,
+    /// Each of the queue's downloads at most this fast while the queue runs (KB/s, 0: no limit), on top of
+    /// its own limit and the Speed Limiter: with the queue's start and stop times, a limit by time of day.
+    pub limit_kb: u64,
 }
 
 impl Default for Queue {
     fn default() -> Self {
-        Queue { id: MAIN_QUEUE, name: "Main download queue".into(), sched: Sched::default(), max_active: 3, sync: false, fixed: false }
+        Queue { id: MAIN_QUEUE, name: "Main download queue".into(), sched: Sched::default(), max_active: 3, sync: false, fixed: false, limit_kb: 0 }
     }
 }
 
@@ -773,12 +776,21 @@ pub struct Incoming {
     pub start_queue: bool,
 }
 
-/// Command-line arguments as an `Incoming` (None when there are none).
 /// Whether `t` is in [from, to); a window that ends before it starts runs past midnight.
 pub fn in_window(t: chrono::NaiveTime, from: chrono::NaiveTime, to: chrono::NaiveTime) -> bool {
     if from <= to { from <= t && t < to } else { t >= from || t < to }
 }
 
+/// A queued download's rate in bytes/s: its own limit and its queue's, the lower one (KB/s, 0: none).
+fn queue_rate(own_kb: u64, queue_kb: u64) -> u64 {
+    match (own_kb, queue_kb) {
+        (0, q) => q * 1024,
+        (o, 0) => o * 1024,
+        (o, q) => o.min(q) * 1024,
+    }
+}
+
+/// Command-line arguments as an `Incoming` (None when there are none).
 pub fn cli_args(args: &[String]) -> Option<Incoming> {
     let mut inc = Incoming { cli: true, force: true, ..Default::default() };
     let mut it = args.iter();
@@ -1190,6 +1202,11 @@ impl Core {
     }
 
     fn start_now(&self, job: &Arc<Job>) {
+        // its own speed limit, and its queue's while the queue runs it
+        let (own, queued, queue) = { let i = job.info(); (i.limit_kb, i.queued, i.queue) };
+        let running = queued && self.running.lock().unwrap().contains(&queue);
+        let limit = if running { self.settings().queue(queue).map_or(0, |q| q.limit_kb) } else { 0 };
+        job.limiter.rate.store(queue_rate(own, limit), Relaxed);
         let url = job.info().url.clone();
         {
             let s = self.settings();
@@ -1344,14 +1361,19 @@ impl Core {
         let running: Vec<u32> = self.running.lock().unwrap().iter().copied().collect();
         let jobs = self.jobs();
         for q in running {
-            let (max, retries, sync, again) = self.settings().queue(q).map_or((1, 0, false, None), |x| {
+            let (max, retries, sync, again, limit) = self.settings().queue(q).map_or((1, 0, false, None, 0), |x| {
                 let again = Some(x.sched.again_h as u64 * 3600 + x.sched.again_m as u64 * 60).filter(|s| x.sync && x.sched.again_on && *s > 0);
-                (x.max_active.max(1), if x.sched.retry_on { x.sched.retries } else { 0 }, x.sync, again)
+                (x.max_active.max(1), if x.sched.retry_on { x.sched.retries } else { 0 }, x.sync, again, x.limit_kb)
             });
             let mine: Vec<&Arc<Job>> = jobs.iter().filter(|j| {
                 let i = j.info();
                 i.queued && i.queue == q
             }).collect();
+            for j in &mine {
+                // the queue's limit over the download's own (which stays the download's setting)
+                let own = j.info().limit_kb;
+                j.limiter.rate.store(queue_rate(own, limit), Relaxed);
+            }
             let mut active = mine.iter().filter(|j| j.running()).count();
             let mut pending = false;
             for j in &mine {
@@ -2384,4 +2406,13 @@ Connection: close
         core.tick_quota();
         assert!(!core.quota_blocked());
     }
+}
+
+#[test]
+fn queue_speed_limit() {
+    assert_eq!(queue_rate(0, 0), 0);
+    assert_eq!(queue_rate(100, 0), 100 * 1024);
+    assert_eq!(queue_rate(0, 50), 50 * 1024);
+    assert_eq!(queue_rate(100, 50), 50 * 1024);
+    assert_eq!(queue_rate(20, 50), 20 * 1024);
 }

@@ -729,7 +729,7 @@ const DROP_TYPES: [&str; 4] = ["text/uri-list", "text/x-moz-url", "UTF8_STRING",
 /// Text from a drop in `kind` (text/x-moz-url is UTF-16: "url\ntitle").
 fn drop_text(kind: &str, data: &[u8]) -> String {
     if kind == "text/x-moz-url" {
-        return String::from_utf16_lossy(&data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>());
+        return String::from_utf16_lossy(&data.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect::<Vec<_>>());
     }
     String::from_utf8_lossy(data).into_owned()
 }
@@ -882,7 +882,7 @@ fn make_drop_target(w: i32, h: i32, px: Vec<u8>) -> gtk::Window {
         if text.is_empty() {
             // text/x-moz-url is UTF-16: "url\ntitle"
             let raw = data.data();
-            text = data.text().map(|t| t.to_string()).unwrap_or_else(|| String::from_utf16_lossy(&raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()));
+            text = data.text().map(|t| t.to_string()).unwrap_or_else(|| String::from_utf16_lossy(&raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect::<Vec<_>>()));
         }
         let links = dropped_links(&text);
         if !links.is_empty() {
