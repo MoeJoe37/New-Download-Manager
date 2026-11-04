@@ -1,0 +1,2 @@
+# Keep the existing layout intact while reviewable module moves are in progress.
+disable_all_formatting = true

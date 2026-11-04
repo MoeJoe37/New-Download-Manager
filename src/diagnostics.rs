@@ -14,13 +14,28 @@ pub(crate) fn issue_text(version: &str, lang: &str) -> (String, String) {
 }
 
 const CRASH_MODULES: &[&str] = &[
-    "app::help", "checksum", "core", "dlu", "engine", "grabber", "i18n", "linux", "mac", "mac_capture",
-    "main", "media", "net", "posix", "remux", "stream", "transport", "win", "ytdlp",
+    "app", "app::browser_setup", "app::dialogs", "app::dialogs::browser", "app::dialogs::checksum",
+    "app::dialogs::download", "app::dialogs::grabber", "app::dialogs::limits", "app::dialogs::mac",
+    "app::dialogs::misc", "app::dialogs::options", "app::dialogs::options::pages", "app::dialogs::playlist",
+    "app::dialogs::report", "app::dialogs::scheduler", "app::display", "app::download_list",
+    "app::downloads", "app::events", "app::grabber_window", "app::help", "app::resources", "app::shell",
+    "app::window", "app::window::categories", "app::window::menu", "app::window::table",
+    "app::window::toolbar", "checksum", "core", "core::browser_bridge", "core::queue", "core::routing",
+    "core::settings", "core::state", "diagnostics", "dlu", "engine", "engine::ftp", "engine::job",
+    "engine::names", "engine::probe", "engine::range", "file_ops", "grabber", "i18n", "linux", "mac",
+    "mac_capture", "main", "media", "net", "platform::linux::desktop", "platform::linux::drag_drop",
+    "platform::linux::network", "platform::macos::desktop", "platform::macos::drag_drop",
+    "platform::macos::network", "platform::windows::desktop", "platform::windows::drag_drop",
+    "platform::windows::network", "posix", "remux", "startup", "stream", "stream::dash", "stream::download",
+    "stream::fmp4", "stream::hls", "transport", "transport::auth", "transport::client", "update", "win",
+    "ytdlp", "ytdlp::formats", "ytdlp::install", "ytdlp::playlist",
 ];
 
 fn crash_location(file: &str, line: u32) -> String {
     let module = file.strip_prefix("src/").or_else(|| file.strip_prefix("src\\"))
-        .and_then(|name| name.strip_suffix(".rs")).map(|name| name.replace(['/', '\\'], "::"));
+        .and_then(|name| name.strip_suffix(".rs"))
+        .map(|name| name.strip_suffix("/mod").or_else(|| name.strip_suffix("\\mod")).unwrap_or(name))
+        .map(|name| name.replace(['/', '\\'], "::"));
     match module.filter(|name| CRASH_MODULES.contains(&name.as_str())) {
         Some(name) => format!("{name}:{line}"),
         None => "unavailable".into(),
@@ -65,6 +80,10 @@ fn problem_report_excludes_raw_crash_data() {
     assert_eq!(crash_location("src/engine.rs", 42), "engine:42");
     assert_eq!(crash_location("src/app/help.rs", 9), "app::help:9");
     assert_eq!(crash_location(r"src\app\help.rs", 9), "app::help:9");
+    assert_eq!(crash_location("src/core/mod.rs", 10), "core:10");
+    assert_eq!(crash_location(r"src\app\dialogs\options\mod.rs", 20), "app::dialogs::options:20");
+    assert_eq!(crash_location("src/transport/client.rs", 12), "transport::client:12");
+    assert_eq!(crash_location("src/platform/linux/drag_drop.rs", 15), "platform::linux::drag_drop:15");
     assert_eq!(crash_location("src/app/private.rs", 9), "unavailable");
     assert_eq!(crash_location(r"C:\private\engine.rs", 42), "unavailable");
     std::fs::write(dir.join("crash.log"),

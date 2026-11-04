@@ -5,7 +5,7 @@ impl App {
         &mut self,
         ctx: &egui::Context,
         ui: &mut egui::Ui,
-        services: &mut Vec<(String, String)>,
+        services: &[(String, String)],
         selected: &mut Option<usize>,
         pending: &mut Option<Receiver<Result<(), String>>>,
         message: &mut String,
