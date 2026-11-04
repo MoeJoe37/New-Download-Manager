@@ -1,5 +1,5 @@
 // Runs in the page's own world, so its fetch goes through the page's service worker (a content script's
-// fetch does not): content.js asks it for a file the page makes itself and passes the pieces on. One request
+// fetch does not). The page feed asks for a file the page makes itself and passes the pieces on. One request
 // at a time per token; "next" asks for the next piece (about 512 KB), "stop" ends it.
 (() => {
   const PIECE = 512 * 1024;

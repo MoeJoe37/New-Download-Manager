@@ -52,7 +52,12 @@ try {
     };
   });
   await page.goto('http://fixture.test/index');
-  await page.addScriptTag({ path: new URL('../extension/content.js', import.meta.url).pathname });
+  const extension = new URL('../extension/', import.meta.url);
+  const manifest = JSON.parse(readFileSync(new URL('manifest.json', extension), 'utf8'));
+  const isolated = manifest.content_scripts.find(script => (script.world ?? 'ISOLATED') === 'ISOLATED');
+  for (const file of isolated.js) {
+    await page.addScriptTag({ path: new URL(file, extension).pathname });
+  }
   const panel = page.getByText('Download this video', { exact: true });
   const insert = async src => page.evaluate(async src => {
     const video = document.createElement('video');

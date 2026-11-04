@@ -43,6 +43,8 @@ jobs:
           sudo apt-get install -y ffmpeg
       - name: Extension video handoff
         run: node tools/test-extension.mjs
+      - name: Packaged browser extension
+        run: node tools/test-extension-browser.mjs
       - name: Browser video panel
         run: node tools/test-panel.mjs
 
