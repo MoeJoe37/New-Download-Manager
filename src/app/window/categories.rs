@@ -28,7 +28,7 @@ impl App {
         self.open(Dialog::Category { orig, cat, folder, error: String::new() });
     }
 
-    pub(in crate::app) fn save_category(&mut self, orig: Option<&str>, cat: core::Category, folder: &str) {
+    pub(in crate::app) fn save_category(&mut self, orig: Option<&str>, cat: core::settings::Category, folder: &str) {
         let name = cat.name.clone();
         let mut s = self.core.settings();
         match orig.and_then(|o| s.categories.iter_mut().find(|c| c.name == o)) {
@@ -361,7 +361,7 @@ impl App {
                     // NDM's tree menus: category popup +0x220, grabber +0x224, queue +0x228.
                     resp.context_menu(|ui| match value {
                         Cat::Queue(q) => {
-                            let id = q.unwrap_or(core::MAIN_QUEUE);
+                            let id = q.unwrap_or(core::queue::MAIN_QUEUE);
                             let on = self.core.queue_running(id);
                             if ui.add_enabled(q.is_some() && !on, egui::Button::new(tr("Start now"))).clicked() {
                                 self.core.start_queue(id);

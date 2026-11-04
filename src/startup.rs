@@ -60,20 +60,20 @@ pub(crate) fn start() -> eframe::Result {
     if !win::prefer_x11() && std::env::var_os("GDK_BACKEND").is_some_and(|b| b == "x11") {
         std::env::remove_var("GDK_BACKEND"); // no other thread runs yet
     }
-    let cli = core::cli_args(&args);
+    let cli = core::browser_bridge::cli_args(&args);
     // a second start for the browser (/tray) mustn't bring the window out of the tray
     if win::running(TITLE, !tray_start()) {
         // hand the command line to the running copy through its local endpoint
         if let Some(i) = cli {
             let body = serde_json::json!({ "url": i.url, "filename": i.filename, "force": true, "cli": true, "folder": i.folder,
                 "silent": i.silent, "later": i.later, "quit": i.quit, "start_queue": i.start_queue });
-            if let Some(port) = core::running_port() {
+            if let Some(port) = core::browser_bridge::running_port() {
                 let _ = ureq::post(&format!("http://127.0.0.1:{port}/add")).set("X-NDM", "1").send_string(&body.to_string());
             }
         }
         return Ok(());
     }
-    win::register_host(core::store_path().parent().unwrap());
+    win::register_host(core::state::store_path().parent().unwrap());
     #[cfg(not(windows))]
     win::install_desktop_entry();
     let (w, h, rgba) = app_icon();
@@ -103,7 +103,7 @@ pub(crate) fn start() -> eframe::Result {
 /// software renderer when there is no graphics card), Vulkan or Metal. That choice is kept next to the
 /// settings ("renderer"), so later starts go straight to it.
 fn run(mut opts: eframe::NativeOptions, args: &[String]) -> eframe::Result {
-    let marker = core::store_path().with_file_name("renderer");
+    let marker = core::state::store_path().with_file_name("renderer");
     let wgpu = std::env::var_os("NDM_RENDERER").is_some_and(|v| v == "wgpu") || std::fs::read_to_string(&marker).is_ok_and(|s| s.trim() == "wgpu");
     opts.renderer = if wgpu { eframe::Renderer::Wgpu } else { eframe::Renderer::Glow };
     // OpenGL is what didn't start: wgpu's own OpenGL backend would fail the same way (or panic), so only
@@ -133,7 +133,7 @@ fn run(mut opts: eframe::NativeOptions, args: &[String]) -> eframe::Result {
         Ok(Err(e)) => e.to_string(),
         Err(p) if !PAINTED.load(Relaxed) => {
             // the panic hook's crash.log is the renderer's, not a crash of NDM's: kept under its own name
-            let log = core::store_path().with_file_name("crash.log");
+            let log = core::state::store_path().with_file_name("crash.log");
             let _ = std::fs::rename(&log, log.with_file_name("renderer-crash.log"));
             p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_else(|| "panic".into())
         }

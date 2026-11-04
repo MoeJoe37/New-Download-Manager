@@ -84,7 +84,7 @@ impl App {
 
     /// Options -> Schedule the project / toolbar: the scheduler (284) for a saved project, else NDM's
     /// "save it first?" question.
-    pub(in crate::app) fn grab_schedule(&mut self, proj: core::GrabProject, saved: bool) {
+    pub(in crate::app) fn grab_schedule(&mut self, proj: core::settings::GrabProject, saved: bool) {
         if saved {
             let name = proj.opts.name.trim().to_string();
             self.project_cmd(1, &name);
@@ -101,7 +101,7 @@ impl App {
     }
 
     /// Store a grabber project under `name` (replacing one of that name, or `orig` when renaming).
-    pub(in crate::app) fn save_project(&mut self, name: &str, orig: Option<&str>, proj: Option<core::GrabProject>) {
+    pub(in crate::app) fn save_project(&mut self, name: &str, orig: Option<&str>, proj: Option<core::settings::GrabProject>) {
         let mut s = self.core.settings();
         match proj {
             Some(mut p) => {
@@ -350,12 +350,12 @@ impl App {
             Some(GrabCmd::New) => back = true,
             Some(GrabCmd::Save) => {
                 let st = c.state.lock().unwrap();
-                let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
                 drop(st);
                 self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)), sched: false });
             }
             Some(GrabCmd::SaveTpl) => {
-                let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), ..Default::default() };
                 self.open(Dialog::GrabTpl { name: String::new(), proj: Box::new(proj), replace: false });
             }
             Some(GrabCmd::Recent(n)) => {
@@ -543,7 +543,7 @@ impl App {
             Some(6) => self.grab(c, opts, save_mode, save_cat, folder, false),
             Some(8) => {
                 let st = c.state.lock().unwrap();
-                let proj = core::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode, save_cat: save_cat.into(), folder: folder.into(), files: st.files.clone(), pages: st.pages, ..Default::default() };
                 drop(st);
                 self.grab_schedule(proj, saved);
             }

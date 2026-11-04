@@ -104,7 +104,7 @@ pub struct Info {
     pub last_try: i64,
     pub conns: usize,
     pub queued: bool,
-    /// Which queue (core::Queue::id) a queued download belongs to.
+    /// Which queue (core::queue::Queue::id) a queued download belongs to.
     pub queue: u32,
     pub limit_kb: u64,
     /// "Parent web page": the page the link was on.

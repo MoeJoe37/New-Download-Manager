@@ -7,7 +7,7 @@ impl App {
         name: &mut String,
         orig: &mut Option<String>,
         quiet: &mut bool,
-        proj: &mut Option<Box<core::GrabProject>>,
+        proj: &mut Option<Box<core::settings::GrabProject>>,
         sched: &mut bool,
     ) -> bool {
         let mut d = dlu::D::new(ui);
@@ -41,7 +41,7 @@ impl App {
         !(ok || d.button(113.0, 54.0, 50.0, 14.0, "Cancel", true))
     }
 
-    pub(super) fn dialog_grab_sched_ask(&mut self, ui: &mut egui::Ui, proj: &mut Box<core::GrabProject>) -> bool {
+    pub(super) fn dialog_grab_sched_ask(&mut self, ui: &mut egui::Ui, proj: &mut Box<core::settings::GrabProject>) -> bool {
         let mut d = dlu::D::new(ui);
         d.text(7.0, 7.0, 246.0, 20.0, "To use project scheduler you should save the project at first. Save the project now?");
         let yes = d.button(140.0, 40.0, 50.0, 14.0, "Yes", true);
@@ -54,7 +54,7 @@ impl App {
         !(yes || d.button(203.0, 40.0, 50.0, 14.0, "No", true))
     }
 
-    pub(super) fn dialog_grab_sched(&mut self, ui: &mut egui::Ui, p: &mut Box<core::GrabProject>) -> bool {
+    pub(super) fn dialog_grab_sched(&mut self, ui: &mut egui::Ui, p: &mut Box<core::settings::GrabProject>) -> bool {
         let mut d = dlu::D::new(ui);
         if let Some(t) = self.res.icon(285) {
             let r = d.rect(7.0, 7.0, 20.0, 20.0);
@@ -168,7 +168,7 @@ impl App {
         let ok = d.button(155.0, 117.0, 50.0, 14.0, "OK", !user.is_empty());
         if ok {
             if *save {
-                self.core.settings().logins.push(core::Login { site: site.to_owned(), user: user.clone(), pass: pass.clone() });
+                self.core.settings().logins.push(core::settings::Login { site: site.to_owned(), user: user.clone(), pass: pass.clone() });
                 self.core.save();
             }
             self.grab_auth = Some((user.clone(), pass.clone()));
@@ -231,7 +231,7 @@ impl App {
             if !keep && !opts.name.trim().is_empty() {
                 // closing the results window saves the project (template 269 unless "don't show")
                 let st = c.state.lock().unwrap();
-                let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), files: st.files.clone(), pages: st.pages, ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), files: st.files.clone(), pages: st.pages, ..Default::default() };
                 drop(st);
                 let name = opts.name.trim().to_string();
                 let (quiet, taken) = { let s = self.core.settings(); (s.grab_quiet, s.grab_projects.iter().any(|p| p.opts.name == name)) };
@@ -256,11 +256,11 @@ impl App {
                 return true;
             }
             Some(GrabCmd::Save) => {
-                let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
                 self.open(Dialog::GrabSave { name: opts.name.trim().to_string(), orig: None, quiet: false, proj: Some(Box::new(proj)), sched: false });
             }
             Some(GrabCmd::SaveTpl) => {
-                let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
                 self.open(Dialog::GrabTpl { name: String::new(), proj: Box::new(proj), replace: false });
             }
             Some(GrabCmd::Recent(n)) => {
@@ -268,7 +268,7 @@ impl App {
                 return false;
             }
             Some(GrabCmd::Schedule) => {
-                let proj = core::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
+                let proj = core::settings::GrabProject { opts: opts.clone(), save_mode: *save_mode, save_cat: save_cat.clone(), folder: folder.clone(), ..Default::default() };
                 self.grab_schedule(proj, saved);
             }
             Some(GrabCmd::Close) => return false,
@@ -471,7 +471,7 @@ impl App {
         !d.button(324.0, 190.0 + o, 60.0, 14.0, "Close", true)
     }
 
-    pub(super) fn dialog_grab_tpl(&mut self, ui: &mut egui::Ui, name: &mut String, proj: &mut Box<core::GrabProject>, replace: &mut bool) -> bool {
+    pub(super) fn dialog_grab_tpl(&mut self, ui: &mut egui::Ui, name: &mut String, proj: &mut Box<core::settings::GrabProject>, replace: &mut bool) -> bool {
         // template 268; built-in names are reserved, an existing one is replaced on Yes
         let mut d = dlu::D::new(ui);
         if *replace {

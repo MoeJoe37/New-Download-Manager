@@ -176,7 +176,7 @@ impl App {
             if *remember || auto {
                 self.core.settings().cat_dirs.insert(i.category.clone(), i.folder.clone());
             }
-            (i.queued, i.queue) = (later, core::MAIN_QUEUE);
+            (i.queued, i.queue) = (later, core::queue::MAIN_QUEUE);
             self.cancels.remove(&i.url);
             if i.yt != engine::YtOpts::default() {
                 // the early start fetched the default formats: start over with the chosen ones

@@ -331,7 +331,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 if ui.button(tr("Report a problem...")).clicked() {
                     let (_, mut text) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current());
-                    text.push_str(&crash_diagnostics(&core::store_path()));
+                    text.push_str(&crash_diagnostics(&core::state::store_path()));
                     self.open(Dialog::ProblemReport { text });
                     ui.close_menu();
                 }

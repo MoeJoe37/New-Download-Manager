@@ -201,7 +201,7 @@ pub(in crate::app) const TB_BUILTIN: &str = "Neon";
 
 /// Where custom toolbars live: one folder per toolbar, next to NDM's settings.
 pub(in crate::app) fn toolbars_dir() -> PathBuf {
-    core::store_path().with_file_name("toolbars")
+    core::state::store_path().with_file_name("toolbars")
 }
 
 /// The custom toolbars installed: folder names with at least one button picture, sorted.
@@ -219,7 +219,7 @@ pub(in crate::app) fn toolbar_sets() -> Vec<String> {
 
 /// Where custom category icons live: one folder per set, next to NDM's settings.
 pub(super) fn cat_icons_dir() -> PathBuf {
-    core::store_path().with_file_name("category-icons")
+    core::state::store_path().with_file_name("category-icons")
 }
 
 /// The category icon sets installed: folders with at least one PNG, sorted.

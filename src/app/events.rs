@@ -66,9 +66,9 @@ impl App {
                     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                 } else if e.id == *startq {
-                    core.start_queue(core::MAIN_QUEUE);
+                    core.start_queue(core::queue::MAIN_QUEUE);
                 } else if e.id == *stopq {
-                    core.stop_queue(core::MAIN_QUEUE);
+                    core.stop_queue(core::queue::MAIN_QUEUE);
                 } else if e.id == *limit {
                     let on = !core.settings().limit_on;
                     core.settings().limit_on = on;
@@ -111,9 +111,9 @@ impl App {
                 ctx2.send_viewport_cmd(ViewportCommand::Minimized(false));
                 ctx2.send_viewport_cmd(ViewportCommand::Focus);
             } else if e.id == *startq {
-                core2.start_queue(core::MAIN_QUEUE);
+                core2.start_queue(core::queue::MAIN_QUEUE);
             } else if e.id == *stopq {
-                core2.stop_queue(core::MAIN_QUEUE);
+                core2.stop_queue(core::queue::MAIN_QUEUE);
             } else if e.id == *limit {
                 let on = !core2.settings().limit_on;
                 core2.settings().limit_on = on;
@@ -150,9 +150,9 @@ impl App {
             if e.id == *open {
                 win::show(hwnd2.load(Relaxed));
             } else if e.id == *startq {
-                core2.start_queue(core::MAIN_QUEUE);
+                core2.start_queue(core::queue::MAIN_QUEUE);
             } else if e.id == *stopq {
-                core2.stop_queue(core::MAIN_QUEUE);
+                core2.stop_queue(core::queue::MAIN_QUEUE);
             } else if e.id == *limit {
                 let on = !core2.settings().limit_on;
                 core2.settings().limit_on = on;
@@ -508,7 +508,7 @@ impl eframe::App for App {
             self.open(Dialog::QuotaHit { text });
         }
         let finished: Vec<u32> = std::mem::take(&mut *self.core.queue_finished.lock().unwrap());
-        let mut done: Vec<core::Sched> = finished.iter().filter_map(|q| self.core.settings().queue(*q).map(|q| q.sched.clone())).collect();
+        let mut done: Vec<core::queue::Sched> = finished.iter().filter_map(|q| self.core.settings().queue(*q).map(|q| q.sched.clone())).collect();
         done.append(&mut self.core.sched_done.lock().unwrap()); // scheduled grabber projects
         for s in done {
             if s.open_on && !s.open_file.trim().is_empty() {

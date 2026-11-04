@@ -31,7 +31,7 @@ use crate::{core, dlu, engine, grabber, i18n, net, stream, win, ytdlp};
 use crate::mac_capture;
 use self::dialogs::{Dialog, PlaylistPicker, ProbeSlot};
 use self::help::{help, help_body, take_help_request};
-use crate::core::{Core, Incoming, Settings, GENERAL};
+use crate::core::{Core, browser_bridge::Incoming, settings::Settings, settings::GENERAL};
 use crate::diagnostics::{crash_diagnostics, issue_text};
 use crate::update::{check_update, install_update, Release, UPDATE_REPO};
 use crate::engine::{Info, Probe, Status};
@@ -110,7 +110,7 @@ pub(crate) struct App {
     /// Whether the drop target window was last shown (to notice it being closed from its own menu).
     drop_shown: bool,
     /// OK in "Advanced proxy settings": handed to the open Options window.
-    adv_done: Option<core::AdvProxy>,
+    adv_done: Option<core::routing::AdvProxy>,
     /// Changes made by dialogs opened from Options, applied to its edited copy (or the settings if it's closed).
     opt_patch: Vec<Box<dyn FnOnce(&mut Settings)>>,
     /// OK in the 304 "Add" box: handed to the open 303 list.
@@ -121,7 +121,7 @@ pub(crate) struct App {
     panel_site: Option<String>,
     panel_min: Option<(String, u64)>,
     /// "Add version..." in Browser details: handed to the open Options window.
-    browser_add: Vec<core::Browser>,
+    browser_add: Vec<core::settings::Browser>,
     /// Automatically taken over addresses the user cancelled, and how often (template 302 after the second).
     cancels: HashMap<String, u8>,
     clip_seq: Option<u32>,
@@ -160,7 +160,7 @@ impl App {
         style(ctx, dark);
         let hwnd = Arc::new(AtomicIsize::new(0));
         let (tx, rx) = channel();
-        if let Some(inc) = core::cli_args(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        if let Some(inc) = core::browser_bridge::cli_args(&std::env::args().skip(1).collect::<Vec<_>>()) {
             let _ = tx.send(inc);
         }
         let c = ctx.clone();
@@ -299,7 +299,7 @@ impl App {
         // browsers installed since the list was saved are added ticked, like NDM's detection (296)
         for (name, exe) in win::installed_browsers() {
             if !s.browsers.iter().any(|b| b.exe.eq_ignore_ascii_case(&exe)) {
-                s.browsers.push(core::Browser { name, exe, on: true });
+                s.browsers.push(core::settings::Browser { name, exe, on: true });
             }
         }
         self.open(Dialog::Options { tab, s: Box::new(s) });

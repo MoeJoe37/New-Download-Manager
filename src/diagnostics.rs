@@ -90,6 +90,6 @@ pub(crate) fn install_hook() {
     std::panic::set_hook(Box::new(|p| {
         let bt = std::backtrace::Backtrace::force_capture();
         let location = p.location().map_or_else(|| "unavailable".into(), |loc| crash_location(loc.file(), loc.line()));
-        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("NDM crash location {location}\n{p}\n{bt}"));
+        let _ = std::fs::write(core::state::store_path().with_file_name("crash.log"), format!("NDM crash location {location}\n{p}\n{bt}"));
     }));
 }

@@ -38,7 +38,7 @@ pub fn is_video_page(url: &str) -> bool {
     let file = u.path().rsplit('/').next().unwrap_or("").to_ascii_lowercase();
     // a file on the site (a picture, a document, a program, a stream's playlist) is NDM's own to download
     let ext = file.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    let known = crate::core::CATEGORIES.iter().any(|(_, exts)| exts.split_whitespace().any(|x| x == ext));
+    let known = crate::core::settings::CATEGORIES.iter().any(|(_, exts)| exts.split_whitespace().any(|x| x == ext));
     let plain = !ext.is_empty() && (known || ["jpg", "jpeg", "png", "gif", "gifv", "webp", "avif", "svg", "bmp", "m3u8", "mpd", "json", "txt", "csv"].contains(&ext));
     !plain && SITES.iter().any(|s| on_site(&host, s))
 }
@@ -726,7 +726,7 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
     };
     // Preserve extractor-specific fields and cookies for protocol-specific downloaders. Remove this
     // private file on success, failure, Stop, or a Rust error while starting a subprocess.
-    let json = save_extraction(&v, &crate::core::store_path())?;
+    let json = save_extraction(&v, &crate::core::state::store_path())?;
     let source = ["--load-info-json".to_string(), json.path().display().to_string()];
     let fallback = |part: &Job, s: &Stream, out: &Path| {
         fetch_video(part, &p, &source, &args, &s.id, &template(out), s.size, global)
@@ -973,7 +973,7 @@ const DENO_LATEST: &str = "https://github.com/denoland/deno/releases/latest/down
 
 /// The folder of NDM's own yt-dlp and Deno, beside its settings (added to PATH by `install`).
 pub fn tools_dir() -> PathBuf {
-    crate::core::store_path().parent().map(|d| d.join("tools")).unwrap_or_else(|| PathBuf::from("tools"))
+    crate::core::state::store_path().parent().map(|d| d.join("tools")).unwrap_or_else(|| PathBuf::from("tools"))
 }
 
 /// yt-dlp's release file for this system: its stand-alone builds, which need no Python.

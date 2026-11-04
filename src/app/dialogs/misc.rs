@@ -5,7 +5,7 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         orig: &mut Option<String>,
-        cat: &mut core::Category,
+        cat: &mut core::settings::Category,
         folder: &mut String,
         error: &mut String,
     ) -> bool {
@@ -74,7 +74,7 @@ impl App {
         !(yes || d.button(140.0, 38.0, 50.0, 14.0, "No", true))
     }
 
-    pub(super) fn dialog_adv_proxy(&mut self, ui: &mut egui::Ui, adv: &mut core::AdvProxy) -> bool {
+    pub(super) fn dialog_adv_proxy(&mut self, ui: &mut egui::Ui, adv: &mut core::routing::AdvProxy) -> bool {
         let mut d = dlu::D::new(ui);
         // one group per protocol, 41 DLU apart: label row at +10, edits at +20
         let row = |d: &mut dlu::D, y: f32, on: bool, host: &mut String, port: &mut String, user: &mut String, pass: &mut String| {
@@ -397,8 +397,8 @@ impl App {
             list[*sel].1 = false;
         }
         if d.button(158.0, 108.0, 71.0, 14.0, "Reset", true) {
-            *list = core::DEFAULT_COLUMNS.iter().map(|(k, w)| (*k, true, *w)).collect();
-            list.extend(COLS.iter().enumerate().filter(|(k, _)| !core::DEFAULT_COLUMNS.iter().any(|c| c.0 as usize == *k)).map(|(k, c)| (k as u8, false, c.2)));
+            *list = core::settings::DEFAULT_COLUMNS.iter().map(|(k, w)| (*k, true, *w)).collect();
+            list.extend(COLS.iter().enumerate().filter(|(k, _)| !core::settings::DEFAULT_COLUMNS.iter().any(|c| c.0 as usize == *k)).map(|(k, c)| (k as u8, false, c.2)));
             (*sel, *width) = (0, list[0].2.to_string());
         }
         d.label_r(7.0, 132.0, 123.0, 10.0, "The selected column should be");
@@ -512,7 +512,7 @@ impl App {
         }
         let close = d.button(308.0, 6.0, 44.0, 14.0, "Close", true);
         if d.button(308.0, 23.0, 44.0, 14.0, "Reset", true) {
-            *layout = core::Settings::default().tb_layout;
+            *layout = core::settings::Settings::default().tb_layout;
             (*avail, *cur) = (None, None);
         }
         if d.button(308.0, 40.0, 44.0, 14.0, "Help", help("index.htm", false)) {

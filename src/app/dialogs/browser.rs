@@ -80,7 +80,7 @@ impl App {
     pub(super) fn dialog_browser_details(&mut self, ui: &mut egui::Ui, name: &mut String) -> bool {
         let mut d = dlu::D::new(ui);
         let list = d.listview(7.0, 7.0, 416.0, 59.0, &[("Browser", 110.0), ("Path", 230.0), ("Type of integration", 74.0)]);
-        let rows: Vec<core::Browser> = self.dialogs.iter().find_map(|(_, x)| if let Dialog::Options { s, .. } = x { Some(s.browsers.clone()) } else { None })
+        let rows: Vec<core::settings::Browser> = self.dialogs.iter().find_map(|(_, x)| if let Dialog::Options { s, .. } = x { Some(s.browsers.clone()) } else { None })
             .unwrap_or_else(|| self.core.settings().browsers.clone()).into_iter().filter(|b| b.name == *name).collect();
         d.rows(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 20.0), |ui| {
             for b in &rows {
@@ -93,13 +93,13 @@ impl App {
         });
         if d.button(135.0, 73.0, 67.0, 14.0, "Add version...", true) {
             if let Some(p) = rfd::FileDialog::new().add_filter(tr_os("Programs"), &["exe"]).pick_file() {
-                self.browser_add.push(core::Browser { name: name.clone(), exe: p.display().to_string(), on: true });
+                self.browser_add.push(core::settings::Browser { name: name.clone(), exe: p.display().to_string(), on: true });
             }
         }
         !d.button(227.0, 73.0, 67.0, 14.0, "Close", true)
     }
 
-    pub(super) fn dialog_integrate(ui: &mut egui::Ui, b: &mut core::Browser) -> bool {
+    pub(super) fn dialog_integrate(ui: &mut egui::Ui, b: &mut core::settings::Browser) -> bool {
         let page = extension_page(b).unwrap_or_default();
         let dir = extension_dir().map(|p| p.display().to_string()).unwrap_or_default();
         let mut d = dlu::D::new(ui);
@@ -119,7 +119,7 @@ impl App {
         !d.button(428.0, 180.0, 50.0, 14.0, "Close", true)
     }
 
-    pub(super) fn dialog_keys(&mut self, ui: &mut egui::Ui, k: &mut core::Keys) -> bool {
+    pub(super) fn dialog_keys(&mut self, ui: &mut egui::Ui, k: &mut core::settings::Keys) -> bool {
         // Template 229; the extension reads these through /config.
         let mut d = dlu::D::new(ui);
         d.hline(6.0, 6.0, 306.0);

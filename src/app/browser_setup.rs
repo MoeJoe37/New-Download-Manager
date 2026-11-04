@@ -1,8 +1,8 @@
 use super::*;
 
 /// The browser's own extensions page, for the browsers the extension (Chromium MV3) runs in.
-pub(in crate::app) fn extension_page(b: &core::Browser) -> Option<String> {
-    let k = core::browser_kind(&format!("{} {}", b.name, b.exe));
+pub(in crate::app) fn extension_page(b: &core::settings::Browser) -> Option<String> {
+    let k = core::settings::browser_kind(&format!("{} {}", b.name, b.exe));
     if k == "firefox" {
         return Some("about:debugging#/runtime/this-firefox".into());
     }
@@ -16,7 +16,7 @@ pub(in crate::app) const GUIDES: [&str; 2] = [
     "To capture downloads from this browser, open its extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select this folder:",
 ];
 
-pub(in crate::app) fn integration(b: &core::Browser) -> &'static str {
+pub(in crate::app) fn integration(b: &core::settings::Browser) -> &'static str {
     if extension_page(b).is_some() { "Extension" } else { "Not supported" }
 }
 
@@ -31,7 +31,7 @@ pub(in crate::app) fn extension_dir() -> Option<PathBuf> {
     // copy beside state.json that stays put, refreshed when NDM's extension changes
     static STABLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     STABLE.get_or_init(|| {
-        let d = core::store_path().with_file_name("extension");
+        let d = core::state::store_path().with_file_name("extension");
         refresh_copy(&bundled, &d).ok().map(|_| d)
     })
     .clone()

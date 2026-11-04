@@ -75,7 +75,7 @@ impl App {
             return self.all_links(inc);
         }
         if inc.start_queue {
-            self.core.start_queue(core::MAIN_QUEUE);
+            self.core.start_queue(core::queue::MAIN_QUEUE);
         }
         if inc.url.is_empty() {
             return;

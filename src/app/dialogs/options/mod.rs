@@ -24,7 +24,7 @@ impl App {
         let mut adv = None;
         let mut open = None;
         let mut new_cat: Option<Option<String>> = None;
-        let mut integrate: Vec<core::Browser> = Vec::new();
+        let mut integrate: Vec<core::settings::Browser> = Vec::new();
         // measured on NDM (125%): 570 px wide sheet, tab rows General..Connection / Proxy..Sounds,
         // pages laid out at PAGE_DX
         d.tabs(4.6, 5.5, 316.0, 280.5, tab, &names);

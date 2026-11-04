@@ -297,10 +297,10 @@ pub fn native_host(title: &str, exe: Option<PathBuf>, clean_env: fn(&mut Command
     let _ = out.write_all(&(reply.len() as u32).to_le_bytes()).and_then(|_| out.write_all(reply)).and_then(|_| out.flush());
 }
 
-/// Is NDM running? Its browser endpoint answers on 127.0.0.1 (`core::running_port`). With `activate` the
+/// Is NDM running? Its browser endpoint answers on 127.0.0.1 (`core::browser_bridge::running_port`). With `activate` the
 /// running copy is asked to show its window (POST /show).
 pub fn running(_title: &str, activate: bool) -> bool {
-    let Some(port) = crate::core::running_port() else { return false };
+    let Some(port) = crate::core::browser_bridge::running_port() else { return false };
     if activate {
         let _ = ureq::post(&format!("http://127.0.0.1:{port}/show")).set("X-NDM", "1").timeout(std::time::Duration::from_secs(3)).call();
     }

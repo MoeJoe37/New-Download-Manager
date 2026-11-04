@@ -9,7 +9,7 @@ impl App {
         ctx: &egui::Context,
         icon: Option<egui::TextureId>,
         open: &mut Option<Dialog>,
-        integrate: &mut Vec<core::Browser>,
+        integrate: &mut Vec<core::settings::Browser>,
         has_extension: bool,
     ) {
         let mut d2 = dlu::D::new_offset(ui, origin.0, origin.1).with_dx(PAGE_DX);
@@ -56,7 +56,7 @@ impl App {
         if d2.button(97.0, 173.0, 72.0, 14.0, "Add browser...", true) {
             if let Some(p) = rfd::FileDialog::new().add_filter(tr_os("Programs"), &["exe"]).pick_file() {
                 let name = p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                s.browsers.push(core::Browser { name, exe: p.display().to_string(), on: true });
+                s.browsers.push(core::settings::Browser { name, exe: p.display().to_string(), on: true });
                 sel = Some(s.browsers.len() - 1);
             }
         }
@@ -376,7 +376,7 @@ let cats: Vec<&str> = cat_names.iter().map(String::as_str).collect();
         d2.rows(list.shrink2(Vec2::new(4.0, 0.0)).with_min_y(list.min.y + 18.0), |ui| {
             for (k, (on, path)) in s.sounds.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
-                    ui.add_sized([120.0 * PAGE_DX - 6.0, 18.0], dlu::checkbox(on, core::SOUND_EVENTS[k]));
+                    ui.add_sized([120.0 * PAGE_DX - 6.0, 18.0], dlu::checkbox(on, core::settings::SOUND_EVENTS[k]));
                     let name = Path::new(path.as_str()).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
                     if ui.add_sized([124.0 * PAGE_DX - 10.0, 18.0], egui::SelectableLabel::new(sel == Some(k), name)).clicked() {
                         sel = Some(k);
@@ -387,7 +387,7 @@ let cats: Vec<&str> = cat_names.iter().map(String::as_str).collect();
         if d2.button(63.0, 199.0, 50.0, 14.0, "Browse...", sel.is_some()) {
             let k = sel.unwrap();
             if let Some(p) = rfd::FileDialog::new().add_filter(format!("{} (*.wav)", tr_os("Sound Files")), &["wav"]).pick_file() {
-                let dir = core::store_path().with_file_name("Sounds");
+                let dir = core::state::store_path().with_file_name("Sounds");
                 let copy = dir.join(p.file_name().unwrap_or_default());
                 let kept = copy == p || (std::fs::create_dir_all(&dir).is_ok() && std::fs::copy(&p, &copy).is_ok());
                 s.sounds[k] = (true, if kept { copy } else { p }.display().to_string());
@@ -404,7 +404,7 @@ let cats: Vec<&str> = cat_names.iter().map(String::as_str).collect();
         s: &mut Settings,
         origin: (f32, f32),
         icon: Option<egui::TextureId>,
-        adv: &mut Option<core::AdvProxy>,
+        adv: &mut Option<core::routing::AdvProxy>,
     ) {
         let mut d2 = dlu::D::new_offset(ui, origin.0, origin.1).with_dx(PAGE_DX);
         d2.page_header(icon, 36.0, "Proxy / socks configuration");

@@ -190,7 +190,7 @@ pub fn system_dark() -> bool {
 pub fn system_proxy() -> (bool, String, String) {
     let (on, mut server, bypass) = scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default());
     if on && crate::mac_capture::has_journal() {
-        let local = format!("http=127.0.0.1:{}", crate::core::PROXY_PORT);
+        let local = format!("http=127.0.0.1:{}", crate::core::routing::PROXY_PORT);
         server = server.split(';').filter(|entry| *entry != local).collect::<Vec<_>>().join(";");
     }
     (!server.is_empty(), server, bypass)

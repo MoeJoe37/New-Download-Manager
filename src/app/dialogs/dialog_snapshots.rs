@@ -60,7 +60,7 @@ fn dialog_snapshots() {
         Exceptions: Dialog::Exceptions { .. } => Dialog::Exceptions { list: vec![], sel: None, ask: false },
         ExcAdd: Dialog::ExcAdd { .. } => Dialog::ExcAdd { addr: String::new() },
         BrowserDetails: Dialog::BrowserDetails { .. } => Dialog::BrowserDetails { name: "Firefox".into() },
-        Integrate: Dialog::Integrate { .. } => Dialog::Integrate { b: core::Browser { name: "Firefox".into(), ..Default::default() } },
+        Integrate: Dialog::Integrate { .. } => Dialog::Integrate { b: core::settings::Browser { name: "Firefox".into(), ..Default::default() } },
         Keys: Dialog::Keys { .. } => Dialog::Keys { k: Default::default() },
         MenuItems: Dialog::MenuItems { .. } => Dialog::MenuItems { dl: false, all: false },
         Panel: Dialog::Panel { .. } => Dialog::Panel {

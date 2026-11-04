@@ -70,9 +70,9 @@ pub(super) enum Dialog {
     /// "Browser details" (template 297) for every entry with this name.
     BrowserDetails { name: String },
     /// Setting the extension up in one browser ("Google Chrome Integration", template 381).
-    Integrate { b: core::Browser },
+    Integrate { b: core::settings::Browser },
     /// "Using special keys" (template 229).
-    Keys { k: core::Keys },
+    Keys { k: core::settings::Keys },
     /// Browser context menu items (template 334).
     MenuItems { dl: bool, all: bool },
     /// "Customize download panels in browsers" (CEditBrowsersDwnlPanelDlg): web-players page (340) and
@@ -95,7 +95,7 @@ pub(super) enum Dialog {
     Delete { ids: Vec<u64>, files: bool, dont_show: bool },
     Options { tab: u8, s: Box<Settings> },
     /// `queue` is the edited copy of the queue selected in the tree; Apply stores it.
-    Scheduler { tab: u8, queue: core::Queue, qsel: Option<u64>, error: String },
+    Scheduler { tab: u8, queue: core::queue::Queue, qsel: Option<u64>, error: String },
     /// Duplicate download link (template 298): the new link and the download already in the list.
     Duplicate { inc: Incoming, old: u64, choice: u8, remember: bool },
     /// File Properties (template 135) for a finished download.
@@ -115,11 +115,11 @@ pub(super) enum Dialog {
     /// Downloads -> Set yt-dlp: downloading it (bytes so far, of, the version installed or the error).
     YtDlp { got: Arc<std::sync::atomic::AtomicU64>, total: Arc<std::sync::atomic::AtomicU64>, done: Arc<Mutex<Option<Result<String, String>>>> },
     /// NDM categories (template 204). `orig` = name of the edited category, None when adding.
-    Category { orig: Option<String>, cat: core::Category, folder: String, error: String },
+    Category { orig: Option<String>, cat: core::settings::Category, folder: String, error: String },
     /// "Do you really want to delete ... category" confirmation.
     CatDelete { name: String },
     /// Advanced proxy settings (template 369).
-    AdvProxy { adv: core::AdvProxy },
+    AdvProxy { adv: core::routing::AdvProxy },
     /// A plain message box.
     Info { title: String, text: String },
     /// Connection page's "Networks...": the networks a download is spread over; `off` = unticked.
@@ -134,12 +134,12 @@ pub(super) enum Dialog {
     /// processing", "Don't ask me again"; `batch` says which Options tick the last one clears.
     QueuePick { ids: Vec<u64>, q: String, start: bool, never: bool, batch: bool },
     /// "Saving the project of NDM Grabber" (template 269); `orig` = renaming that project (no `proj`).
-    GrabSave { name: String, orig: Option<String>, quiet: bool, proj: Option<Box<core::GrabProject>>, sched: bool },
+    GrabSave { name: String, orig: Option<String>, quiet: bool, proj: Option<Box<core::settings::GrabProject>>, sched: bool },
     /// "To use project scheduler you should save the project at first. Save the project now?"
     /// 0x4e8c80, Yes / No) for Schedule the project on an unsaved project.
-    GrabSchedAsk { proj: Box<core::GrabProject> },
+    GrabSchedAsk { proj: Box<core::settings::GrabProject> },
     /// "Schedule the grabber project" (template 284), edited copy.
-    GrabSched { p: Box<core::GrabProject> },
+    GrabSched { p: Box<core::settings::GrabProject> },
     /// "Connecting to the site" (template 279): the start page wants a login.
     GrabLogin { realm: String, site: String, user: String, pass: String, save: bool },
     /// "Export download list" (template 191): 0 queue, 1 selected, 2 all; then a text or .ef2 file.
@@ -163,7 +163,7 @@ pub(super) enum Dialog {
     GrabStats { crawl: Arc<crate::grabber::Crawl> },
     /// "Template Name" (template 268) for Project -> "Save current settings as a template"; `replace` =
     /// asking "The template with such name already exists..." (20603).
-    GrabTpl { name: String, proj: Box<core::GrabProject>, replace: bool },
+    GrabTpl { name: String, proj: Box<core::settings::GrabProject>, replace: bool },
     /// "Load project" (template 270): the saved projects.
     GrabLoad { sel: Option<usize> },
     /// "Settings of NDM Grabber" (template 262), edited copy.

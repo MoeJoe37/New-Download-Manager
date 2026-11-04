@@ -44,8 +44,8 @@ impl App {
             Some(6) => self.options(0),
             Some(7) => self.open_scheduler(0),
             // the button itself acts on the main queue
-            Some(8) => self.core.start_queue(core::MAIN_QUEUE),
-            Some(9) => self.core.stop_queue(core::MAIN_QUEUE),
+            Some(8) => self.core.start_queue(core::queue::MAIN_QUEUE),
+            Some(9) => self.core.stop_queue(core::queue::MAIN_QUEUE),
             Some(10) => self.grabber(),
             Some(11) => App::tell_friend(),
             _ => {}

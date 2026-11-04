@@ -1,7 +1,7 @@
 use super::*;
 
 impl App {
-    pub(super) fn dialog_scheduler(&mut self, ui: &mut egui::Ui, tab: &mut u8, queue: &mut core::Queue, qsel: &mut Option<u64>, error: &mut String) -> bool {
+    pub(super) fn dialog_scheduler(&mut self, ui: &mut egui::Ui, tab: &mut u8, queue: &mut core::queue::Queue, qsel: &mut Option<u64>, error: &mut String) -> bool {
         // CNewSchedulerDlg (template 308): queue tree left, tab pages right, buttons along the bottom.
         let queue_icon = self.res.icon(331);
         let running = self.core.queue_running(queue.id);
@@ -52,7 +52,7 @@ impl App {
             d.label(288.0, 60.0, 40.0, 10.0, grey("hours"));
             d.at(160.0, 78.5, 160.0, 10.0, |ui| ui.add_enabled(on, dlu::checkbox(&mut s.quota_warn, "Show warning before stopping downloads")));
         }
-        let builtin = self.core.settings().queue(queue.id).is_none_or(core::Queue::builtin);
+        let builtin = self.core.settings().queue(queue.id).is_none_or(core::queue::Queue::builtin);
         // shown like NDM's time pickers ("11:00:00 PM"); stored as HH:MM
         for t in [&mut queue.sched.start_at, &mut queue.sched.stop_at] {
             if let Ok(v) = chrono::NaiveTime::parse_from_str(t, "%H:%M") {
@@ -183,7 +183,7 @@ impl App {
         let new = d.button(14.3, 266.5, 48.0, 12.5, "New queue", true);
         if d.button(67.7, 266.5, 48.5, 12.5, "Delete", !builtin) {
             self.core.delete_queue(queue.id);
-            pick = Some(core::MAIN_QUEUE);
+            pick = Some(core::queue::MAIN_QUEUE);
         }
         if d.button(144.0, 266.5, 55.0, 12.5, "Start now", !running && !is_limits) {
             self.core.start_queue(queue.id);
@@ -218,7 +218,7 @@ impl App {
         if let Some(id) = pick {
             // like switching queues in NDM's tree: unapplied edits of the old one are dropped
             *queue = if id == LIMITS {
-                core::Queue { id, name: "Download limits".into(), ..Default::default() }
+                core::queue::Queue { id, name: "Download limits".into(), ..Default::default() }
             } else {
                 self.core.settings().queue(id).cloned().unwrap_or_default()
             };
@@ -264,7 +264,7 @@ impl App {
         d.check(7.0, 74.0, 147.0, 10.0, never, "Don't ask me again");
         let ok = d.button(55.0, 53.0, 50.0, 14.0, "OK", true);
         if ok {
-            let qid = self.core.settings().queues.iter().find(|x| x.name == *q).map_or(core::MAIN_QUEUE, |x| x.id);
+            let qid = self.core.settings().queues.iter().find(|x| x.name == *q).map_or(core::queue::MAIN_QUEUE, |x| x.id);
             self.core.set_queue(ids, Some(qid));
             if *never {
                 let mut s = self.core.settings();
