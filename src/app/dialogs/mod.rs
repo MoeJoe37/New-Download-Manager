@@ -23,7 +23,7 @@ pub(super) struct PlaylistPicker {
     url: String,
     browser: String,
     pending: Option<PlaylistLookup>,
-    list: Option<ytdlp::Playlist>,
+    list: Option<ytdlp::playlist::Playlist>,
     selected: Vec<bool>,
     error: String,
 }
@@ -35,7 +35,7 @@ impl PlaylistPicker {
 
 struct PlaylistLookup {
     job: Arc<engine::Job>,
-    results: Receiver<Result<ytdlp::Playlist, String>>,
+    results: Receiver<Result<ytdlp::playlist::Playlist, String>>,
 }
 
 impl Drop for PlaylistLookup {

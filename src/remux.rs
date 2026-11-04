@@ -1351,7 +1351,7 @@ pub fn webm_merge(v: Pieces, a: Pieces, out: &Path) -> Result<bool, String> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::stream::{boxes, find};
+    use crate::stream::{fmp4::boxes, fmp4::find};
 
     /// A 640x480 baseline SPS, written bit by bit.
     pub fn sps_640x480() -> Vec<u8> {

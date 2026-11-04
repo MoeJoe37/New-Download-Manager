@@ -517,7 +517,7 @@ mod tests {
                 ..Default::default()
             });
             assert_eq!(
-                crate::stream::run(&job, &agent, &crate::engine::Limiter::default()),
+                crate::stream::download::run(&job, &agent, &crate::engine::Limiter::default()),
                 Ok(true)
             );
             let path = job.info().path();

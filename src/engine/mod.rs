@@ -133,7 +133,7 @@ pub struct Info {
     pub plain: bool,
     /// Temporary directory for the .part file (Options -> Save to); "" = next to the file.
     pub temp: String,
-    /// An HLS / DASH stream (`stream::run`), also when the address doesn't say so.
+    /// An HLS / DASH stream (`stream::download::run`), also when the address doesn't say so.
     pub stream: bool,
     pub media_output: String,
     pub media_variant: Option<usize>,

@@ -233,7 +233,7 @@ pub struct Settings {
     pub drop_target: bool,
     /// When updates were last checked.
     pub update_checked: i64,
-    /// Downloads -> Set yt-dlp: when NDM last looked for a newer yt-dlp (`ytdlp::keep_updated`).
+    /// Downloads -> Set yt-dlp: when NDM last looked for a newer yt-dlp (`ytdlp::install::keep_updated`).
     pub ytdlp_checked: i64,
     pub prog_sl_tab: bool,
     pub prog_c_tab: bool,

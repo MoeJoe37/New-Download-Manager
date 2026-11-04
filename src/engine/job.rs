@@ -214,7 +214,7 @@ impl Job {
             return crate::ytdlp::run(self, agent, global);
         }
         if crate::stream::is_manifest(&url) || self.info().stream {
-            return crate::stream::run(self, agent, global);
+            return crate::stream::download::run(self, agent, global);
         }
         // streams above stay on one network; here every network in `lanes` runs its own connections
         let lanes = self.lanes();
@@ -260,7 +260,7 @@ impl Job {
                 if r.header("Content-Type").is_some_and(crate::stream::is_manifest_type) {
                     drop(r);
                     self.info().stream = true;
-                    return crate::stream::run(self, agent, global);
+                    return crate::stream::download::run(self, agent, global);
                 }
                 // Queued, silent CLI and "start downloading immediately" jobs can reach here without
                 // the File Info probe. Let yt-dlp try HTML from any site, while explicit HTML downloads

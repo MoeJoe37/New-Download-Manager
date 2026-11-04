@@ -68,7 +68,7 @@ impl App {
                         info.category = self.core.settings().category_for(&name, &info.url);
                         info.folder = if dir.is_empty() { self.core.settings().folder_for(&info.category) } else { dir.to_owned() };
                         if replace.is_none() {
-                            let name = ytdlp::named(&name, &info.yt.quality);
+                            let name = ytdlp::formats::named(&name, &info.yt.quality);
                             let name = self.core.unique_name(&info.folder, &name);
                             *path = Path::new(&info.folder).join(name).display().to_string();
                         }
@@ -139,7 +139,7 @@ impl App {
                 info.yt.quality = QUALITIES.iter().find(|c| c.0 == q).map_or("", |c| c.1).to_string();
                 let p = Path::new(path.as_str());
                 if let Some(n) = p.file_name() {
-                    *path = p.with_file_name(ytdlp::named(&n.to_string_lossy(), &info.yt.quality)).display().to_string();
+                    *path = p.with_file_name(ytdlp::formats::named(&n.to_string_lossy(), &info.yt.quality)).display().to_string();
                 }
             }
             d.check(162.0, y + 1.0, 66.0, 12.0, &mut info.yt.subs, "Subtitles");

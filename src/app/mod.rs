@@ -166,7 +166,7 @@ impl App {
         let c = ctx.clone();
         core.spawn_background(move || c.request_repaint());
         // NDM's own yt-dlp (Downloads -> Set yt-dlp) stays up to date
-        ytdlp::keep_updated(core.clone());
+        ytdlp::install::keep_updated(core.clone());
         let (c, h) = (ctx.clone(), hwnd.clone());
         core.spawn_server(tx, move || {
             // only the download's dialog shows; the main window stays in the tray (win::pump)
@@ -275,7 +275,7 @@ impl App {
         let (agent, g, t, d, c) = (self.core.agent("https://github.com/"), got.clone(), total.clone(), done.clone(), ctx.clone());
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let r = ytdlp::install(&agent, &g, &t, true);
+            let r = ytdlp::install::install(&agent, &g, &t, true);
             if r.is_ok() {
                 core.settings().ytdlp_checked = chrono::Local::now().timestamp();
             }

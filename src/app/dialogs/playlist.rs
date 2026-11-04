@@ -27,10 +27,10 @@ impl App {
         let (mut load, mut stop) = (false, false);
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!busy, |ui| {
-                let label = ytdlp::PLAYLIST_BROWSERS.iter().find(|(_, b)| *b == pick.browser)
+                let label = ytdlp::playlist::PLAYLIST_BROWSERS.iter().find(|(_, b)| *b == pick.browser)
                     .map_or("Public access", |(label, _)| *label);
                 egui::ComboBox::from_id_salt("playlist-browser").selected_text(tr(label)).show_ui(ui, |ui| {
-                    for &(label, browser) in ytdlp::PLAYLIST_BROWSERS {
+                    for &(label, browser) in ytdlp::playlist::PLAYLIST_BROWSERS {
                         ui.selectable_value(&mut pick.browser, browser.to_string(), tr(label));
                     }
                 });
@@ -52,14 +52,14 @@ impl App {
         if load {
             pick.list = None;
             pick.error.clear();
-            if let Some(url) = ytdlp::playlist_url(&pick.url) {
+            if let Some(url) = ytdlp::playlist::playlist_url(&pick.url) {
                 let core = self.core.clone();
                 let browser = pick.browser.clone();
                 let (tx, rx) = channel();
                 let job = engine::Job::new(Info::default());
                 let worker = job.clone();
                 std::thread::spawn(move || {
-                    let result = ytdlp::list_playlist(&worker, &core.agent(&url), &url, &browser);
+                    let result = ytdlp::playlist::list_playlist(&worker, &core.agent(&url), &url, &browser);
                     let _ = tx.send(result);
                 });
                 pick.pending = Some(PlaylistLookup { job, results: rx });
@@ -72,7 +72,7 @@ impl App {
         }
         if let Some(list) = &pick.list {
             if list.limited {
-                ui.label(i18n::trf("Showing entries from the first %d playlist positions.", &[&ytdlp::PLAYLIST_LIMIT]));
+                ui.label(i18n::trf("Showing entries from the first %d playlist positions.", &[&ytdlp::playlist::PLAYLIST_LIMIT]));
             }
             ui.horizontal(|ui| {
                 if ui.button(tr("Select all")).clicked() { pick.selected.fill(true); }
