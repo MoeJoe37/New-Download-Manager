@@ -112,7 +112,7 @@ pub(crate) fn ffmpeg() -> Option<PathBuf> {
 /// it doesn't have and finds fewer formats.
 fn base_args(url: &str, referrer: &str, cookies: &str) -> Vec<String> {
     // This is one NDM job. For a playlist-only URL take its first entry rather than treating the
-    // playlist JSON as a file. Ignore external configs that can change output names/progress or run hooks.
+    // playlist JSON as a file.
     let mut a = vec!["--ignore-config".into(), "--no-playlist".into(), "--playlist-items".into(), "1".into(), "--no-warnings".into()];
     if !referrer.is_empty() {
         a.extend(["--referer".into(), referrer.into()]);
@@ -160,6 +160,44 @@ fn formats(url: &str, ff: bool) -> String {
         both.to_string()
     } else {
         format!("{SINGLE}/{PAIR}")
+    }
+}
+
+/// The formats for a download's Quality choice (`YtOpts::quality`): only the sound ("m4a" / "mp3": the
+/// M4A track when there is one), or the site's formats with the video at most `quality` lines high, with no fallback above it.
+fn chosen(url: &str, ff: bool, quality: &str) -> String {
+    let all = formats(url, ff);
+    if quality == "m4a" || quality == "mp3" {
+        return "ba[ext=m4a]/ba/b".into();
+    }
+    let Ok(h) = quality.parse::<u32>() else { return all };
+    let cap = |alt: &str| {
+        alt.split('+')
+            .map(|part| {
+                let name = part.split('[').next().unwrap_or("");
+                if matches!(name, "b" | "bv" | "bv*" | "best" | "bestvideo") {
+                    format!("{name}[height<={h}]{}", &part[name.len()..])
+                } else {
+                    part.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("+")
+    };
+    let capped: Vec<String> = all.split('/').filter(|a| a.split('+').any(|p| !p.starts_with("ba"))).map(cap).collect();
+    capped.join("/")
+}
+
+/// The video's file name for a Quality choice: MP3 and M4A keep the title with their own type, a video
+/// named for its sound is an MP4 again.
+pub fn named(name: &str, quality: &str) -> String {
+    let path = Path::new(name);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "video".into());
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match quality {
+        "mp3" | "m4a" => format!("{stem}.{quality}"),
+        _ if ext == "mp3" || ext == "m4a" => format!("{stem}.mp4"),
+        _ => name.to_string(),
     }
 }
 
@@ -217,7 +255,7 @@ fn cookie_header(list: &str) -> String {
 fn picked(v: &serde_json::Value) -> Option<Vec<Stream>> {
     match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
         Some(r) => r.iter().map(Stream::of).collect(),
-        None => Some(vec![Stream::of(&v)?]),
+        None => Some(vec![Stream::of(v)?]),
     }
 }
 
@@ -239,7 +277,7 @@ fn video_name(v: &serde_json::Value) -> String {
     sanitize(&format!("{title}.{ext}"))
 }
 
-/// The video's file name (title and type) and size, if yt-dlp knows it.
+/// The video title, for File Info.
 pub fn probe(agent: &crate::engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     if agent.invalid_proxy { return Err("Invalid proxy configuration".into()); }
     let p = yt_dlp()?;
@@ -453,7 +491,11 @@ fn receipt_path(dest: &Path) -> PathBuf {
 fn source_identity(job: &Job) -> String {
     use sha2::{Digest, Sha256};
     let info = job.info();
-    format!("{:x}", Sha256::digest(format!("{}:{}", info.id, info.url)))
+    let mut source = format!("{}:{}", info.id, info.url);
+    if !info.yt.quality.is_empty() {
+        source.push_str(&format!("\nquality:{}", info.yt.quality));
+    }
+    format!("{:x}", Sha256::digest(source))
 }
 
 fn restore_tracks(job: &Job, dest: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -501,15 +543,21 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
         }
     }
     let p = yt_dlp()?;
-    let (url, referrer, cookies) = {
+    let (url, referrer, cookies, yt) = {
         let i = job.info();
-        (i.url.clone(), i.referrer.clone(), i.cookies.clone())
+        (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.yt.clone())
     };
     if agent.invalid_proxy { return Err("Invalid proxy configuration".into()); }
     let mut args = base_args(&url, &referrer, &cookies);
-    args.extend(["--proxy".into(), crate::transport::external_proxy(&agent.proxy), "--socket-timeout".into(), "20".into()]);
+    let proxy = crate::transport::external_proxy(&agent.proxy);
+    let route = ["--proxy", proxy.as_str(), "--socket-timeout", "20"];
+    args.extend(route.map(str::to_string));
     let ff = crate::media::toolchain();
-    let fmt = formats(&url, ff.is_some());
+    let encoder = ff.as_deref();
+    if yt.quality == "mp3" && encoder.is_none() {
+        return Err(crate::i18n::tr_os("Saving the sound as MP3 needs ffmpeg: install it with Downloads -> Set yt-dlp, then resume the download."));
+    }
+    let fmt = chosen(&url, ff.is_some(), &yt.quality);
     let mut look = command(&p);
     look.args(&args).args(["-J", "-f", &fmt, "--"]).arg(&url);
     let Some(looked) = output_unless_stopped(job, look)? else { return Ok(false) };
@@ -519,9 +567,29 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
     let v = video_info(serde_json::from_slice(&looked.stdout).map_err(|e| e.to_string())?)?;
     let streams = picked(&v).ok_or("yt-dlp gave no formats")?;
     // A single extraction also names jobs added without the File Info window (CLI, queues).
+    // Keep native M4A audio and convert when the selection needs a different output.
+    let sound = streams.first().filter(|_| streams.len() == 1 && matches!(yt.quality.as_str(), "mp3" | "m4a")).map(|s| s.ext.clone());
+    let convert = sound.as_ref().is_some_and(|ext| yt.quality == "mp3" || ext != "m4a"
+        || v.get("vcodec").and_then(|codec| codec.as_str()) != Some("none"));
+    if convert && encoder.is_none() {
+        return Err("This audio format requires FFmpeg. Install it with Downloads -> Set yt-dlp and resume.".into());
+    }
     let dest = {
         let mut i = job.info();
-        if i.name.is_empty() { i.name = video_name(&v); }
+        if i.name.is_empty() { i.name = named(&video_name(&v), &yt.quality); }
+        if yt.quality.parse::<u32>().is_ok() {
+            // The probe used the default quality, whose container may differ from this selection.
+            if let Some(ext) = v.get("ext").and_then(|ext| ext.as_str())
+                .filter(|ext| matches!(*ext, "mp4" | "webm" | "mkv" | "ts" | "mov" | "flv"))
+                .filter(|ext| Path::new(&i.name).extension().is_none_or(|old| !old.eq_ignore_ascii_case(ext)))
+            {
+                let name = Path::new(&i.name).with_extension(ext);
+                i.name = crate::engine::unique_name(&i.folder, &name.to_string_lossy(), &|_| false);
+            }
+        }
+        if sound.is_some() && Path::new(&i.name).extension().is_none_or(|ext| !ext.eq_ignore_ascii_case(&yt.quality)) {
+            return Err(crate::i18n::trf_os("The selected audio format requires a .%s filename.", &[&yt.quality]));
+        }
         std::fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
         i.path()
     };
@@ -529,6 +597,8 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
     let stem = dest.file_stem().unwrap_or_default().to_string_lossy().to_string();
     let outs: Vec<PathBuf> = if streams.len() == 2 {
         ["ndm-video", "ndm-audio"].iter().zip(&streams).map(|(tag, s)| dir.join(format!("{stem}.{tag}.{}", s.ext))).collect()
+    } else if convert {
+        vec![dir.join(format!("{stem}.ndm-audio.{}", streams[0].ext))]
     } else {
         vec![dest.clone()]
     };
@@ -543,6 +613,10 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
     if !got {
         return Ok(false);
     }
+    if yt.subs || yt.thumb {
+        extras(job, &p, &route, &source, &dest, &yt);
+        if job.stopping() { return Ok(false); }
+    }
     if let [video, audio] = &outs[..] {
         record_tracks(job, &dest, video, audio)?;
         let merged = join(job, video, audio, &dest, ff.as_deref());
@@ -550,7 +624,60 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
         merged?;
         let _ = std::fs::remove_file(receipt_path(&dest));
     }
+    if let (true, Some(encoder)) = (convert, encoder) {
+        let converted = convert_audio(job, encoder, &outs[0], &dest, &yt.quality);
+        if job.stopping() { return Ok(false); }
+        converted?;
+    }
     finish_job(job, &dest)
+}
+
+/// The downloaded sound as an MP3 (or an M4A) in `dest`, by ffmpeg; the source is removed once it's done.
+fn convert_audio(job: &Job, ff: &Path, src: &Path, dest: &Path, quality: &str) -> Result<(), String> {
+    let stage = crate::media::Stage::new(dest)?;
+    let mut cmd = command(ff);
+    cmd.args(["-y", "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file", "-i"]).arg(src).args(["-map", "0:a:0", "-map_metadata", "0"]);
+    if quality == "mp3" {
+        cmd.args(["-codec:a", "libmp3lame", "-q:a", "2", "-f", "mp3"]);
+    } else {
+        cmd.args(["-codec:a", "aac", "-b:a", "192k", "-f", "mp4"]);
+    }
+    cmd.arg(stage.path());
+    let watch = [stage.path().to_path_buf()];
+    let out = crate::stream::with_post(job, "Converting media...", &watch, 0, || output_unless_stopped(job, cmd))?;
+    let Some(out) = out else { return Err("stopped".into()) };
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("ffmpeg: {}", err.lines().last().unwrap_or("conversion failed")));
+    }
+    crate::media::validate_audio(job, stage.path(), quality)?;
+    if job.stopping() { return Err("stopped".into()); }
+    stage.finish(dest)?;
+    let _ = std::fs::remove_file(src);
+    Ok(())
+}
+
+/// The subtitles and the thumbnail next to the video ("name.en.vtt", "name.webp"), from the look-up's
+/// saved result. Missing ones don't fail the download.
+fn extras(job: &Job, p: &Path, route: &[&str], source: &[String], dest: &Path, yt: &crate::engine::YtOpts) {
+    let stem = dest.with_extension("");
+    let mut cmd = command(p);
+    // The saved extraction supplies per-resource context. Do not add the browser's raw Cookie
+    // header to requests for subtitles and thumbnails, which can use different origins.
+    cmd.args(route).args(["--ignore-config", "--no-playlist", "--skip-download", "--no-overwrites"]);
+    if yt.subs {
+        cmd.args(["--write-subs", "--sub-langs", "all,-live_chat"]);
+    }
+    if yt.thumb {
+        cmd.arg("--write-thumbnail");
+    }
+    cmd.args(["-o", &format!("{}.%(ext)s", template(&stem))]).args(source);
+    let watch: [PathBuf; 0] = [];
+    match crate::stream::with_post(job, "Saving subtitles and thumbnail...", &watch, 0, || output_unless_stopped(job, cmd)) {
+        Ok(Some(o)) if !o.status.success() => eprintln!("NDM: subtitles / thumbnail: {}", last_error(&String::from_utf8_lossy(&o.stderr))),
+        Err(e) => eprintln!("NDM: subtitles / thumbnail: {}", crate::transport::redact(&e)),
+        _ => {}
+    }
 }
 
 fn finish_job(job: &Job, dest: &Path) -> Result<bool, String> {
@@ -1047,17 +1174,20 @@ fn unpack_ffmpeg(archive: &Path, file: &str, dir: &Path) -> Result<(), String> {
 }
 
 /// Downloads (or brings up to date) yt-dlp and Deno in NDM's tools folder, each checked against the SHA-256
-/// its release lists, and ffmpeg when there is none yet; makes sure the folder is on PATH. `got` / `total`:
-/// progress for the window. Returns yt-dlp's version.
-pub fn install(agent: &ureq::Agent, got: &AtomicU64, total: &AtomicU64) -> Result<String, String> {
+/// its release lists, and (`with_ffmpeg`: Downloads -> Set yt-dlp, asked for) ffmpeg when there is none yet;
+/// makes sure the folder is on PATH. The daily update leaves ffmpeg out: it is 100+ MB, and comes only when
+/// the user asks for it. `got` / `total`: progress for the window. Returns yt-dlp's version.
+pub fn install(agent: &ureq::Agent, got: &AtomicU64, total: &AtomicU64, with_ffmpeg: bool) -> Result<String, String> {
     let dir = tools_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fetch_ytdlp(agent, YTDLP_LATEST, &dir, got, total)?;
     fetch_deno(agent, DENO_LATEST, &dir, got, total)?;
     // yt-dlp works without ffmpeg (NDM joins the usual formats itself): it is on PATH before ffmpeg's turn
     add_to_path(&dir);
-    fetch_ffmpeg(agent, &dir, got, total)?;
-    add_to_path(&dir);
+    if with_ffmpeg {
+        fetch_ffmpeg(agent, &dir, got, total)?;
+        add_to_path(&dir);
+    }
     Ok(version(&dir.join(exe_file("yt-dlp"))))
 }
 
@@ -1109,7 +1239,7 @@ pub fn keep_updated(core: std::sync::Arc<crate::core::Core>) {
             if due && tools_dir().join(exe_file("yt-dlp")).is_file() {
                 core.settings().ytdlp_checked = now;
                 let (got, total) = (AtomicU64::new(0), AtomicU64::new(0));
-                if let Err(e) = install(&core.agent(YTDLP_LATEST), &got, &total) {
+                if let Err(e) = install(&core.agent(YTDLP_LATEST), &got, &total, false) {
                     eprintln!("yt-dlp update: {e}");
                 }
             }
@@ -1451,7 +1581,7 @@ mod tests {
         let d = std::fs::read(dir.join("clip.mp4")).unwrap();
         let top = crate::stream::boxes(&d, 0, d.len());
         let moov = top.iter().find(|b| &b.3 == b"moov").copied().expect("one MP4");
-        assert_eq!(crate::stream::find(&d, moov, &[b"trak"]).is_some(), true);
+        assert!(crate::stream::find(&d, moov, &[b"trak"]).is_some());
         let traks = crate::stream::boxes(&d, moov.1, moov.2).iter().filter(|b| &b.3 == b"trak").count();
         assert_eq!(traks, 2, "video and audio in one file");
         let order: Vec<u8> = top.iter().filter(|b| &b.3 == b"mdat").map(|b| d[b.1]).collect();
@@ -1484,6 +1614,77 @@ mod tests {
         record_tracks(&retry, &dest, &video, &audio).unwrap();
         assert_eq!(run(&retry, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         assert!(dest.is_file() && !video.exists() && !audio.exists() && !receipt_path(&dest).exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+    /// File Info's choices with the real yt-dlp and ffmpeg on a page with a video, its poster and its
+    /// subtitles: the sound alone as an MP3, the subtitles and the thumbnail next to it.
+    #[test]
+    #[ignore = "needs the real yt-dlp and ffmpeg: NDM_TEST_YTDLP=/path/to/yt-dlp cargo test real_ytdlp -- --ignored"]
+    fn real_ytdlp_audio_and_extras() {
+        use std::io::{BufRead, BufReader, Write};
+        let bin = std::env::var("NDM_TEST_YTDLP").expect("NDM_TEST_YTDLP");
+        let system_ff = crate::media::toolchain().expect("FFmpeg and ffprobe must be installed");
+        let home = std::env::temp_dir().join(format!("ndm-real-ytdlp-audio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let tools = home.join("NewDownloadManager/tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::copy(&bin, tools.join(exe_file("yt-dlp"))).unwrap();
+        let clip = home.join("clip.mp4");
+        assert!(command(&system_ff)
+            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-c:v", "mpeg4", "-c:a", "aac", "-shortest"])
+            .arg(&clip)
+            .status()
+            .unwrap()
+            .success());
+        let jpeg = home.join("poster.jpg");
+        assert!(command(&system_ff).args(["-v", "error", "-f", "lavfi", "-i", "color=red:size=64x48", "-frames:v", "1"]).arg(&jpeg).status().unwrap().success());
+        std::env::set_var("XDG_CONFIG_HOME", &home);
+        std::env::set_var("APPDATA", &home);
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let ff_dir = std::env::split_paths(&path).find(|d| d.join(exe_file("ffmpeg")).is_file()).expect("ffmpeg's folder");
+        std::env::set_var("PATH", std::env::join_paths([tools.clone(), ff_dir]).unwrap());
+        let page = b"<html><head><title>Clip</title></head><body><video poster=\"poster.jpg\" controls><source src=\"clip.mp4\" type=\"video/mp4\"><track kind=\"subtitles\" srclang=\"en\" src=\"clip.en.vtt\"></video></body></html>".to_vec();
+        let files: Vec<(&str, Vec<u8>, &str)> = vec![
+            ("page.html", page, "text/html"),
+            ("clip.mp4", std::fs::read(&clip).unwrap(), "video/mp4"),
+            ("poster.jpg", std::fs::read(&jpeg).unwrap(), "image/jpeg"),
+            ("clip.en.vtt", b"WEBVTT\n\n00:00.000 --> 00:01.000\nHello\n".to_vec(), "text/vtt"),
+        ];
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
+        let files = std::sync::Arc::new(files);
+        std::thread::spawn(move || {
+            for c in listener.incoming().flatten() {
+                let files = files.clone();
+                std::thread::spawn(move || {
+                    let mut r = BufReader::new(c.try_clone().unwrap());
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    while r.read_line(&mut String::new()).unwrap_or(0) > 2 {}
+                    let path = line.split_whitespace().nth(1).unwrap_or("").trim_start_matches('/').split('?').next().unwrap_or("").to_string();
+                    let mut c = c;
+                    match files.iter().find(|f| f.0 == path) {
+                        Some((_, body, ct)) => {
+                            let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                            let _ = c.write_all(body);
+                        }
+                        None => {
+                            let _ = write!(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
+                    }
+                });
+            }
+        });
+        let dir = home.join("Music");
+        let yt = crate::engine::YtOpts { quality: "mp3".into(), subs: true, thumb: true };
+        let job = Job::new(Info { url: format!("{base}page.html"), folder: dir.display().to_string(), name: "song.mp3".into(), ytdlp: true, yt, ..Default::default() });
+        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        left.sort();
+        assert_eq!(left, ["song.en.vtt", "song.jpg", "song.mp3"]);
+        let probe = command(&beside_or_path("ffprobe")).args(["-v", "error", "-show_entries", "stream=codec_name,codec_type", "-of", "csv=p=0"]).arg(dir.join("song.mp3")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "mp3,audio");
+        assert_eq!(job.info().size, Some(std::fs::metadata(dir.join("song.mp3")).unwrap().len()));
         let _ = std::fs::remove_dir_all(&home);
     }
     /// Deno's real release zip (NDM_TEST_DENO_ZIP=<path>, NDM_TEST_DENO_SHA256=<the program's SHA-256>).
@@ -1574,6 +1775,25 @@ mod tests {
         assert_eq!(formats("https://vimeo.com/1", true), MERGED);
         assert_eq!(formats("https://vimeo.com/1", false), format!("b/{PAIR}"));
     }
+    /// File Info's Quality: a height cap on every video selector with the uncapped formats after it, the
+    /// sound alone for MP3 / M4A, and the file's type to match.
+    #[test]
+    fn quality_choices() {
+        assert_eq!(chosen("https://vimeo.com/1", true, ""), MERGED);
+        assert_eq!(chosen("https://vimeo.com/1", true, "720"), "bv*[height<=720]+ba/b[height<=720]/bv[height<=720]");
+        let yt = chosen("https://www.youtube.com/watch?v=x", false, "1080");
+        assert!(yt.starts_with("bv*[height<=1080][acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/"), "{yt}");
+        assert!(!yt.contains("/b/"), "{yt}");
+        let tiktok = chosen("https://www.tiktok.com/@a/video/1", true, "480");
+        assert!(tiktok.starts_with("b[height<=480][vcodec^=h264]/"), "{tiktok}");
+        assert_eq!(chosen("https://www.youtube.com/watch?v=x", true, "mp3"), "ba[ext=m4a]/ba/b");
+        assert_eq!(chosen("https://www.youtube.com/watch?v=x", true, "bogus"), MERGED);
+        assert_eq!(named("Song.mp4", "mp3"), "Song.mp3");
+        assert_eq!(named("Song.webm", "m4a"), "Song.m4a");
+        assert_eq!(named("Song.mp3", ""), "Song.mp4");
+        assert_eq!(named("Song.webm", "720"), "Song.webm");
+    }
+
     /// TikTok's streams are on tiktok.com with no file type in the address: one yt-dlp found is fetched
     /// as it is, not looked up again (which went on forever, the download stuck at "Connecting...").
     #[test]

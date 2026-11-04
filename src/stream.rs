@@ -590,7 +590,7 @@ pub fn probe(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) ->
 }
 
 fn aes_cbc(key: &[u8], iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
-    if key.len() != 16 || data.len() % 16 != 0 {
+    if key.len() != 16 || !data.len().is_multiple_of(16) {
         return Err("bad AES-128 key or segment".into());
     }
     let mut out = aes_cbc_raw(key, iv, data)?;
@@ -789,7 +789,7 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
             .enumerate()
             .map(|(t, len)| {
                 let (g, h) = (got[t].load(Relaxed), have[t].load(Relaxed) as u64);
-                let est = if h > 0 { g * *len as u64 / h } else { g }.max(g);
+                let est = (g * *len as u64).checked_div(h).unwrap_or(g).max(g);
                 let s = Seg { start: off, next: off + g, stop: (!live).then_some(off + est), info: note.into(), owned: false, ..Default::default() };
                 off += if live { g } else { est };
                 s

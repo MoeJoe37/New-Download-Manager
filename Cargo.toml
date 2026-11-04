@@ -11,7 +11,10 @@ ab_glyph = "0.2"
 ureq = { version = "2", default-features = false, features = ["tls", "socks-proxy"] }
 # File Properties -> Checksum: SHA-256, SHA-1 and MD5 of a downloaded file (also MD5 for digest login off Windows)
 sha2 = "0.10"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "rustls-tls", "rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+webpki-roots = "0.26"
 sha1 = "0.10"
 md5 = { package = "md-5", version = "0.10" }
 # Downloads -> Set yt-dlp: Deno comes as a zip (already built for the tray icon's PNG)

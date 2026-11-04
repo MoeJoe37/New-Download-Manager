@@ -729,7 +729,7 @@ const DROP_TYPES: [&str; 4] = ["text/uri-list", "text/x-moz-url", "UTF8_STRING",
 /// Text from a drop in `kind` (text/x-moz-url is UTF-16: "url\ntitle").
 fn drop_text(kind: &str, data: &[u8]) -> String {
     if kind == "text/x-moz-url" {
-        return String::from_utf16_lossy(&data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>());
+        return String::from_utf16_lossy(&data.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect::<Vec<_>>());
     }
     String::from_utf8_lossy(data).into_owned()
 }
@@ -834,7 +834,7 @@ pub fn drop_target(show: bool, (iw, ih, px): &Rgba) {
 fn make_drop_target(w: i32, h: i32, px: Vec<u8>) -> gtk::Window {
     let win = gtk::Window::new(gtk::WindowType::Toplevel);
     win.set_title("Drop target");
-    (win.set_decorated(false), win.set_keep_above(true), win.set_skip_taskbar_hint(true), win.set_skip_pager_hint(true));
+    win.set_decorated(false); win.set_keep_above(true); win.set_skip_taskbar_hint(true); win.set_skip_pager_hint(true);
     win.set_type_hint(gdk::WindowTypeHint::Utility);
     win.set_accept_focus(false);
     win.set_default_size(w, h);
@@ -882,7 +882,7 @@ fn make_drop_target(w: i32, h: i32, px: Vec<u8>) -> gtk::Window {
         if text.is_empty() {
             // text/x-moz-url is UTF-16: "url\ntitle"
             let raw = data.data();
-            text = data.text().map(|t| t.to_string()).unwrap_or_else(|| String::from_utf16_lossy(&raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()));
+            text = data.text().map(|t| t.to_string()).unwrap_or_else(|| String::from_utf16_lossy(&raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect::<Vec<_>>()));
         }
         let links = dropped_links(&text);
         if !links.is_empty() {
@@ -995,6 +995,6 @@ pub fn install_package(file: &Path) -> Result<(), String> {
         Some(0) => Ok(()),
         // pkexec: the password dialog was closed, or the user may not install software
         Some(126 | 127) => Err("The update wasn't installed: the password wasn't given.".into()),
-        _ => Err(String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("the package manager failed").to_string()),
+        _ => Err(String::from_utf8_lossy(&o.stderr).lines().rfind(|l| !l.trim().is_empty()).unwrap_or("the package manager failed").to_string()),
     }
 }

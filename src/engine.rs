@@ -146,6 +146,18 @@ pub struct Info {
     /// The browser's own proxy when the extension handed the download over ("http://h:p", "socks5://h:p"
     /// or "pac:URL"), used after a failure with "Use proxy/socks from a browser's request".
     pub browser_proxy: String,
+    /// What yt-dlp gets for a video page (File Info's Quality, Subtitles and Thumbnail).
+    pub yt: YtOpts,
+}
+
+/// A video download's choices: the quality ("" best, "1080"... at most that many lines, "m4a" / "mp3"
+/// only the sound), and the extras saved next to the video.
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct YtOpts {
+    pub quality: String,
+    pub subs: bool,
+    pub thumb: bool,
 }
 
 impl Info {
@@ -457,7 +469,34 @@ impl ureq::Resolver for DnsCache {
     }
 }
 
+/// The certificate authorities HTTPS trusts: the bundled list (webpki-roots) and the system's own
+/// (Windows' certificate store, the macOS keychain, the Linux CA files), so a certificate that antivirus
+/// HTTPS scanning or a company network installs on the system is trusted as the browser trusts it.
+/// `extra`: more, for the tests' local servers.
+pub(crate) fn tls_config(extra: &[rustls::pki_types::CertificateDer<'static>]) -> std::sync::Arc<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let native = rustls_native_certs::load_native_certs();
+    roots.add_parsable_certificates(native.certs);
+    roots.add_parsable_certificates(extra.iter().cloned());
+    let config = rustls::ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .unwrap() // ring supports both
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    std::sync::Arc::new(config)
+}
+
+/// `tls_config`, read from the system once.
+fn tls() -> std::sync::Arc<rustls::ClientConfig> {
+    static TLS: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+    TLS.get_or_init(|| tls_config(&[])).clone()
+}
+
 pub fn agent(proxy: &str, user_agent: &str) -> Agent {
+    agent_with_tls(proxy, user_agent, tls())
+}
+
+pub(crate) fn agent_with_tls(proxy: &str, user_agent: &str, tls: std::sync::Arc<rustls::ClientConfig>) -> Agent {
     let user_agent = if user_agent.trim().is_empty() { UA } else { user_agent.trim() };
     let proxy = proxy.trim();
     let invalid = !proxy.is_empty() && (!url::Url::parse(proxy).is_ok_and(|url| url.host_str().is_some())
@@ -470,6 +509,7 @@ pub fn agent(proxy: &str, user_agent: &str) -> Agent {
             .timeout_read(Duration::from_secs(30))
             .max_idle_connections_per_host(64)
             .max_idle_connections(256)
+            .tls_config(tls.clone())
             .resolver(DnsCache);
         if !proxy.is_empty() {
             // Invalid configuration fails closed, including ancillary callers using the ureq agent.
@@ -546,7 +586,7 @@ fn sspi(r: &ureq::Request, u: &url::Url, pkg: &str) -> Result<ureq::Response, St
             ureq::Error::Status(401, resp) => {
                 let next = resp.all("WWW-Authenticate").iter().find_map(|c| strip_ci(c.trim(), &format!("{pkg} ")).map(str::to_string));
                 let _ = resp.into_string(); // the next leg goes on this keep-alive connection
-                next.map_or(Err("401 Unauthorized".to_string()), Ok)
+                next.ok_or("401 Unauthorized".to_string())
             }
             e => Err(err(e)),
         })
@@ -1290,7 +1330,7 @@ pub fn unique_name(folder: &str, name: &str, taken: &dyn Fn(&str) -> bool) -> St
 impl Job {
     pub fn new(info: Info) -> Arc<Job> {
         let limiter = Limiter::default();
-        limiter.rate.store(info.limit_kb * 1024, Relaxed);
+        limiter.rate.store(info.limit_kb.saturating_mul(1024), Relaxed);
         let done = info.done();
         Arc::new(Job {
             info: Mutex::new(info),
@@ -1322,11 +1362,6 @@ impl Job {
 
     pub fn stopping(&self) -> bool {
         self.stop.load(Relaxed)
-    }
-
-    pub fn set_limit_kb(&self, kb: u64) {
-        self.info().limit_kb = kb;
-        self.limiter.rate.store(kb * 1024, Relaxed);
     }
 
     /// Bytes/s, re-sampled at most once a second.
@@ -1738,9 +1773,9 @@ impl Job {
                     self.info().segs[k].owned = false;
                     return None;
                 }
-                Ok(()) => match self.claim(&net) {
-                    Some(n) => (k, fails) = (n, 0),
-                    None => return None,
+                Ok(()) => {
+                    let n = self.claim(&net)?;
+                    (k, fails) = (n, 0)
                 },
                 Err(e) if e == NO_ANSWER_ERR || ((e.starts_with("HTTP 503") || e.starts_with("HTTP 429") || self.info().segs[k].next == before) && self.others_receiving(k, &net) > 0) => {
                     // the server allows fewer connections than this (it says busy, or a new connection
@@ -1781,9 +1816,9 @@ impl Job {
                     if !self.lane_present(&net) {
                         return None;
                     }
-                    match self.claim(&net) {
-                        Some(n) => k = n,
-                        None => return None,
+                    {
+                        let n = self.claim(&net)?;
+                        k = n
                     }
                 }
             }

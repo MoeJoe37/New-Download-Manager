@@ -1,8 +1,8 @@
 //! Remuxing downloaded stream pieces into one file, without ffmpeg:
 //! - MPEG-TS (H.264 / H.265 / MPEG-2 video with AAC, MP3, AC-3, E-AC-3 or Opus, what HLS sends) and packed
-//! audio -> one MP4, as NDM saves HLS videos;
+//!   audio -> one MP4, as NDM saves HLS videos;
 //! - DASH WebM video + WebM audio -> one WebM.
-//! Anything else (VC-1, DTS...) answers Ok(false) and the caller keeps the pieces as they are.
+//!   Anything else (VC-1, DTS...) answers Ok(false) and the caller keeps the pieces as they are.
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -1370,7 +1370,7 @@ pub mod tests {
         ue(29, &mut bits);
         bits += "1100"; // frame_mbs_only, direct_8x8, no cropping, no VUI
         bits += "1";
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push('0');
         }
         let mut v = vec![0x67];
@@ -1452,7 +1452,7 @@ pub mod tests {
 
     fn bitstring(bits: &str) -> Vec<u8> {
         let mut bits = bits.to_string() + "1";
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push('0');
         }
         (0..bits.len()).step_by(8).map(|i| u8::from_str_radix(&bits[i..i + 8], 2).unwrap()).collect()

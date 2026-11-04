@@ -1,4 +1,7 @@
 #![windows_subsystem = "windows"]
+// Dialogs are laid out in dialog units: their helpers take x, y, width, height and the text, and the UI keeps
+// its state in a few nested shared structures. Those two lints would only rename that.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 mod checksum;
 mod core;
 mod dlu;
@@ -303,6 +306,18 @@ const DARK_DLG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
 const DARK_TREE: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 const BAR: Color32 = Color32::from_rgb(38, 120, 220);
+
+/// A problem report's title and text for GitHub (in English, for NDM's developers): what to fill in, NDM's
+/// version, the system, and the language.
+fn issue_text(version: &str, lang: &str) -> (String, String) {
+    let lang = if lang.is_empty() { "en (English)".to_string() } else { lang.to_string() };
+    let text = format!(
+        "### What happened?\n\n\n### What did you expect?\n\n\n### Steps to reproduce\n1. \n\n### System\n- NDM {version}\n- {} {}\n- Language: {lang}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    (format!("[{version}] "), text)
+}
 
 /// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon.
 fn tray_start() -> bool {
@@ -674,7 +689,29 @@ fn integration(b: &core::Browser) -> &'static str {
     if extension_page(b).is_some() { "Extension" } else { "Not supported" }
 }
 
-/// Stop a download that was started early from "Download File Info" and delete its data.
+/// The rows File Info adds: the name as it reads (`i18n::shown`) when the edit box can't show it so
+/// (right-to-left letters), and a video page's Quality, Subtitles and Thumbnail.
+fn file_info_rows(info: &Info, path: &str) -> (f32, f32) {
+    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let shown = if i18n::shown(&name) != name { 12.0 } else { 0.0 };
+    let video = if info.ytdlp || ytdlp::is_video_page(&info.url) { 17.0 } else { 0.0 };
+    (shown, video)
+}
+
+/// File Info's Quality choices and the `YtOpts::quality` each stands for.
+const QUALITIES: [(&str, &str); 9] = [
+    ("Best", ""),
+    ("2160p", "2160"),
+    ("1440p", "1440"),
+    ("1080p", "1080"),
+    ("720p", "720"),
+    ("480p", "480"),
+    ("360p", "360"),
+    ("Audio only (M4A)", "m4a"),
+    ("Audio only (MP3)", "mp3"),
+];
+
+/// Stop an early download and delete its partial data.
 fn discard(j: &engine::Job) {
     j.stop();
     while j.running() {
@@ -1621,6 +1658,8 @@ impl Row {
 
 type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 
+// a handful of dialogs is open at a time: their size doesn't matter, boxing each would only add noise
+#[allow(clippy::large_enum_variant)]
 enum Dialog {
     /// `clip`: opened by the clipboard monitor.
     AddUrl { url: String, auth: bool, login: String, pass: String, clip: bool },
@@ -1661,7 +1700,7 @@ enum Dialog {
     ProgCustom { view: u8, sl: bool, c: bool, btns: bool },
     Complete { id: u64, dont_show: bool },
     Delete { ids: Vec<u64>, files: bool, dont_show: bool },
-    Options { tab: u8, s: Settings },
+    Options { tab: u8, s: Box<Settings> },
     /// `queue` is the edited copy of the queue selected in the tree; Apply stores it.
     Scheduler { tab: u8, queue: core::Queue, qsel: Option<u64>, error: String },
     /// Duplicate download link (template 298): the new link and the download already in the list.
@@ -1737,6 +1776,8 @@ enum Dialog {
     Tip { text: String },
     /// Speed Limiter settings (template 337).
     Limiter { kb: String, startup: bool, sched: bool, from: String, to: String },
+    /// The list's "Speed limit...": the chosen downloads' own limit (`Info::limit_kb`).
+    SpeedLimit { ids: Vec<u64>, on: bool, kb: String },
     /// Columns (template 209): in display order.
     Columns { list: Vec<(u8, bool, u16)>, sel: usize, width: String },
     /// "Max. connections number for a server" (template 226); `orig` = edited row of the exceptions.
@@ -2300,11 +2341,11 @@ impl App {
     /// the window is hidden, so they act on Core and the HWND directly.
     #[cfg(windows)]
     fn tray(ctx: &egui::Context, core: &Arc<Core>, hwnd: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
-        let open = MenuItem::new(&i18n::tr_os("Open"), true, None);
-        let startq = MenuItem::new(&i18n::tr_os("Start queue"), true, None);
-        let stopq = MenuItem::new(&i18n::tr_os("Stop queue"), true, None);
-        let limit = CheckMenuItem::new(&i18n::tr_os("Speed Limiter"), true, core.settings().limit_on, None);
-        let exit = MenuItem::new(&i18n::tr_os("Exit"), true, None);
+        let open = MenuItem::new(i18n::tr_os("Open"), true, None);
+        let startq = MenuItem::new(i18n::tr_os("Start queue"), true, None);
+        let stopq = MenuItem::new(i18n::tr_os("Stop queue"), true, None);
+        let limit = CheckMenuItem::new(i18n::tr_os("Speed Limiter"), true, core.settings().limit_on, None);
+        let exit = MenuItem::new(i18n::tr_os("Exit"), true, None);
         let menu = Menu::new();
         menu.append_items(&[&open, &PredefinedMenuItem::separator(), &startq, &stopq, &limit, &PredefinedMenuItem::separator(), &exit]).ok()?;
         let style = core.settings().tray_icon;
@@ -2364,6 +2405,14 @@ impl App {
     fn add_url(&mut self) {
         let url = links(&clipboard()).into_iter().next().unwrap_or_default();
         self.open(Dialog::AddUrl { url, auth: false, login: String::new(), pass: String::new(), clip: false });
+    }
+
+    /// Help -> "Report a problem...": a new GitHub issue on NDM's page, filled in with NDM's version, the
+    /// operating system, architecture and language.
+    fn report_problem() {
+        let (title, body) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current());
+        let enc = |t: &str| percent_encoding::utf8_percent_encode(t, percent_encoding::NON_ALPHANUMERIC).to_string();
+        open_url(&format!("https://github.com/{UPDATE_REPO}/issues/new?title={}&body={}", enc(&title), enc(&body)));
     }
 
     /// "Tell a friend": a ready-to-send letter in the default mail program.
@@ -2500,7 +2549,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let (agent, g, t, d, c) = (self.core.agent("https://github.com/"), got.clone(), total.clone(), done.clone(), ctx.clone());
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let r = ytdlp::install(&agent, &g, &t);
+            let r = ytdlp::install(&agent, &g, &t, true);
             if r.is_ok() {
                 core.settings().ytdlp_checked = chrono::Local::now().timestamp();
             }
@@ -2572,10 +2621,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 i.folder = inc.folder.clone();
             }
             i.name = inc.filename.clone();
-            i.queued = inc.later;
+            // Options -> Downloads "Do not start downloading, only add files to the queue": a download
+            // handed over without questions goes to the main queue instead of starting
+            let later = inc.later || (!inc.cli && self.core.settings().only_queue);
+            i.queued = later;
             let id = i.id;
             let job = self.core.add(i);
-            if !inc.later {
+            if !later {
                 self.core.start(&job);
                 if inc.quit {
                     self.on_done.insert(id, (true, false));
@@ -2708,7 +2760,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             info.folder = inc.folder.clone();
         }
         let path = Path::new(&info.folder).join(&name).display().to_string();
-        let at_once = self.core.settings().start_at_once;
+        let at_once = {
+            let settings = self.core.settings();
+            settings.start_at_once && !settings.only_queue && !video_page
+        };
         let early = at_once.then(|| {
             // downloads into the category's folder under a free name until the dialog is answered
             let mut i = info.clone();
@@ -3232,6 +3287,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         ui.close_menu();
                     }
                 }
+                if ui.button(tr("Report a problem...")).clicked() {
+                    App::report_problem();
+                    ui.close_menu();
+                }
                 ui.separator();
                 if ui.button(tr("Check for updates...")).clicked() {
                     self.check_updates(ui.ctx(), false);
@@ -3308,7 +3367,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 s.browsers.push(core::Browser { name, exe, on: true });
             }
         }
-        self.open(Dialog::Options { tab, s });
+        self.open(Dialog::Options { tab, s: Box::new(s) });
     }
 
     fn new_queue(&mut self, files: Vec<u64>) {
@@ -4122,6 +4181,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.separator();
                     item(ui, "Resume Download", !done && !r.running);
                     item(ui, "Stop Download", r.running);
+                    item(ui, "Speed limit...", !done);
                     ui.separator();
                     item(ui, "Refresh download address", !done);
                     ui.separator();
@@ -4242,6 +4302,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 "Stop Download" => self.stop(&ids),
                 "Redownload" => self.redownload(&ids),
                 "Delete from queue" => self.core.set_queue(&ids, None),
+                "Speed limit..." => {
+                    let kb = self.core.find(id).map_or(0, |j| j.info().limit_kb);
+                    self.open(Dialog::SpeedLimit { ids, on: kb > 0, kb: if kb > 0 { kb.to_string() } else { "200".into() } });
+                }
                 "Remove" => self.ask_delete(ids),
                 _ => self.properties(row),
             }
@@ -4324,7 +4388,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::PanelType { .. } => ("Add file type".into(), tpl(126.0, 49.0)),
             Dialog::PanelSite { .. } => ("Enter site name".into(), tpl(186.0, 52.0)),
             Dialog::PanelMin { .. } => ("Minimum size".into(), tpl(239.0, 137.0)),
-            Dialog::FileInfo { .. } => ("Download File Info".into(), tpl(380.0, 128.0)),
+            Dialog::FileInfo { info, path, .. } => {
+                let (name, video) = file_info_rows(info, path);
+                ("Download File Info".into(), tpl(380.0, 128.0 + name + video))
+            }
             Dialog::Progress { id, details, .. } => {
                 // NDM (0x4a6d80) retitles when the whole percent changes: "N% name", the name alone at 0 and 100
                 let t = self.core.find(*id).map(|j| {
@@ -4338,7 +4405,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Complete { .. } => ("Download complete".into(), tpl(303.0, 132.0)),
             Dialog::ProgCustom { .. } => ("Customize download progress dialog".into(), tpl(268.0, 145.0)),
             Dialog::Delete { .. } => ("Confirm deletion of downloads".into(), tpl(278.0, 86.0)),
-            Dialog::Options { .. } => ("New Download Manager Configuration".replace("New Download Manager", "New Download Manager"), tpl(327.0, 309.0)),
+            Dialog::Options { .. } => ("New Download Manager Configuration".into(), tpl(327.0, 309.0)),
             // NDM widens CNewSchedulerDlg past its template (434 DLU): 833 px at 125% (measured)
             Dialog::Scheduler { .. } => ("Scheduler".into(), tpl(478.0, 286.0)),
             Dialog::Batch { .. } => ("Batch download".into(), tpl(316.0, 238.0)),
@@ -4352,6 +4419,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::DialUp => ("Dial up".into(), tpl(186.0, 55.0)),
             Dialog::Help { .. } => ("New Download Manager Help".into(), None),
             Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 107.0)),
+            Dialog::SpeedLimit { .. } => ("Speed limit".into(), tpl(230.0, 46.0)),
             Dialog::Update { .. } => ("Quick Update".into(), tpl(186.0, 34.0)),
             Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), Some(Vec2::new(520.0, 420.0))),
             Dialog::Virus { .. } => ("Virus checking".into(), tpl(379.0, 235.0)),
@@ -4490,6 +4558,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 info.category = self.core.settings().category_for(&name, &info.url);
                                 info.folder = if dir.is_empty() { self.core.settings().folder_for(&info.category) } else { dir.clone() };
                                 if replace.is_none() {
+                                    let name = ytdlp::named(&name, &info.yt.quality);
                                     let name = self.core.unique_name(&info.folder, &name);
                                     *path = Path::new(&info.folder).join(name).display().to_string();
                                 }
@@ -4524,9 +4593,15 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let name = Path::new(path.as_str()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     *path = Path::new(&self.core.settings().folder_for(&info.category)).join(name).display().to_string();
                 }
-                d.label_r(5.0, 41.0, 54.0, 10.0, "Save As");
-                d.edit(64.0, 39.0, 223.0, 14.0, path, true);
-                if d.button(292.0, 39.0, 16.0, 14.0, "...", true) {
+                let (pv, vq) = file_info_rows(info, path);
+                if pv > 0.0 {
+                    // the name as it reads; the edit box below shows it in the order it is typed
+                    let name = Path::new(path.as_str()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    d.label(66.0, 39.0, 240.0, 10.0, RichText::new(i18n::shown(&name)).strong());
+                }
+                d.label_r(5.0, 41.0 + pv, 54.0, 10.0, "Save As");
+                d.edit(64.0, 39.0 + pv, 223.0, 14.0, path, true);
+                if d.button(292.0, 39.0 + pv, 16.0, 14.0, "...", true) {
                     let p = Path::new(path.as_str());
                     let mut fd = rfd::FileDialog::new();
                     if let Some(dir) = p.parent().filter(|d| d.exists()) {
@@ -4539,12 +4614,27 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         *path = chosen.display().to_string();
                     }
                 }
-                d.group(64.0, 56.0, 244.0, 32.0, "");
-                d.check(69.0, 53.0, 200.0, 13.0, remember, &i18n::trf_os("Remember this path for \"%s\" category", &[&tr_os(&info.category)]));
+                d.group(64.0, 56.0 + pv, 244.0, 32.0, "");
+                d.check(69.0, 53.0 + pv, 200.0, 13.0, remember, &i18n::trf_os("Remember this path for \"%s\" category", &[&tr_os(&info.category)]));
                 let folder = Path::new(path.as_str()).parent().map(|f| f.display().to_string()).unwrap_or_default();
-                d.readonly(69.0, 69.0, 232.0, 14.0, &folder);
-                d.label_r(5.0, 93.0, 54.0, 10.0, "Description");
-                d.edit(64.0, 91.0, 244.0, 14.0, &mut info.description, true);
+                d.readonly(69.0, 69.0 + pv, 232.0, 14.0, &folder);
+                d.label_r(5.0, 93.0 + pv, 54.0, 10.0, "Description");
+                d.edit(64.0, 91.0 + pv, 244.0, 14.0, &mut info.description, true);
+                if vq > 0.0 {
+                    let y = 108.0 + pv;
+                    d.label_r(5.0, y + 2.0, 54.0, 10.0, "Quality");
+                    let mut q = QUALITIES.iter().find(|q| q.1 == info.yt.quality).unwrap_or(&QUALITIES[0]).0.to_string();
+                    let names: Vec<&str> = QUALITIES.iter().map(|q| q.0).collect();
+                    if d.combo(64.0, y, 92.0, 14.0, "quality", &mut q, &names, true) {
+                        info.yt.quality = QUALITIES.iter().find(|c| c.0 == q).map_or("", |c| c.1).to_string();
+                        let p = Path::new(path.as_str());
+                        if let Some(n) = p.file_name() {
+                            *path = p.with_file_name(ytdlp::named(&n.to_string_lossy(), &info.yt.quality)).display().to_string();
+                        }
+                    }
+                    d.check(162.0, y + 1.0, 66.0, 12.0, &mut info.yt.subs, "Subtitles");
+                    d.check(230.0, y + 1.0, 70.0, 12.0, &mut info.yt.thumb, "Thumbnail");
+                }
                 if let Some(t) = icon {
                     let r = d.rect(333.0, 28.0, 20.0, 20.0);
                     d.ui.put(Rect::from_center_size(r.center(), Vec2::splat(32.0)), egui::Image::new((t, Vec2::splat(32.0))));
@@ -4556,9 +4646,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let r = d.rect(333.0, 72.0, 20.0, 12.0);
                     d.ui.put(r, egui::Spinner::new());
                 }
-                let later = d.button(64.0, 110.0, 74.0, 14.0, "Download Later", true);
-                let now = d.button(149.0, 110.0, 74.0, 14.0, "Start Download", true);
-                let cancel = d.button(234.0, 110.0, 74.0, 14.0, "Cancel", true);
+                let by = 110.0 + pv + vq;
+                let later = d.button(64.0, by, 74.0, 14.0, "Download Later", true);
+                let now = d.button(149.0, by, 74.0, 14.0, "Start Download", true);
+                let cancel = d.button(234.0, by, 74.0, 14.0, "Cancel", true);
                 if later || now {
                     let p = PathBuf::from(path.trim());
                     let mut i = info.clone();
@@ -4577,6 +4668,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     (i.queued, i.queue) = (later, core::MAIN_QUEUE);
                     self.cancels.remove(&i.url);
+                    if i.yt != engine::YtOpts::default() {
+                        // the early start fetched the default formats: start over with the chosen ones
+                        if let Some(j) = early.take() {
+                            discard(&j);
+                        }
+                    }
                     let job = match early.take() {
                         Some(j) => {
                             // keep what was downloaded: stop, move the .part to the chosen name, continue
@@ -4612,7 +4709,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                     }
                 }
-                if let Some(j) = early.take().filter(|_| cancel) {
+                if let Some(j) = if cancel { early.take() } else { None } {
                     discard(&j);
                 }
                 if cancel && *auto {
@@ -4728,11 +4825,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let edited = d.edit(ox + 7.0, oy + 43.0, 51.0, 14.0, &mut kb, on).changed();
                         d.label(ox + 64.0, oy + 45.0, 65.0, 9.0, "KBytes/sec");
                         if toggled || edited {
-                            job.set_limit_kb(if on { kb.trim().parse().unwrap_or(100).max(1) } else { 0 });
+                            self.core.set_job_limit(&job, if on { kb.trim().parse().unwrap_or(100).clamp(1, 1_000_000) } else { 0 });
                         }
                     }
                     _ => {
-                        d.label(ox + 7.0, oy + 3.0, 316.0, 9.0, i18n::line(&format!("{} {}", tr_os("Save To:"), i18n::ltr(&i.path().display().to_string()))));
+                        d.label(ox + 7.0, oy + 3.0, 316.0, 9.0, format!("{} {}", tr_os("Save To:"), i18n::ltr(&i.path().display().to_string())));
                         let mut show = self.core.settings().show_complete;
                         if d.check(ox + 7.0, oy + 15.0, 169.0, 10.0, &mut show, "Show download complete dialog").changed() {
                             self.core.settings().show_complete = show;
@@ -4904,10 +5001,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let (x, y) = e(0.0, 0.0);
                         let mut d2 = dlu::D::new_offset(d.ui, x, y).with_dx(PAGE_DX);
                         d2.page_header(res.0, 48.0, "Browser/System Integration");
-                        if d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup").changed() {}
-                        d2.check_off(13.0, 37.0, 248.0, 10.0, "Run module for click monitoring in IE-based browsers (MSN, Avant, etc)");
-                        d2.check(13.0, 49.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
-                        d2.check(13.0, 61.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
+                        d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup");
+                        d2.check(13.0, 39.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
+                        d2.check(13.0, 53.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
                         d2.group(4.0, 73.0, 261.0, 144.0, "Capture downloads from the following browsers:");
                         let list = d2.listview(13.0, 84.0, 241.0, 84.0, &[("Browser", 120.0), ("Type of integration", 119.0)]);
                         let sel_id = egui::Id::new("browser_sel");
@@ -5346,7 +5442,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if ok {
                     let autostart_changed = self.core.settings().autostart != s.autostart;
                     let dark_changed = self.core.settings().dark_support != s.dark_support;
-                    *self.core.settings() = s.clone();
+                    *self.core.settings() = (**s).clone();
                     self.core.apply_settings();
                     self.core.apply_integration(s.adv_integration);
                     self.core.save();
@@ -5418,7 +5514,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 }
                 let sync = &mut queue.sync;
-                let (sched, max_active) = (&mut queue.sched, &mut queue.max_active);
+                let (sched, max_active, limit_kb) = (&mut queue.sched, &mut queue.max_active, &mut queue.limit_kb);
                 if !is_limits {
                 // the queue's name centred over the tabs; pages are laid out 2.0 px/DLU across (1.6 at 100%)
                 let r = d.rect(142.0, 3.0, 327.0, 9.0);
@@ -5494,7 +5590,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     // template 307
                     d2.label(7.0, 8.0, 41.0, 10.0, "Download");
                     d2.drag(53.0, 5.0, 26.0, 14.0, max_active, 1, 20);
-                    d2.label(83.0, 8.0, 99.0, 10.0, "files at the same time");
+                    d2.label(83.0, 8.0, 90.0, 10.0, "files at the same time");
+                    // each of the queue's downloads at most this fast while it runs
+                    let mut on = *limit_kb > 0;
+                    if d2.check(176.0, 7.0, 40.0, 10.0, &mut on, "Limit to").changed() {
+                        *limit_kb = if on { 200 } else { 0 };
+                    }
+                    if on {
+                        d2.drag(216.0, 5.0, 28.0, 14.0, limit_kb, 1, 1_000_000);
+                    }
+                    d2.label(246.0, 8.0, 29.0, 10.0, "KBytes/sec");
                     let queued: Vec<(u64, String, String, String)> = self
                         .core
                         .jobs()
@@ -6799,7 +6904,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let ok = d.button(155.0, 117.0, 50.0, 14.0, "OK", !user.is_empty());
                 if ok {
                     if *save {
-                        self.core.settings().logins.push(core::Login { site: site.clone(), user: user.clone(), pass: pass.clone(), ..Default::default() });
+                        self.core.settings().logins.push(core::Login { site: site.clone(), user: user.clone(), pass: pass.clone() });
                         self.core.save();
                     }
                     self.grab_auth = Some((user.clone(), pass.clone()));
@@ -7327,6 +7432,21 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.core.save();
                 }
                 !(ok || d.button(245.0, 86.0, 50.0, 14.0, "Cancel", true))
+            }
+            Dialog::SpeedLimit { ids, on, kb } => {
+                let mut d = dlu::D::new(ui);
+                d.check(7.0, 8.0, 120.0, 10.0, on, "Limit the speed of this download to");
+                d.edit(130.0, 6.0, 40.0, 14.0, kb, *on);
+                d.label(174.0, 8.0, 50.0, 9.0, "KBytes/sec");
+                let v = kb.trim().parse::<u64>().ok().filter(|v| (1..=1_000_000).contains(v));
+                let ok = d.button(118.0, 27.0, 50.0, 14.0, "OK", !*on || v.is_some());
+                if ok {
+                    for j in ids.iter().filter_map(|id| self.core.find(*id)) {
+                        self.core.set_job_limit(&j, if *on { v.unwrap_or(0) } else { 0 });
+                    }
+                    self.core.save();
+                }
+                !(ok || d.button(173.0, 27.0, 50.0, 14.0, "Cancel", true))
             }
             Dialog::Columns { list, sel, width } => {
                 let mut d = dlu::D::new(ui);
@@ -8481,4 +8601,12 @@ fn batch_ranges() {
     assert_eq!(batch_range(true, 0, 0, 1, "x", "z"), ["x", "y", "z"]);
     assert!(batch_range(true, 0, 0, 1, "a", "Z").is_empty());
     assert!(batch_range(false, 5, 1, 1, "", "").is_empty());
+}
+
+#[test]
+fn problem_report() {
+    let (title, text) = issue_text("2.9.0", "ndm_ar");
+    assert_eq!(title, "[2.9.0] ");
+    assert!(text.contains("- NDM 2.9.0\n") && text.contains("Language: ndm_ar") && text.contains(std::env::consts::OS));
+    assert!(issue_text("2.9.0", "").1.contains("Language: en (English)"));
 }

@@ -120,6 +120,18 @@ fn inspect(job: &Job, path: &Path, packets: bool) -> Result<Inspection, String> 
     serde_json::from_slice(&output.stdout).map_err(|_| "Invalid media inspection output".into())
 }
 
+pub(crate) fn validate_audio(job: &Job, output: &Path, ext: &str) -> Result<(), String> {
+    let inspected = inspect(job, output, true)?;
+    let (container, codec) = if ext == "mp3" { ("mp3", "mp3") } else { ("m4a", "aac") };
+    let playable = matches!(inspected.streams.as_slice(), [track]
+        if track.codec_type == "audio" && track.codec_name == codec
+        && track.nb_read_packets.as_deref().and_then(|n| n.parse::<u64>().ok()).is_some_and(|n| n > 0));
+    if !inspected.format.format_name.split(',').any(|name| name == container) || !playable {
+        return Err("The converted audio failed media validation".into());
+    }
+    Ok(())
+}
+
 fn mp4_codec(track: &Track) -> bool {
     match track.codec_type.as_str() {
         "video" => matches!(
@@ -154,7 +166,7 @@ pub(crate) fn probe_transport(
         .take(SAMPLE)
         .read_to_end(&mut bytes)
         .map_err(|err| err.to_string())?;
-    if bytes.get(0) != Some(&0x47) || bytes.get(188) != Some(&0x47) {
+    if bytes.first() != Some(&0x47) || bytes.get(188) != Some(&0x47) {
         return Err("The source is not a supported transport stream".into());
     }
     bytes.truncate(bytes.len() - bytes.len() % 188);

@@ -44,7 +44,7 @@ pub fn list() -> Vec<(String, String)> {
         let name = header.split_once(' ').map_or(header.clone(), |h| h.1.trim().to_string());
         Some((stem.clone(), if rtl_stem(&stem) { rtl(&name) } else { name }))
     }).collect();
-    v.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    v.sort_by_cached_key(|item| item.1.to_lowercase());
     v
 }
 

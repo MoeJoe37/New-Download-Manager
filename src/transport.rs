@@ -134,7 +134,11 @@ pub(crate) fn redact(text: &str) -> String {
 fn tls_client() -> Option<&'static reqwest::blocking::Client> {
     static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
     CLIENT
-        .get_or_init(|| client_builder().build().ok())
+        .get_or_init(|| {
+            client_builder().build().or_else(|_| {
+                client_builder().tls_built_in_native_certs(false).build()
+            }).ok()
+        })
         .as_ref()
 }
 
@@ -451,6 +455,46 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error, "HTTP 407 Proxy Authentication Required");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_https_accepts_a_configured_root_and_rejects_an_unknown_root() {
+        use rustls::pki_types::PrivatePkcs8KeyDer;
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let der = certificate.cert.der().clone();
+        let config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions().unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![der.clone()], PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into())
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // Userinfo selects the HTTP/1.1 transport, as do authenticated proxy routes.
+        let url = format!("https://user:pass@localhost:{}/file", listener.local_addr().unwrap().port());
+        let server = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config.clone()).unwrap(), socket);
+                let mut headers = BufReader::new(&mut tls);
+                let mut line = String::new();
+                let read = headers.read_line(&mut line);
+                if index == 0 {
+                    assert!(read.is_err() || matches!(read, Ok(0)));
+                    continue;
+                }
+                assert!(read.is_ok() && line.starts_with("GET /file HTTP/1.1"));
+                while headers.read_line(&mut String::new()).is_ok_and(|n| n > 2) {}
+                tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc").unwrap();
+                tls.flush().unwrap();
+            }
+        });
+        let default = crate::engine::agent("", "");
+        assert!(call(request(&default, &url, "", "")).is_err());
+        let trusted = crate::engine::agent_with_tls("", "", crate::engine::tls_config(&[der]));
+        assert_eq!(call(request(&trusted, &url, "", "")).unwrap().into_string().unwrap(), "abc");
         server.join().unwrap();
     }
 
