@@ -1,6 +1,6 @@
 use super::*;
 use super::formats::{cookie_header, MERGED, PAIR};
-use super::install::{deno_asset, ytdlp_asset, fetch_deno, fetch_ffmpeg, fetch_ytdlp, listed_sum, only_sum, unpack_ffmpeg, unzip_one, version};
+use super::install::{fetch_ffmpeg, listed_sum, only_sum, unpack_ffmpeg, unzip_one};
 use super::playlist::{list_playlist, playlist_entries, PLAYLIST_LIMIT};
 
 #[test]
@@ -220,6 +220,7 @@ fn unzips_deno() {
 #[cfg(unix)]
 #[test]
 fn installs_and_checks() {
+    use super::install::{deno_asset, fetch_deno, fetch_ytdlp, version, ytdlp_asset};
     use sha2::{Digest, Sha256};
     use std::io::{BufRead, BufReader, Write};
     let hex = |d: &[u8]| Sha256::digest(d).iter().map(|b| format!("{b:02x}")).collect::<String>();

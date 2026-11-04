@@ -12,7 +12,9 @@ use self::browser_setup::{extension_page, GUIDES, integration, extension_dir};
 use self::shell::{virus_args, explore, open_folder_of, open_url, open_with};
 use self::grabber_window::{GRAB_MENU, GRAB_TB, GRAB_STEPS, GrabCmd};
 #[cfg(test)]
-use self::events::{close_action, Close, no_zoom};
+use self::events::no_zoom;
+#[cfg(all(test, not(windows)))]
+use self::events::{close_action, Close};
 use self::dialogs::scheduler::sched_time;
 mod dialogs;
 mod help;
