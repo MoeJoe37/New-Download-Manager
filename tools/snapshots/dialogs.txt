@@ -1310,18 +1310,6 @@ TbCustomize "Customize Toolbar" 498.0x200.0
   text 441.0,126.0 480.0,135.0 "Move Up"
   rect 429.5,145.5 491.0,168.0
   text 434.0,153.5 486.0,161.5 "Move Down"
-  rect 7.5,29.0 9.5,31.0
-  rect 6.5,30.0 247.0,48.0
-  text 10.5,33.0 244.5,45.0 "🔥 First use of ScrollArea ID 3D09"
-  rect 256.0,29.0 258.0,31.0
-  rect 255.0,30.0 502.0,48.0
-  text 259.0,33.0 500.0,45.0 "🔥 Second use of ScrollArea ID 3D09"
-  rect 168.0,29.0 171.0,185.0
-  rect 167.0,12.0 379.5,30.0
-  text 171.0,15.0 377.0,28.0 "🔥 First use of widget ID C6B2"
-  rect 416.5,29.0 419.5,185.0
-  rect 415.5,12.0 634.5,30.0
-  text 419.5,15.0 632.5,28.0 "🔥 Second use of widget ID C6B2"
 
 Tip "Tip of the Day" 352.9x262.4
   rect 0.0,0.0 353.0,262.5

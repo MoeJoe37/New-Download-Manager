@@ -197,6 +197,8 @@ fn dialog_snapshots() {
     let mut snapshot = String::new();
     for (mut dialog, name) in cases {
         let ctx = egui::Context::default();
+        // Match release builds and leave egui diagnostic overlays out of the baseline.
+        ctx.options_mut(|options| options.warn_on_id_clash = false);
         let mut fonts = egui::FontDefinitions::default();
         for family in ["segoe", "list"] {
             fonts.families.insert(egui::FontFamily::Name(family.into()), fonts.families[&egui::FontFamily::Proportional].clone());
