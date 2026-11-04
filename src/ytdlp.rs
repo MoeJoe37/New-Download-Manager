@@ -3,7 +3,7 @@
 //! Downloads -> Set yt-dlp installs yt-dlp and Deno (the JavaScript runtime yt-dlp needs for YouTube) in
 //! NDM's tools folder and keeps them up to date. The best video and audio are joined by ffmpeg when it is
 //! installed, else by NDM itself (stream::join_files).
-use crate::engine::{sanitize, Info, Job, Limiter, Probe, Seg, Status};
+use crate::engine::{names::sanitize, Info, Job, Limiter, probe::Probe, Seg, Status};
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -196,7 +196,7 @@ fn playlist_entries(value: &serde_json::Value) -> Result<Playlist, String> {
 }
 
 /// Flat extraction lists entries without resolving every track or inheriting the browser page's headers.
-pub fn list_playlist(job: &Job, agent: &crate::engine::Agent, url: &str, browser: &str) -> Result<Playlist, String> {
+pub fn list_playlist(job: &Job, agent: &crate::transport::Agent, url: &str, browser: &str) -> Result<Playlist, String> {
     if agent.invalid_proxy { return Err("Invalid proxy configuration".into()); }
     let url = playlist_url(url).ok_or("Enter an HTTP or HTTPS playlist address without embedded credentials.")?;
     let program = yt_dlp()?;
@@ -377,7 +377,7 @@ fn video_name(v: &serde_json::Value) -> String {
 }
 
 /// The video title, for File Info.
-pub fn probe(agent: &crate::engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
+pub fn probe(agent: &crate::transport::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     if agent.invalid_proxy { return Err("Invalid proxy configuration".into()); }
     let p = yt_dlp()?;
     let ff = crate::media::toolchain();
@@ -637,7 +637,7 @@ fn record_tracks(job: &Job, dest: &Path, video: &Path, audio: &Path) -> Result<(
 /// video and its audio, or the one file that has both); plain files among them are fetched by NDM itself,
 /// each over the download's connections in segments and both at once, others by yt-dlp. The video and
 /// audio are then joined (NDM's own joiner, else ffmpeg) as a processing step of its own.
-pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<bool, String> {
+pub fn run(job: &Job, agent: &crate::transport::Agent, global: &Limiter) -> Result<bool, String> {
     let existing = { let i = job.info(); (!i.name.is_empty()).then(|| i.path()) };
     if let Some(dest) = existing {
         if let Some((video, audio)) = restore_tracks(job, &dest) {
@@ -696,7 +696,7 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
                 let stem = name.file_stem().unwrap_or_default().to_string_lossy();
                 let ext = name.extension().unwrap_or_default().to_string_lossy();
                 let name = format!("{stem} [NDM {}].{ext}", i.id);
-                i.name = crate::engine::unique_name(&i.folder, &name, &|_| false);
+                i.name = crate::engine::names::unique_name(&i.folder, &name, &|_| false);
             }
         }
         if yt.quality.parse::<u32>().is_ok() {
@@ -706,7 +706,7 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
                 .filter(|ext| Path::new(&i.name).extension().is_none_or(|old| !old.eq_ignore_ascii_case(ext)))
             {
                 let name = Path::new(&i.name).with_extension(ext);
-                i.name = crate::engine::unique_name(&i.folder, &name.to_string_lossy(), &|_| false);
+                i.name = crate::engine::names::unique_name(&i.folder, &name.to_string_lossy(), &|_| false);
             }
         }
         if sound.is_some() && Path::new(&i.name).extension().is_none_or(|ext| !ext.eq_ignore_ascii_case(&yt.quality)) {
@@ -846,7 +846,7 @@ fn join(job: &Job, video: &Path, audio: &Path, dest: &Path, ff: Option<&Path>) -
 
 /// Fetch each stream concurrently with its appropriate backend. A failed native fetch switches only
 /// that stream to yt-dlp. The parent's bar combines both streams, including mixed native/yt-dlp jobs.
-fn fetch_streams(job: &Job, agent: &crate::engine::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf],
+fn fetch_streams(job: &Job, agent: &crate::transport::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf],
     fallback: &(dyn Fn(&Job, &Stream, &Path) -> Result<bool, String> + Sync)) -> Result<bool, String> {
     let (conns, referrer, limit) = {
         let i = job.info();
@@ -928,7 +928,7 @@ fn stream_limit(job: &Job, global: &Limiter, live: usize) -> u64 {
 }
 
 #[cfg(test)]
-fn fetch_direct(job: &Job, agent: &crate::engine::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
+fn fetch_direct(job: &Job, agent: &crate::transport::Agent, global: &Limiter, streams: &[Stream], outs: &[PathBuf]) -> Result<bool, String> {
     fetch_streams(job, agent, global, streams, outs, &|_, _, _| Err("unexpected fallback".into()))
 }
 
@@ -1451,7 +1451,7 @@ mod tests {
             part.info().segs = vec![Seg { next: 16, stop: Some(16), ..Default::default() }];
             Ok(true)
         };
-        let agent = crate::engine::agent("", "ndm-test");
+        let agent = crate::transport::client::agent("", "ndm-test");
         assert_eq!(fetch_streams(&job, &agent, &Limiter::default(), &streams, &outs, &fallback), Ok(true));
         assert_eq!(job.info().done(), 32);
         let failed = |part: &Job, stream: &Stream, _: &Path| {
@@ -1739,7 +1739,7 @@ mod tests {
         assert!(ffmpeg().is_none(), "ffmpeg hidden");
         let dir = home.join("Video");
         let job = Job::new(crate::engine::Info { url: format!("{base}clip.mpd"), folder: dir.display().to_string(), name: "clip.mp4".into(), conns: 4, ..Default::default() });
-        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(run(&job, &crate::transport::client::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         let d = std::fs::read(dir.join("clip.mp4")).unwrap();
         let top = crate::stream::boxes(&d, 0, d.len());
         let moov = top.iter().find(|b| &b.3 == b"moov").copied().expect("one MP4");
@@ -1755,15 +1755,15 @@ mod tests {
         // HLS uses the same concurrent fragment path, preserving the assembled fragment order.
         peak.store(0, Relaxed);
         let job = Job::new(Info { url: format!("{base}clip.m3u8"), folder: dir.display().to_string(), name: "hls.mp4".into(), conns: 4, ..Default::default() });
-        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(run(&job, &crate::transport::client::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         assert_eq!(std::fs::read(dir.join("hls.mp4")).unwrap(), [init(1, 1000), frag(1, 0, b'v'), frag(1, 2000, b'w')].concat());
         assert!(peak.load(Relaxed) > 1, "HLS fragments fetched concurrently");
         // a site with one file that has both: no separate streams, so that file
         let job = Job::new(crate::engine::Info { url: format!("{base}movie.mp4"), folder: dir.display().to_string(), name: "movie.mp4".into(), ..Default::default() });
-        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(run(&job, &crate::transport::client::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         assert_eq!(std::fs::read(dir.join("movie.mp4")).unwrap(), movie);
         // Listing uses the real flat extractor, then the selected entry is extracted on its own.
-        let agent = crate::engine::agent("", "ndm-test");
+        let agent = crate::transport::client::agent("", "ndm-test");
         let lookup = Job::new(Info::default());
         let playlist = list_playlist(&lookup, &agent, &format!("{base}feed.xml"), "").unwrap();
         assert_eq!(playlist.entries.len(), 2);
@@ -1778,7 +1778,7 @@ mod tests {
         assert_eq!(std::fs::read(selected.info().path()).unwrap(), movie);
         // and yt-dlp's own error when there is nothing
         let job = Job::new(crate::engine::Info { url: format!("{base}gone.mp4"), folder: dir.display().to_string(), name: "gone.mp4".into(), ..Default::default() });
-        let e = run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()).unwrap_err();
+        let e = run(&job, &crate::transport::client::agent("", "ndm-test"), &Limiter::default()).unwrap_err();
         assert!(e.contains("404"), "{e}");
         // An offline merge retry uses the completed tracks before starting the extractor.
         let retry = Job::new(Info { id: 42, url: "http://127.0.0.1:1/offline".into(),
@@ -1788,7 +1788,7 @@ mod tests {
         std::fs::write(&audio, [init(1, 48000), frag(1, 0, b'a')].concat()).unwrap();
         let dest = retry.info().path();
         record_tracks(&retry, &dest, &video, &audio).unwrap();
-        assert_eq!(run(&retry, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(run(&retry, &crate::transport::client::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         assert!(dest.is_file() && !video.exists() && !audio.exists() && !receipt_path(&dest).exists());
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -1862,7 +1862,7 @@ mod tests {
         let dir = home.join("Music");
         let yt = crate::engine::YtOpts { quality: "mp3".into(), subs: true, thumb: true, ..Default::default() };
         let job = Job::new(Info { url: format!("{base}page.html"), folder: dir.display().to_string(), name: "song.mp3".into(), ytdlp: true, yt, ..Default::default() });
-        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(run(&job, &crate::transport::client::agent("", "ndm-test"), &Limiter::default()), Ok(true));
         let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         left.sort();
         assert_eq!(left, ["song.en.vtt", "song.jpg", "song.mp3"]);
@@ -1874,7 +1874,7 @@ mod tests {
             url: format!("{base}{page}"), folder: videos.display().to_string(), name,
             ytdlp: true, yt: crate::engine::YtOpts { quality: quality.into(), ..Default::default() }, ..Default::default()
         });
-        let agent = crate::engine::agent("", "ndm-test");
+        let agent = crate::transport::client::agent("", "ndm-test");
         let unknown = video_job("page.html", "unknown.mp4".into(), "720");
         assert_eq!(run(&unknown, &agent, &Limiter::default()).unwrap_err(),
             "NDM could not verify a video format at or below 720p. Choose Best to download without a resolution limit.");
@@ -1918,7 +1918,7 @@ mod tests {
         let stream = |id: &str, path: &str, ext: &str| Stream { id: id.into(), url: format!("{base}{path}"), ext: ext.into(), size: data.len() as u64, headers: vec![("User-Agent".into(), "ndm-test/1".into())], direct: true };
         let streams = [stream("137", "rslow-v.mp4", "mp4"), stream("140", "r-a.m4a", "m4a")];
         let outs = [dir.join("x.ndm-video.mp4"), dir.join("x.ndm-audio.m4a")];
-        let agent = crate::engine::agent("", "ndm-test");
+        let agent = crate::transport::client::agent("", "ndm-test");
         let done = std::sync::atomic::AtomicBool::new(false);
         let (ok, samples) = std::thread::scope(|sc| {
             let watch = sc.spawn(|| {
@@ -1967,7 +1967,7 @@ mod tests {
         let dir = home.join("Video");
         let job = Job::new(crate::engine::Info { url: std::env::var("NDM_TEST_PAGE").unwrap(), folder: dir.display().to_string(), conns: 4, ..Default::default() });
         let t = std::time::Instant::now();
-        let r = run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default());
+        let r = run(&job, &crate::transport::client::agent("", "ndm-test"), &Limiter::default());
         eprintln!("{r:?} in {:?}: {:?}", t.elapsed(), std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| (e.file_name(), e.metadata().map(|m| m.len()).unwrap_or(0))).collect::<Vec<_>>()));
         assert_eq!(r, Ok(true));
     }
@@ -2040,7 +2040,7 @@ mod tests {
         let dir = tools_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let (got, total) = (AtomicU64::new(0), AtomicU64::new(0));
-        fetch_ffmpeg(&crate::engine::agent("", "ndm-test"), &dir, &got, &total).unwrap();
+        fetch_ffmpeg(&crate::transport::client::agent("", "ndm-test"), &dir, &got, &total).unwrap();
         assert!(got.load(Relaxed) > 10_000_000, "{} bytes", got.load(Relaxed));
         let ff = ffmpeg().expect("NDM's ffmpeg is found");
         assert!(ff.starts_with(&dir), "{ff:?}");
@@ -2052,7 +2052,7 @@ mod tests {
         assert!(left.iter().all(|f| !f.ends_with(".part")), "{left:?}");
         // a second time: a working ffmpeg stays as it is, nothing is downloaded
         let again = AtomicU64::new(0);
-        fetch_ffmpeg(&crate::engine::agent("", "ndm-test"), &dir, &again, &total).unwrap();
+        fetch_ffmpeg(&crate::transport::client::agent("", "ndm-test"), &dir, &again, &total).unwrap();
         assert_eq!(again.load(Relaxed), 0);
         let _ = std::fs::remove_dir_all(&home);
     }

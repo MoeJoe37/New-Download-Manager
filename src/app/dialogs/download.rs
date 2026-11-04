@@ -51,7 +51,7 @@ impl App {
             let i = j.info();
             let res = match &i.status {
                 Status::Error(e) => Some(Err(e.clone())),
-                _ if i.probed => Some(Ok(engine::Probe { name: i.name.clone(), size: i.size, ranges: i.ranges, modified: i.modified.clone(), etag: i.etag.clone(), stream: i.stream, page: i.page, ytdlp: i.ytdlp })),
+                _ if i.probed => Some(Ok(engine::probe::Probe { name: i.name.clone(), size: i.size, ranges: i.ranges, modified: i.modified.clone(), etag: i.etag.clone(), stream: i.stream, page: i.page, ytdlp: i.ytdlp })),
                 _ => None,
             };
             drop(i);
@@ -164,7 +164,7 @@ impl App {
             let p = PathBuf::from(path.trim());
             let mut i = info.clone();
             i.folder = p.parent().map(|f| f.display().to_string()).filter(|f| !f.is_empty()).unwrap_or_else(|| info.folder.clone());
-            i.name = p.file_name().map(|n| engine::sanitize(&n.to_string_lossy())).unwrap_or_default();
+            i.name = p.file_name().map(|n| engine::names::sanitize(&n.to_string_lossy())).unwrap_or_default();
             if let Some(old) = *replace {
                 // overwrite: the new download takes over the old one's file name (its .part is recreated)
                 self.core.detach(old);

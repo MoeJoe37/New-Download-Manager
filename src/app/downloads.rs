@@ -147,7 +147,7 @@ impl App {
         {
             let mut st = crawl.state.lock().unwrap();
             for l in inc.links {
-                let name = engine::sanitize(&engine::url_name(&l.url));
+                let name = engine::names::sanitize(&engine::names::url_name(&l.url));
                 let checked = types.split_whitespace().any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(&core::ext(&name)));
                 st.files.push(grabber::Found { url: l.url, name, text: l.text, checked, ..Default::default() });
             }
@@ -175,7 +175,7 @@ impl App {
         let url = text.lines().next().unwrap_or("").trim().to_string();
         // NDM also takes mms:// and rtmp://; the engine speaks http(s) and ftp only
         let web = url.len() > 6 && (["http://", "https://", "ftp://"].iter().any(|p| url.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p))) || stream::is_media_url(&url));
-        let ext = core::ext(&engine::url_name(&url));
+        let ext = core::ext(&engine::names::url_name(&url));
         let wanted = self.core.settings().file_types.split_whitespace().any(|t| t.trim_start_matches('.').eq_ignore_ascii_case(&ext));
         if web && wanted && !self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::AddUrl { .. })) {
             self.open(Dialog::AddUrl { url, auth: false, login: String::new(), pass: String::new(), clip: true });
@@ -208,7 +208,7 @@ impl App {
         info.parent = inc.referrer.clone(); // the extension sends the tab URL
         (info.referrer, info.cookies, info.browser_proxy) = (inc.referrer, inc.cookies, inc.proxy);
         let slot: ProbeSlot = Arc::default();
-        let hint = inc.filename.rsplit(['/', '\\']).next().map(engine::sanitize).filter(|n| n != "download").unwrap_or_default();
+        let hint = inc.filename.rsplit(['/', '\\']).next().map(engine::names::sanitize).filter(|n| n != "download").unwrap_or_default();
         // a video page (YouTube..., or any page from the download panel): the Video category until yt-dlp
         // names the file from the video's title
         info.ytdlp = inc.video;
@@ -221,7 +221,7 @@ impl App {
         } else if video_page {
             "video.mp4".into()
         } else {
-            engine::sanitize(&engine::url_name(&info.url))
+            engine::names::sanitize(&engine::names::url_name(&info.url))
         };
         if video_page {
             info.category = self.core.settings().category_for(&name, &info.url);
@@ -249,7 +249,7 @@ impl App {
             let (s, c, agent) = (slot.clone(), ctx.clone(), self.core.agent(&info.url));
             let (url, r, k) = (info.url.clone(), info.referrer.clone(), info.cookies.clone());
             std::thread::spawn(move || {
-                let found = if video_page { ytdlp::probe(&agent, &url, &r, &k) } else { engine::probe(&agent, &url, &r, &k) };
+                let found = if video_page { ytdlp::probe(&agent, &url, &r, &k) } else { engine::probe::probe(&agent, &url, &r, &k) };
                 // a web page from any of the sites yt-dlp knows (well beyond the ones NDM names): its video
                 let found = match found {
                     Ok(p) if p.page => ytdlp::probe(&agent, &url, &r, &k).or(Ok(p)),

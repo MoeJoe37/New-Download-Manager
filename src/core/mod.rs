@@ -8,6 +8,7 @@ pub(crate) mod routing;
 #[cfg(test)]
 mod tests;
 
+use crate::transport;
 use self::queue::{MAIN_QUEUE, Queue, Quota, Sched};
 use self::routing::{AdvProxy, PROXY_PORT, pac_route};
 use self::settings::{Browser, GENERAL, GrabProject, Login, Settings, browser_kind};
@@ -67,7 +68,7 @@ pub struct Core {
     running: Mutex<BTreeSet<u32>>,
     pub limiter: Arc<Limiter>,
     /// One HTTP agent per proxy in use ("" = direct); rebuilt when the settings change.
-    agents: Mutex<HashMap<String, engine::Agent>>,
+    agents: Mutex<HashMap<String, transport::Agent>>,
     #[cfg(target_os = "macos")]
     pub(crate) proxy_ready: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
@@ -126,7 +127,7 @@ impl Core {
         self.agents.lock().unwrap().clear();
         let pasv = s.ftp_pasv;
         let routes = s;
-        *engine::FTP.lock().unwrap() = engine::FtpCfg { pasv, route: Some(Arc::new(move |u: &str| routes.proxy_for(u))) };
+        *engine::ftp::FTP.lock().unwrap() = engine::ftp::FtpCfg { pasv, route: Some(Arc::new(move |u: &str| routes.proxy_for(u))) };
     }
 
     pub fn new_info(&self, url: &str) -> Info {
@@ -156,8 +157,8 @@ impl Core {
         if !path.is_file() {
             return false;
         }
-        let Some(ext) = engine::sniff(&path) else { return false };
-        let typed = engine::media_name(&name, ext);
+        let Some(ext) = engine::names::sniff(&path) else { return false };
+        let typed = engine::names::media_name(&name, ext);
         if known && typed == name { return false; }
         let new_cat = self.settings().category_for(&typed, &url);
         if typed == name && new_cat == category {
@@ -188,7 +189,7 @@ impl Core {
 
     pub fn unique_name(&self, folder: &str, name: &str) -> String {
         let jobs = self.jobs();
-        engine::unique_name(folder, name, &|n| jobs.iter().any(|j| {
+        engine::names::unique_name(folder, name, &|n| jobs.iter().any(|j| {
             let i = j.info();
             i.folder == folder && i.name == n && i.status != Status::Complete
         }))
@@ -201,7 +202,7 @@ impl Core {
             info.category = self.settings().category_for("video.mp4", &info.url);
             info.folder = self.settings().folder_for(&info.category);
         } else if info.name.is_empty() {
-            let name = engine::sanitize(&engine::url_name(&info.url));
+            let name = engine::names::sanitize(&engine::names::url_name(&info.url));
             if name != "download" {
                 info.category = self.settings().category_for(&name, &info.url);
                 info.folder = self.settings().folder_for(&info.category);
@@ -310,7 +311,7 @@ impl Core {
         };
         // ponytail: used from the next start (Resume, queue retries), not by restarting the failed one at once
         let browser = on && !bp.is_empty() && job.fails.load(Relaxed) > 0;
-        let agent = if browser { engine::agent(&crate::net::agent_proxy(&bp), &ua) } else { self.agent(&url) };
+        let agent = if browser { transport::client::agent(&crate::net::agent_proxy(&bp), &ua) } else { self.agent(&url) };
         job.multi_ok.store(!browser, Relaxed);
         *job.lanes.lock().unwrap() = if browser { vec![] } else { self.lanes(&url) };
         job.start(agent, self.limiter.clone());

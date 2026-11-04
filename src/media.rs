@@ -148,17 +148,17 @@ fn mp4_codec(track: &Track) -> bool {
 
 /// Inspect a bounded prefix of the authorized transport stream before offering conversion.
 pub(crate) fn probe_transport(
-    agent: &crate::engine::Agent,
+    agent: &crate::transport::Agent,
     url: &str,
     referrer: &str,
     cookies: &str,
 ) -> Result<(bool, bool), String> {
     use std::io::Read;
     const SAMPLE: u64 = 188 * 2048;
-    let request = crate::engine::request(agent, url, referrer, cookies)
+    let request = crate::transport::request(agent, url, referrer, cookies)
         .set("Range", &format!("bytes=0-{}", SAMPLE - 1));
-    let response = crate::engine::call(request)?;
-    crate::engine::validate_http_response(&response, Some((0, Some(SAMPLE - 1))), None)?;
+    let response = crate::transport::call(request)?;
+    crate::engine::range::validate_http_response(&response, Some((0, Some(SAMPLE - 1))), None)?;
     let stage = Stage::new(&std::env::temp_dir().join("ndm-probe.ts"))?;
     let mut bytes = Vec::new();
     response
@@ -500,7 +500,7 @@ mod tests {
                 }
             }
         });
-        let agent = crate::engine::agent("", "");
+        let agent = crate::transport::client::agent("", "");
         let list =
             serde_json::to_value(crate::stream::formats(&agent, &url, "", "").unwrap()).unwrap();
         assert_eq!(list[0]["resolution"], "160×90");
@@ -521,7 +521,7 @@ mod tests {
                 Ok(true)
             );
             let path = job.info().path();
-            assert_eq!(crate::engine::sniff(&path), Some(ext));
+            assert_eq!(crate::engine::names::sniff(&path), Some(ext));
             let file = inspect(&job, &path, true).unwrap();
             assert_eq!(
                 file.streams[0].height,

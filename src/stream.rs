@@ -4,8 +4,9 @@
 //! the video natively (fragmented MP4 here, MPEG-TS -> MP4 and WebM in `remux`; anything else through ffmpeg
 //! when installed, else saved alongside). Live HLS playlists and live (dynamic) DASH manifests are followed
 //! until they end or the user stops.
-use crate::engine::{self, Job, Limiter, Probe, Seg, Status, RETRIES};
+use crate::engine::{self, Job, Limiter, probe::Probe, Seg, Status, RETRIES};
 use crate::remux;
+use crate::transport;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
@@ -207,7 +208,7 @@ fn hls_media(base: &str, text: &str) -> Result<Track, String> {
     }
     t.live = !vod;
     let first = t.parts.first().ok_or("the playlist has no segments")?;
-    let ext = engine::url_name(&first.url).rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = engine::names::url_name(&first.url).rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     t.ext = if t.init.is_some() { "mp4".into() } else if ["aac", "mp3", "ac3"].contains(&ext.as_str()) { ext } else { "ts".into() };
     Ok(t)
 }
@@ -460,8 +461,8 @@ fn dash_track(b0: &str, period: Node, set: Node, rep: Node, secs: f64, kind: &st
 
 // ---- download ----
 
-fn text(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<(String, String), String> {
-    let r = engine::call(engine::request(agent, url, referrer, cookies))?;
+fn text(agent: &transport::Agent, url: &str, referrer: &str, cookies: &str) -> Result<(String, String), String> {
+    let r = transport::call(transport::request(agent, url, referrer, cookies))?;
     if let Some(t) = r.header("Date").and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok()) {
         CLOCK.store(t.timestamp_millis() - chrono::Utc::now().timestamp_millis(), Relaxed);
     }
@@ -482,7 +483,7 @@ pub(crate) struct FormatChoice {
     transcode: bool,
 }
 
-pub(crate) fn transport_formats(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Vec<FormatChoice>, String> {
+pub(crate) fn transport_formats(agent: &transport::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Vec<FormatChoice>, String> {
     if crate::media::toolchain().is_none() { return Ok(vec![]); }
     let (transcode, audio) = crate::media::probe_transport(agent, url, referrer, cookies)?;
     Ok(vec![FormatChoice { variant: None, resolution: String::new(), bandwidth: 0, codecs: String::new(),
@@ -491,7 +492,7 @@ pub(crate) fn transport_formats(agent: &engine::Agent, url: &str, referrer: &str
 
 /// Report only formats identified in a real manifest. TS/MP4 choices require evidence
 /// from the selected playlist or adaptation set; unknown codecs keep automatic output.
-pub(crate) fn formats(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Vec<FormatChoice>, String> {
+pub(crate) fn formats(agent: &transport::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Vec<FormatChoice>, String> {
     let get = |target: &str| text(agent, target, referrer,
         if crate::transport::same_origin(url, target) { cookies } else { "" });
     let (base, manifest) = get(url)?;
@@ -549,7 +550,7 @@ pub(crate) fn formats(agent: &engine::Agent, url: &str, referrer: &str, cookies:
             matches!(codec, "avc1" | "avc3" | "hvc1" | "hev1" | "mp4a" | "ac-3" | "ec-3")
         });
         let transport = tracks[0].ext == "ts" && tracks[0].parts.first().is_some_and(|p|
-            engine::url_name(&p.url).to_ascii_lowercase().ends_with(".ts"));
+            engine::names::url_name(&p.url).to_ascii_lowercase().ends_with(".ts"));
         let mut outputs = Vec::new();
         if tracks[0].ext == "mp4" || transport && mp4_safe { outputs.push("mp4"); }
         if transport && tracks.len() == 1 { outputs.push("ts"); }
@@ -584,9 +585,9 @@ fn out_ext(tracks: &[Track]) -> &str {
     if tracks[0].ext == "ts" { "mp4" } else { &tracks[0].ext }
 }
 
-pub fn probe(agent: &engine::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
+pub fn probe(agent: &transport::Agent, url: &str, referrer: &str, cookies: &str) -> Result<Probe, String> {
     let tracks = plan(&|u| text(agent, u, referrer, cookies), url)?;
-    Ok(Probe { name: engine::sanitize(&with_ext(&engine::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), etag: String::new(), stream: true, page: false, ytdlp: false })
+    Ok(Probe { name: engine::names::sanitize(&with_ext(&engine::names::url_name(url), out_ext(&tracks))), size: None, ranges: true, modified: String::new(), etag: String::new(), stream: true, page: false, ytdlp: false })
 }
 
 fn aes_cbc(key: &[u8], iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, String> {
@@ -634,7 +635,7 @@ fn aes_cbc_raw(key: &[u8], mut iv: [u8; 16], data: &[u8]) -> Result<Vec<u8>, Str
 
 struct Ctx<'a> {
     job: &'a Job,
-    agent: &'a engine::Agent,
+    agent: &'a transport::Agent,
     global: &'a Limiter,
     referrer: String,
     cookies: String,
@@ -645,15 +646,15 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn transfer(&self, part: &Part, output: &mut dyn Write, got: &AtomicU64, tick: &dyn Fn(), max: u64, extra: bool) -> Result<u64, String> {
         let cookies = if crate::transport::same_origin(&self.origin, &part.url) { &self.cookies } else { "" };
-        let mut request = engine::request(self.agent, &part.url, &self.referrer, cookies).prefer_http1(extra);
+        let mut request = transport::request(self.agent, &part.url, &self.referrer, cookies).prefer_http1(extra);
         if let Some((first, last)) = part.range {
             request = request.set("Range", &format!("bytes={first}-{last}"));
         }
-        let response = engine::call(request)?;
+        let response = transport::call(request)?;
         if part.range.is_some() && response.status() != 206 {
             return Err("server ignored the Range request".into());
         }
-        engine::validate_http_response(&response, part.range.map(|(first, last)| (first, Some(last))), None)?;
+        engine::range::validate_http_response(&response, part.range.map(|(first, last)| (first, Some(last))), None)?;
         let expected = part.range.map(|(first, last)| last - first + 1)
             .or_else(|| response.header("Content-Length")?.parse().ok());
         if expected.is_some_and(|length| length > max) { return Err("Media fragment exceeds its size limit".into()); }
@@ -720,7 +721,7 @@ impl Ctx<'_> {
     }
 }
 
-pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, String> {
+pub fn run(job: &Job, agent: &transport::Agent, global: &Limiter) -> Result<bool, String> {
     let (url, referrer, cookies, output, variant) = {
         let i = job.info();
         (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.media_output.clone(), i.media_variant)
@@ -735,8 +736,8 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
         // each period's single file: 4 MiB byte ranges, so it downloads over several connections and resumes
         t.parts = std::mem::take(&mut t.parts)
             .into_iter()
-            .flat_map(|p| match (p.range, engine::probe(agent, &p.url, &referrer, scoped_cookies(&p.url))) {
-                (None, Ok(engine::Probe { size: Some(len), ranges: true, .. })) => (0..len).step_by(PIECE as usize).map(|a| Part { range: Some((a, (a + PIECE).min(len) - 1)), ..p.clone() }).collect(),
+            .flat_map(|p| match (p.range, engine::probe::probe(agent, &p.url, &referrer, scoped_cookies(&p.url))) {
+                (None, Ok(engine::probe::Probe { size: Some(len), ranges: true, .. })) => (0..len).step_by(PIECE as usize).map(|a| Part { range: Some((a, (a + PIECE).min(len) - 1)), ..p.clone() }).collect(),
                 _ => vec![p],
             })
             .collect();
@@ -748,7 +749,7 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
     let root = {
         let mut i = job.info();
         let ext = if output.is_empty() { out_ext(&tracks) } else { output.as_str() };
-        i.name = if i.name.is_empty() { engine::unique_name(&i.folder, &engine::sanitize(&with_ext(&engine::url_name(&url), ext)), &|_| false) } else { with_ext(&i.name, ext) };
+        i.name = if i.name.is_empty() { engine::names::unique_name(&i.folder, &engine::names::sanitize(&with_ext(&engine::names::url_name(&url), ext)), &|_| false) } else { with_ext(&i.name, ext) };
         (i.ranges, i.probed, i.stream, i.status) = (true, true, true, Status::Downloading);
         let dir = i.part();
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -849,7 +850,7 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
                 Err(_) if job.stopping() => return,
                 Err(e) => {
                     fails += 1;
-                    if fails > RETRIES || engine::permanent_error(&e) {
+                    if fails > RETRIES || engine::range::permanent_error(&e) {
                         if live && e.starts_with("HTTP 404 ") {
                             break; // a live piece that's gone from the server: skip it
                         }
@@ -857,7 +858,7 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
                         return;
                     }
                     show(&format!("Error: {e}, retrying..."));
-                    let until = Instant::now() + engine::retry_delay(fails);
+                    let until = Instant::now() + engine::range::retry_delay(fails);
                     while !job.stopping() && Instant::now() < until {
                         thread::sleep(Duration::from_millis(100));
                     }
@@ -996,7 +997,7 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
     if !result? {
         let folder = dest.parent().unwrap_or(Path::new(".")).to_string_lossy();
         let fallback = with_ext(dest.file_name().unwrap_or_default().to_string_lossy().as_ref(), "ts");
-        dest = dest.with_file_name(engine::unique_name(&folder, &fallback, &|_| false));
+        dest = dest.with_file_name(engine::names::unique_name(&folder, &fallback, &|_| false));
     }
     stage.finish(&dest)?;
     let _ = fs::remove_dir_all(&root);
@@ -1202,7 +1203,7 @@ pub fn is_media_url(url: &str) -> bool {
 /// Records an mms / rtmp / rtsp stream with ffmpeg (on PATH), copying the streams as they come; the
 /// file grows as `<file>` and Stop ends the recording (kept, like a stopped live stream).
 // ponytail: ffmpeg speaks these protocols; a native MMS/RTMP client if ffmpeg can't be assumed
-pub fn run_media(job: &Job, agent: &engine::Agent) -> Result<bool, String> {
+pub fn run_media(job: &Job, agent: &transport::Agent) -> Result<bool, String> {
     use std::io::BufRead;
     use std::process::Stdio;
     if agent.invalid_proxy || !agent.proxy.is_empty() {
@@ -1496,7 +1497,7 @@ mod tests {
             let _ = socket.write_all(&data);
         });
         let job = Job::new(engine::Info::default());
-        let agent = engine::agent("", "");
+        let agent = transport::client::agent("", "");
         let limit = Limiter::default();
         let ctx = Ctx { job: &job, agent: &agent, global: &limit, referrer: String::new(), cookies: String::new(),
             origin: url.clone(), keys: Mutex::default() };
@@ -1651,7 +1652,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ndm-test-dash-live-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let j = Job::new(engine::Info { url: format!("{base}live.mpd"), folder: dir.display().to_string(), conns: 2, ..Default::default() });
-        j.start(engine::agent("", ""), Arc::new(Limiter::default()));
+        j.start(transport::client::agent("", ""), Arc::new(Limiter::default()));
         while j.running() {
             thread::sleep(Duration::from_millis(20));
         }
@@ -1812,7 +1813,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ndm-test-hls-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let j = Job::new(engine::Info { url: format!("{base}v.m3u8"), folder: dir.display().to_string(), conns: 2, ..Default::default() });
-        j.start(engine::agent("", ""), Arc::new(Limiter::default()));
+        j.start(transport::client::agent("", ""), Arc::new(Limiter::default()));
         while j.running() {
             thread::sleep(Duration::from_millis(20));
         }
@@ -1860,10 +1861,10 @@ mod tests {
         });
         let dir = std::env::temp_dir().join(format!("ndm-test-live-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let p = engine::probe(&engine::agent("", ""), &format!("{base}play"), "", "").unwrap();
+        let p = engine::probe::probe(&transport::client::agent("", ""), &format!("{base}play"), "", "").unwrap();
         assert!(p.stream && p.name == "play.mp4", "{}", p.name);
         let j = Job::new(engine::Info { url: format!("{base}play"), folder: dir.display().to_string(), conns: 2, ..Default::default() });
-        j.start(engine::agent("", ""), Arc::new(Limiter::default()));
+        j.start(transport::client::agent("", ""), Arc::new(Limiter::default()));
         while j.running() {
             thread::sleep(Duration::from_millis(20));
         }

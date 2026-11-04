@@ -142,10 +142,10 @@ impl Opts {
 
 /// "host\dir\sub" of a file's address, for "Use original relative subfolders".
 pub fn site_dir(u: &Url) -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(crate::engine::sanitize(u.host_str().unwrap_or("")));
+    let mut p = std::path::PathBuf::from(crate::engine::names::sanitize(u.host_str().unwrap_or("")));
     let segs: Vec<&str> = u.path_segments().map(|s| s.collect()).unwrap_or_default();
     for s in segs.iter().take(segs.len().saturating_sub(1)).filter(|s| !s.is_empty()) {
-        p.push(crate::engine::sanitize(&percent_encoding::percent_decode_str(s).decode_utf8_lossy()));
+        p.push(crate::engine::names::sanitize(&percent_encoding::percent_decode_str(s).decode_utf8_lossy()));
     }
     p
 }
@@ -463,7 +463,7 @@ fn is_page(u: &Url) -> bool {
 /// name doesn't end in .htm/.html (so it opens in a browser offline).
 pub fn page_name(u: &Url) -> String {
     let last = u.path_segments().and_then(|mut s| s.next_back()).unwrap_or("");
-    let name = if last.is_empty() { "index.html".to_string() } else { crate::engine::sanitize(&percent_encoding::percent_decode_str(last).decode_utf8_lossy()) };
+    let name = if last.is_empty() { "index.html".to_string() } else { crate::engine::names::sanitize(&percent_encoding::percent_decode_str(last).decode_utf8_lossy()) };
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     if ["htm", "html"].contains(&ext.as_str()) { name } else { format!("{name}.html") }
 }
@@ -480,7 +480,7 @@ struct Work {
 /// Breadth-first crawl. `levels` = link hops explored past the start page within its site;
 /// `levels_other` = hops allowed onto other sites. Files are collected from every explored page;
 /// `t.explore` pages are fetched at the same time.
-pub fn run(opts: Opts, agent: crate::engine::Agent, c: Arc<Crawl>, t: Tuning) {
+pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning) {
     let set = |f: &dyn Fn(&mut State)| f(&mut c.state.lock().unwrap());
     let mut start = match Url::parse(opts.start.trim()) {
         Ok(u) if u.scheme().starts_with("http") => u,
@@ -516,7 +516,7 @@ pub fn run(opts: Opts, agent: crate::engine::Agent, c: Arc<Crawl>, t: Tuning) {
         let size = size.or_else(|| if opts.min_on || opts.max_on { req("HEAD", l).call().ok().and_then(|r| r.header("Content-Length")?.parse().ok()) } else { None });
         // duplicates stay visible with relative subfolders: each copy has its own folder
         let dup = opts.hide_dups && !opts.subfolders && !work.lock().unwrap().names.insert(name.to_ascii_lowercase());
-        (opts.size_ok(size) && !dup).then(|| Found { url: l.to_string(), name: crate::engine::sanitize(&name), text, checked: true, page: page.to_string(), size })
+        (opts.size_ok(size) && !dup).then(|| Found { url: l.to_string(), name: crate::engine::names::sanitize(&name), text, checked: true, page: page.to_string(), size })
     };
     let explore = || loop {
         let next = {
@@ -547,7 +547,7 @@ pub fn run(opts: Opts, agent: crate::engine::Agent, c: Arc<Crawl>, t: Tuning) {
                 let len = resp.header("Content-Length").and_then(|v| v.parse().ok());
                 if !resp.header("Content-Type").unwrap_or("text/html").contains("html") {
                     // a "page" address that turned out to be a file (download.php?id=...)
-                    let name = crate::engine::url_name(u.as_str());
+                    let name = crate::engine::names::url_name(u.as_str());
                     if mask_match(&opts.masks, &name) {
                         found.extend(take(&u, name, String::new(), "", len));
                     }
@@ -566,7 +566,7 @@ pub fn run(opts: Opts, agent: crate::engine::Agent, c: Arc<Crawl>, t: Tuning) {
                         }
                         c.state.lock().unwrap().explored += all.len();
                         for (l, text) in all {
-                            let name = crate::engine::url_name(l.as_str());
+                            let name = crate::engine::names::url_name(l.as_str());
                             if !is_page(&l) && mask_match(&opts.masks, &name) {
                                 found.extend(take(&l, name, text, base.as_str(), None));
                                 continue;
@@ -733,7 +733,7 @@ mod tests {
         let crawl = |levels| {
             let c = Arc::new(Crawl::default());
             let opts = Opts { start: format!("{base}/"), levels, masks: "*.zip".into(), ..Opts::default() };
-            run(opts, crate::engine::agent("", ""), c.clone(), Tuning::default());
+            run(opts, crate::transport::client::agent("", ""), c.clone(), Tuning::default());
             let s = c.state.lock().unwrap();
             (s.pages, s.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>())
         };
@@ -743,7 +743,7 @@ mod tests {
         // four explorers at once; web pages wanted too (the offline templates save them)
         let c = Arc::new(Crawl::default());
         let opts = Opts { start: format!("{base}/"), levels: 5, masks: "*.zip,*.html".into(), ..Opts::default() };
-        run(opts, crate::engine::agent("", ""), c.clone(), Tuning { explore: 4, adv: true });
+        run(opts, crate::transport::client::agent("", ""), c.clone(), Tuning { explore: 4, adv: true });
         let mut names: Vec<String> = c.state.lock().unwrap().files.iter().map(|f| f.name.clone()).collect();
         names.sort();
         assert_eq!(names, ["a.zip", "b.zip", "c.zip", "deeper.html", "index.html", "index.html"]);

@@ -34,7 +34,7 @@ use self::help::{help, help_body, take_help_request};
 use crate::core::{Core, browser_bridge::Incoming, settings::Settings, settings::GENERAL};
 use crate::diagnostics::{crash_diagnostics, issue_text};
 use crate::update::{check_update, install_update, Release, UPDATE_REPO};
-use crate::engine::{Info, Probe, Status};
+use crate::engine::{Info, probe::Probe, Status};
 use crate::file_ops::copy_dir;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_extras::{Column, TableBuilder};

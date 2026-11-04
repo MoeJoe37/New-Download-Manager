@@ -131,7 +131,7 @@ fn check_response(response: Response, version: reqwest::Version) {
 #[test]
 fn extra_request_retries_with_http2_and_remembers_the_origin() {
     let ((), connections) = with_server(true, Duration::ZERO, |url, auto, http1| {
-        let agent = crate::engine::agent("", "");
+        let agent = crate::transport::client::agent("", "");
         let check = |extra, expected: &[bool]| {
             let offered = std::cell::RefCell::new(Vec::new());
             let response = call_with(range_request(&agent, url, "/warm", extra), |forced| {
@@ -159,7 +159,7 @@ fn extra_request_retries_with_http2_and_remembers_the_origin() {
 
 fn measure(split: bool, delay: Duration) -> (Duration, usize) {
     with_server(false, delay, |url, auto, http1| {
-        let agent = crate::engine::agent("", "");
+        let agent = crate::transport::client::agent("", "");
         let read = |path: &str, extra| {
             let response = call_with(range_request(&agent, url, path, extra), |forced| {
                 Some(if forced { http1 } else { auto })

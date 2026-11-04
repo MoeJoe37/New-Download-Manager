@@ -144,7 +144,7 @@ pub fn local_proxy(route: &str) -> String {
     url
 }
 
-/// The proxy string to hand `engine::agent` for `route` (`Settings::proxy_for`'s answer).
+/// The proxy string to hand `transport::client::agent` for `route` (`Settings::proxy_for`'s answer).
 pub fn agent_proxy(route: &str) -> String {
     let route = route.trim();
     if let Some(rest) = route.strip_prefix("socks5h://") {
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn local_proxy_relays_http() {
         let url = format!("http://127.0.0.1:{}/", hello());
-        assert_eq!(crate::engine::agent(&local_proxy(""), "").get(&url).call().unwrap().into_string().unwrap(), "hello");
+        assert_eq!(crate::transport::client::agent(&local_proxy(""), "").get(&url).call().unwrap().into_string().unwrap(), "hello");
     }
 
     #[test]

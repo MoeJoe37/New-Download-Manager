@@ -31,7 +31,7 @@ pub struct Incoming {
     /// The browser's proxy (`Info::browser_proxy`).
     pub proxy: String,
     /// A download the browser started (the extension holds it meanwhile): NDM takes it only if the server
-    /// sends NDM the same file (`engine::same_file`), with the browser's `size` (0: unknown) and `mime`.
+    /// sends NDM the same file (`engine::probe::same_file`), with the browser's `size` (0: unknown) and `mime`.
     pub check: bool,
     pub size: u64,
     /// The download panel on a page whose video the browser can't hand over (a player streaming it in
@@ -132,7 +132,7 @@ pub(super) fn proxy_conn(core: &Core, client: std::net::TcpStream) -> Option<Inc
             url: target.clone(),
             referrer: get(&h, "referer"),
             cookies: get(&h, "cookie"),
-            filename: engine::disposition_name(&get(&rh, "content-disposition")).unwrap_or_default(),
+            filename: engine::names::disposition_name(&get(&rh, "content-disposition")).unwrap_or_default(),
             mime: get(&rh, "content-type").split(';').next().unwrap_or("").trim().to_string(),
             ..Default::default()
         };
@@ -198,8 +198,8 @@ impl Core {
             Some("start") => {
                 let inc: Incoming = serde_json::from_slice(body).map_err(|e| e.to_string())?;
                 let mut i = self.new_info(&inc.url);
-                let name = engine::sanitize(inc.filename.replace('\\', "/").rsplit('/').next().unwrap_or(""));
-                let name = if name.is_empty() { engine::sanitize(&engine::url_name(&inc.url)) } else { name };
+                let name = engine::names::sanitize(inc.filename.replace('\\', "/").rsplit('/').next().unwrap_or(""));
+                let name = if name.is_empty() { engine::names::sanitize(&engine::names::url_name(&inc.url)) } else { name };
                 {
                     let s = self.settings();
                     i.category = s.category_for(&name, &inc.url);
@@ -289,7 +289,7 @@ impl Core {
         if self.settings().skip_sites.split_whitespace().map(str::to_ascii_lowercase).any(|s| (!h.is_empty() && h.ends_with(&s)) || (!r.is_empty() && r.ends_with(&s))) {
             return false;
         }
-        let name = if inc.filename.is_empty() { engine::url_name(&inc.url) } else { inc.filename.replace('\\', "/") };
+        let name = if inc.filename.is_empty() { engine::names::url_name(&inc.url) } else { inc.filename.replace('\\', "/") };
         let e = ext(name.rsplit('/').next().unwrap_or(""));
         if e.is_empty() {
             return !inc.mime.starts_with("text/") && !inc.mime.starts_with("image/");
@@ -424,7 +424,7 @@ impl Core {
                     let i = inc.clone();
                     let agent = core.agent(&i.url);
                     thread::spawn(move || {
-                        let _ = done.send(engine::same_file(&agent, &i.url, &i.referrer, &i.cookies, &i.mime, i.size, &i.filename));
+                        let _ = done.send(engine::probe::same_file(&agent, &i.url, &i.referrer, &i.cookies, &i.mime, i.size, &i.filename));
                     });
                     let same = wait.recv_timeout(Duration::from_secs(15)).unwrap_or_else(|_| Err("no answer".into()));
                     if let Err(e) = &same {

@@ -1,3 +1,4 @@
+use crate::transport;
 use super::*;
 
 /// "Use advanced browser integration": Windows' proxy for http points here (see `apply_integration`).
@@ -127,27 +128,27 @@ impl Settings {
 
 impl Core {
     /// The agent for downloading `url`, with the proxy the settings choose for it.
-    pub fn agent(&self, url: &str) -> engine::Agent {
+    pub fn agent(&self, url: &str) -> transport::Agent {
         let (proxy, ua, use_routes, http1_hosts) = {
             let s = self.settings();
             (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0, s.http1_hosts.clone())
         };
         let proxy = crate::net::agent_proxy(&proxy);
-        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua).with_http1_hosts(&http1_hosts)).clone();
+        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| transport::client::agent(&proxy, &ua).with_http1_hosts(&http1_hosts)).clone();
         if use_routes {
-            agent.routes = engine::FTP.lock().unwrap().route.clone();
+            agent.routes = engine::ftp::FTP.lock().unwrap().route.clone();
         }
         agent
     }
 
     /// The networks `url` is downloaded over, each with its agent: none unless the setting is on, the
     /// address goes direct, NDM can choose the network and at least two ticked networks are up.
-    pub fn lanes(&self, url: &str) -> Vec<(String, engine::Agent)> {
+    pub fn lanes(&self, url: &str) -> Vec<(String, transport::Agent)> {
         self.lanes_from(url, 2)
     }
 
     /// `lanes` once a download is spread: one network left is enough to keep its connections.
-    fn lanes_from(&self, url: &str, least: usize) -> Vec<(String, engine::Agent)> {
+    fn lanes_from(&self, url: &str, least: usize) -> Vec<(String, transport::Agent)> {
         let (on, off, ua) = {
             let s = self.settings();
             (s.use_lanes(url), s.nets_off.clone(), s.user_agent.clone())
@@ -163,7 +164,7 @@ impl Core {
         nets.into_iter()
             .map(|n| {
                 let proxy = crate::net::local_proxy(&format!("nic://{}", percent_encoding::utf8_percent_encode(&n, percent_encoding::NON_ALPHANUMERIC)));
-                let a = agents.entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone();
+                let a = agents.entry(proxy.clone()).or_insert_with(|| transport::client::agent(&proxy, &ua)).clone();
                 (n, a)
             })
             .collect()

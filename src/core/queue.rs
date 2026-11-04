@@ -303,7 +303,7 @@ impl Core {
             for j in &mine {
                 let status = j.info().status.clone();
                 // failed after the queue's retries: the user decides
-                let failed = matches!(&status, Status::Error(error) if engine::permanent_error(error) || j.fails.load(Relaxed) > retries);
+                let failed = matches!(&status, Status::Error(error) if engine::range::permanent_error(error) || j.fails.load(Relaxed) > retries);
                 let id = j.info().id;
                 if status == Status::Complete && sync && !self.synced.lock().unwrap().contains_key(&id) {
                     // synchronization: ask the server whether the file changed (size or date); if so it is
@@ -316,7 +316,7 @@ impl Core {
                             let i = j.info();
                             (i.url.clone(), i.referrer.clone(), i.cookies.clone())
                         };
-                        if let Ok(p) = engine::probe(&agent, &url, &referrer, &cookies) {
+                        if let Ok(p) = engine::probe::probe(&agent, &url, &referrer, &cookies) {
                             let i = j.info().clone();
                             if p.size != i.size || (!p.etag.is_empty() && !i.etag.is_empty() && p.etag != i.etag) || (!p.modified.is_empty() && p.modified != i.modified) || !i.path().exists() {
                                 j.reset();

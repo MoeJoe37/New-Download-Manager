@@ -1,5 +1,11 @@
 //! HTTP transport for downloads. Direct TLS connections share a pool that negotiates HTTP/2.
 //! Proxy routes and connection-oriented authentication retain the original HTTP/1.1 client.
+pub(crate) mod auth;
+pub(crate) mod client;
+
+use self::client::{call_with, tls_client};
+#[cfg(test)]
+use self::client::client_builder;
 use std::collections::HashSet;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -53,7 +59,7 @@ impl Agent {
         if proxy == self.proxy {
             return self.clone();
         }
-        let mut agent = crate::engine::agent(&proxy, &self.user_agent);
+        let mut agent = client::agent(&proxy, &self.user_agent);
         agent.http1_hosts = self.http1_hosts.clone();
         agent.routes = self.routes.clone();
         agent
@@ -159,29 +165,6 @@ pub(crate) fn redact(text: &str) -> String {
         .collect()
 }
 
-fn tls_client(http1_only: bool) -> Option<&'static reqwest::blocking::Client> {
-    static AUTO: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
-    static HTTP1: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
-    let cell = if http1_only { &HTTP1 } else { &AUTO };
-    let builder = || {
-        let builder = client_builder();
-        if http1_only { builder.http1_only() } else { builder }
-    };
-    cell.get_or_init(|| {
-        builder().build().or_else(|_| builder().tls_built_in_native_certs(false).build()).ok()
-    }).as_ref()
-}
-
-fn client_builder() -> reqwest::blocking::ClientBuilder {
-    reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(30))
-        .pool_idle_timeout(Duration::from_secs(60))
-        .pool_max_idle_per_host(16)
-}
-
 pub enum Response {
     Legacy(ureq::Response),
     Tls(reqwest::blocking::Response),
@@ -250,115 +233,6 @@ pub fn call(request: Request) -> Result<Response, String> {
     call_with(request, tls_client)
 }
 
-fn call_with<'a>(
-    request: Request,
-    tls: impl Fn(bool) -> Option<&'a reqwest::blocking::Client>,
-) -> Result<Response, String> {
-    if request.agent.invalid_proxy {
-        return Err("Invalid proxy configuration".into());
-    }
-    let mut url = Url::parse(&request.url).map_err(|_| "Invalid download address")?;
-    let mut headers = request.headers;
-    let mut agent = request.agent;
-    for _ in 0..=10 {
-        if request.https_only && url.scheme() != "https" {
-            return Err("An HTTPS-only request was redirected to an insecure address".into());
-        }
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err("Unsupported HTTP redirect protocol".into());
-        }
-        let mut response = None;
-        if url.scheme() == "https" && agent.proxy.is_empty() && url.username().is_empty() {
-            static NEGOTIATE: OnceLock<Mutex<HashSet<url::Origin>>> = OnceLock::new();
-            let negotiate = NEGOTIATE.get_or_init(Mutex::default);
-            let force = agent.http1_only(&url);
-            let origin = url.origin();
-            let prefer = request.prefer_http1 && !force && !negotiate.lock().unwrap().contains(&origin);
-            if let Some(client) = tls(force || prefer).or_else(|| prefer.then(|| tls(false)).flatten()) {
-                let send = |client: &reqwest::blocking::Client| {
-                    let mut req = client.get(url.clone()).header("User-Agent", &agent.user_agent);
-                    for (key, value) in &headers {
-                        req = req.header(key, value);
-                    }
-                    req.send()
-                };
-                let mut received = send(client);
-                if prefer {
-                    let rejected = match &received {
-                        // No headers or bytes were returned. Exclude timeouts and local request errors.
-                        Err(error) => !error.is_builder() && !error.is_timeout(),
-                        Ok(response) => response.status() == reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED,
-                    };
-                    if let Some(auto) = rejected.then(|| tls(false)).flatten().filter(|auto| !std::ptr::eq(*auto, client)) {
-                        received = send(auto);
-                        if received.as_ref().is_ok_and(|r| r.version() == reqwest::Version::HTTP_2 && r.status().is_success()) {
-                            negotiate.lock().unwrap().insert(origin);
-                        }
-                    }
-                }
-                let received = received.map_err(|err| {
-                    if err.is_timeout() {
-                        "HTTP request timed out".to_string()
-                    } else if err.is_connect() {
-                        "Could not connect to the HTTPS server".to_string()
-                    } else {
-                        "HTTPS request failed".to_string()
-                    }
-                })?;
-                if received.status() != reqwest::StatusCode::UNAUTHORIZED {
-                    response = Some(Response::Tls(received));
-                }
-            }
-        }
-        let response = match response {
-            Some(response) => response,
-            None => {
-                let mut send = agent.no_redirect.get(url.as_str());
-                for (key, value) in &headers {
-                    send = send.set(key, value);
-                }
-                Response::Legacy(crate::engine::call_legacy(send).map_err(|err| redact(&err))?)
-            }
-        };
-        let code = response.status();
-        if !matches!(code, 301 | 302 | 303 | 307 | 308) {
-            if code >= 400 {
-                return Err(http_error(code));
-            }
-            return Ok(response);
-        }
-        let location = response
-            .header("Location")
-            .ok_or("HTTP redirect has no location")?;
-        let next = url
-            .join(location)
-            .map_err(|_| "Invalid HTTP redirect location")?;
-        if (!next.username().is_empty() || next.password().is_some())
-            && (next.origin() != url.origin()
-                || next.username() != url.username()
-                || next.password() != url.password())
-        {
-            return Err("HTTP redirect contains credentials".into());
-        }
-        if next.origin() != url.origin() {
-            headers.retain(|(key, _)| {
-                matches!(
-                    key.to_ascii_lowercase().as_str(),
-                    "accept" | "accept-encoding" | "user-agent" | "range"
-                )
-            });
-        }
-        if agent.routes.is_some() {
-            agent = agent.for_url(next.as_str());
-            if agent.invalid_proxy {
-                return Err("Invalid proxy configuration".into());
-            }
-        }
-        url = next;
-    }
-    Err("Too many HTTP redirects".into())
-}
-
 /// The legacy SOCKS client passes hostnames to SOCKS5. yt-dlp needs the explicit remote-DNS
 /// spelling for the equivalent route, including our local forwarding proxy.
 pub(crate) fn external_proxy(proxy: &str) -> String {
@@ -412,7 +286,7 @@ mod tests {
             }
             socket.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 0-2/3\r\n\r\nabc").unwrap();
         });
-        let agent = crate::engine::agent("", "");
+        let agent = client::agent("", "");
         let request = request(&agent, &url, &url, "session=test")
             .set("Authorization", "Bearer example")
             .set("X-Signed", "private")
@@ -428,7 +302,7 @@ mod tests {
             "http://{}/signed?token=secret",
             server.local_addr().unwrap()
         );
-        let invalid = crate::engine::agent("invalid-proxy://", "");
+        let invalid = client::agent("invalid-proxy://", "");
         assert_eq!(
             call(request(&invalid, &url, "", "")).err().unwrap(),
             "Invalid proxy configuration"
@@ -440,10 +314,10 @@ mod tests {
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
                 .unwrap();
         });
-        let agent = crate::engine::agent("", "");
+        let agent = client::agent("", "");
         let error = call(request(&agent, &url, "", "")).err().unwrap();
         assert!(error.starts_with("HTTP 403 Forbidden"));
-        assert!(crate::engine::permanent_error(&error));
+        assert!(crate::engine::range::permanent_error(&error));
         assert!(!error.contains("secret"));
         assert!(!redact(&format!("Error fetching {url}")).contains("secret"));
         worker.join().unwrap();
@@ -467,7 +341,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc")
                 .unwrap();
         });
-        let mut agent = crate::engine::agent("", "");
+        let mut agent = client::agent("", "");
         agent.routes = Some(Arc::new(move |url| {
             if url.starts_with("http://private.invalid/") {
                 route.clone()
@@ -499,7 +373,7 @@ mod tests {
                 )
                 .unwrap();
         });
-        let agent = crate::engine::agent(&route, "");
+        let agent = client::agent(&route, "");
         let error = call(request(&agent, "https://private.invalid/media", "", ""))
             .err()
             .unwrap();
@@ -532,16 +406,16 @@ mod tests {
                 tls.flush().unwrap();
             }
         });
-        let default = crate::engine::agent("", "");
+        let default = client::agent("", "");
         assert!(call(request(&default, &url, "", "")).is_err());
-        let trusted = crate::engine::agent_with_tls("", "", crate::engine::tls_config(&[der]));
+        let trusted = client::agent_with_tls("", "", client::tls_config(&[der]));
         assert_eq!(call(request(&trusted, &url, "", "")).unwrap().into_string().unwrap(), "abc");
         server.join().unwrap();
     }
 
     #[test]
     fn protocol_override_matches_exact_hosts_after_routing() {
-        let mut agent = crate::engine::agent("", "").with_http1_hosts("EXAMPLE.org [::1] bücher.example");
+        let mut agent = client::agent("", "").with_http1_hosts("EXAMPLE.org [::1] bücher.example");
         agent.routes = Some(Arc::new(|_| "http://127.0.0.1:9876".into()));
         let agent = agent.for_url("https://example.org:8443/media");
         assert_eq!(agent.proxy, "http://127.0.0.1:9876");
@@ -551,12 +425,12 @@ mod tests {
         assert!(matches("https://xn--bcher-kva.example/file"));
         assert!(!matches("https://cdn.example.org/file"));
         assert!(!matches("https://example.org.invalid/file"));
-        assert!(!crate::engine::agent("", "").http1_only(&Url::parse("https://example.org/").unwrap()));
+        assert!(!client::agent("", "").http1_only(&Url::parse("https://example.org/").unwrap()));
     }
 
     #[test]
     fn publisher_request_refuses_a_plain_http_route() {
-        let agent = crate::engine::agent("", "");
+        let agent = client::agent("", "");
         let request = request(&agent, "http://127.0.0.1:1/", "", "").https_only();
         assert_eq!(call(request).err().as_deref(), Some("An HTTPS-only request was redirected to an insecure address"));
     }
@@ -624,7 +498,7 @@ mod tests {
             .add_root_certificate(reqwest::Certificate::from_der(der.as_ref()).unwrap())
             .build()
             .unwrap();
-        let agent = crate::engine::agent("", "");
+        let agent = client::agent("", "");
         let read = |path| {
             let response = call_with(request(&agent, &format!("{url}{path}"), "", ""), |_| {
                 Some(&client)

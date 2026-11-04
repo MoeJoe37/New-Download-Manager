@@ -81,7 +81,7 @@ pub fn from_file(path: &std::path::Path, name: &str) -> Result<String, String> {
     matching_sha256(&text, name)
 }
 
-pub fn from_publisher(agent: &crate::engine::Agent, url: &str, name: &str) -> Result<String, String> {
+pub fn from_publisher(agent: &crate::transport::Agent, url: &str, name: &str) -> Result<String, String> {
     let url = publisher_url(url).ok_or("Enter the publisher's HTTPS checksum-list address.")?;
     let req = crate::transport::request(agent, url.as_str(), "", "").https_only();
     let response = crate::transport::call(req)?;
