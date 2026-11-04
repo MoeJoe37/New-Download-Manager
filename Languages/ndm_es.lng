@@ -952,3 +952,4 @@ Verify checksum...=Verificar suma de verificación...
 Verify matched hash=Verificar con la suma encontrada
 Web proxy settings restored.=Se restauró la configuración del proxy web.
 yt-dlp did not find a playlist at this address.=yt-dlp no encontró una lista de reproducción en esta dirección.
+NDM could not verify a video format at or below %dp. Choose Best to download without a resolution limit.=NDM no pudo verificar un formato de vídeo de %dp o menos. Elige Mejor para descargar sin límite de resolución.

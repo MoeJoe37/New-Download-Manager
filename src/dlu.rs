@@ -563,11 +563,17 @@ impl<'a> D<'a> {
                 (wv.bg_fill, wv.weak_bg_fill) = (field, field);
             }
             ui.add_enabled_ui(enabled, |ui| {
-                egui::ComboBox::from_id_salt(id).width(width - 4.0).selected_text(fit_cut(ui, tr(selected).into(), width - 24.0, egui::TextStyle::Button)).show_ui(ui, |ui| {
-                    for c in choices {
-                        ui.selectable_value(selected, c.to_string(), tr(c));
-                    }
-                });
+                egui::ComboBox::from_id_salt(id)
+                    .width(width - 4.0)
+                    .selected_text(fit_cut(ui, tr(selected).into(), width - 24.0, egui::TextStyle::Button))
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show_ui(ui, |ui| {
+                        for c in choices {
+                            if ui.selectable_value(selected, c.to_string(), tr(c)).clicked() {
+                                ui.memory_mut(|memory| memory.close_popup());
+                            }
+                        }
+                    });
             });
         });
         before != *selected
@@ -899,4 +905,54 @@ impl<'a> D<'a> {
         p.hline(r.x_range().shrink(1.0), r.top() + hh, Stroke::new(1.0_f32, c.line));
         Rect::from_min_max(egui::pos2(r.left() + 1.0, r.top() + hh + 1.0), r.max - Vec2::splat(1.0))
     }
+}
+
+
+#[test]
+fn combo_closes_after_selecting_a_choice() {
+    let ctx = egui::Context::default();
+    let frame = |selected: &mut String, events| {
+        ctx.run(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(480.0, 300.0))),
+            events,
+            ..Default::default()
+        }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                D::new(ui).combo(20.0, 20.0, 130.0, 15.0, "quality", selected,
+                    &["Option-720p", "Option-MP3"], true);
+            });
+        })
+    };
+    let label = |out: &egui::FullOutput, value: &str| {
+        out.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.text() == value => Some(t.pos + t.galley.size() / 2.0),
+            _ => None,
+        }).max_by(|a, b| a.y.total_cmp(&b.y)).expect("choice is visible")
+    };
+    let click = |selected: &mut String, pos| {
+        frame(selected, vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            frame(selected, vec![egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+    };
+
+    let mut selected = "Option-720p".to_string();
+    let closed = frame(&mut selected, vec![]);
+    click(&mut selected, label(&closed, "Option-720p"));
+    assert!(ctx.memory(|memory| memory.any_popup_open()));
+    let open = frame(&mut selected, vec![]);
+    click(&mut selected, label(&open, "Option-MP3"));
+    assert_eq!(selected, "Option-MP3");
+    assert!(!ctx.memory(|memory| memory.any_popup_open()));
+
+    // Selecting the current item should close the menu too.
+    let closed = frame(&mut selected, vec![]);
+    click(&mut selected, label(&closed, "Option-MP3"));
+    assert!(ctx.memory(|memory| memory.any_popup_open()));
+    let open = frame(&mut selected, vec![]);
+    click(&mut selected, label(&open, "Option-MP3"));
+    assert_eq!(selected, "Option-MP3");
+    assert!(!ctx.memory(|memory| memory.any_popup_open()));
 }

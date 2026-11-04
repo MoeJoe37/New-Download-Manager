@@ -226,6 +226,17 @@ fn last_error(err: &str) -> String {
     crate::transport::redact(&e)
 }
 
+fn selection_error(err: &str, quality: &str) -> String {
+    let message = last_error(err);
+    if let Some(height) = quality.parse::<u32>().ok().filter(|_| message.contains("Requested format is not available")) {
+        return crate::i18n::trf_os(
+            "NDM could not verify a video format at or below %dp. Choose Best to download without a resolution limit.",
+            &[&height],
+        );
+    }
+    message
+}
+
 /// With ffmpeg: the best video and audio, merged by yt-dlp into an MP4.
 const MERGED: &str = "bv*+ba/b/ba/bv";
 /// The single file with both, when a site has no separate streams.
@@ -253,8 +264,6 @@ fn formats(url: &str, ff: bool) -> String {
 
 /// The formats for a download's Quality choice (`YtOpts::quality`): only the sound ("m4a" / "mp3": the
 /// M4A track when there is one), or the site's formats with the video at most `quality` lines high, with no fallback above it.
-/// A format whose height the site doesn't give passes (`<=?`): many sites (a page's own <video>, some
-/// players) give none, and the cap would otherwise refuse every format there.
 fn chosen(url: &str, ff: bool, quality: &str) -> String {
     let all = formats(url, ff);
     if quality == "m4a" || quality == "mp3" {
@@ -266,7 +275,7 @@ fn chosen(url: &str, ff: bool, quality: &str) -> String {
             .map(|part| {
                 let name = part.split('[').next().unwrap_or("");
                 if matches!(name, "b" | "bv" | "bv*" | "best" | "bestvideo") {
-                    format!("{name}[height<=?{h}]{}", &part[name.len()..])
+                    format!("{name}[height<={h}]{}", &part[name.len()..])
                 } else {
                     part.to_string()
                 }
@@ -661,7 +670,7 @@ pub fn run(job: &Job, agent: &crate::engine::Agent, global: &Limiter) -> Result<
     look.args(&args).args(["-J", "-f", &fmt, "--"]).arg(&url);
     let Some(looked) = output_unless_stopped(job, look)? else { return Ok(false) };
     if !looked.status.success() {
-        return Err(last_error(&String::from_utf8_lossy(&looked.stderr)));
+        return Err(selection_error(&String::from_utf8_lossy(&looked.stderr), &yt.quality));
     }
     let v = video_info(serde_json::from_slice(&looked.stdout).map_err(|e| e.to_string())?)?;
     let mut streams = picked(&v).ok_or("yt-dlp gave no formats")?;
@@ -1798,7 +1807,7 @@ mod tests {
         std::fs::copy(&bin, tools.join(exe_file("yt-dlp"))).unwrap();
         let clip = home.join("clip.mp4");
         assert!(command(&system_ff)
-            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-c:v", "mpeg4", "-c:a", "aac", "-shortest"])
+            .args(["-v", "error", "-f", "lavfi", "-i", "color=black:size=1920x1080:rate=10", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-c:v", "mpeg4", "-c:a", "aac", "-shortest"])
             .arg(&clip)
             .status()
             .unwrap()
@@ -1811,8 +1820,16 @@ mod tests {
         let ff_dir = std::env::split_paths(&path).find(|d| d.join(exe_file("ffmpeg")).is_file()).expect("ffmpeg's folder");
         std::env::set_var("PATH", std::env::join_paths([tools.clone(), ff_dir]).unwrap());
         let page = b"<html><head><title>Clip</title></head><body><video poster=\"poster.jpg\" controls><source src=\"clip.mp4\" type=\"video/mp4\"><track kind=\"subtitles\" srclang=\"en\" src=\"clip.en.vtt\"></video></body></html>".to_vec();
+        let media = home.join("720.m3u8");
+        assert!(command(&system_ff).args(["-v", "error", "-i"]).arg(&clip)
+            .args(["-vf", "scale=1280:720", "-c:v", "libx264", "-threads", "1", "-c:a", "copy", "-f", "hls", "-hls_playlist_type", "vod", "-hls_segment_filename"])
+            .arg(home.join("720-%d.ts")).arg(&media).status().unwrap().success());
+        let master = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=1280x720,CODECS=\"avc1.64001f,mp4a.40.2\"\n720.m3u8\n";
         let files: Vec<(&str, Vec<u8>, &str)> = vec![
             ("page.html", page, "text/html"),
+            ("master.m3u8", master.to_vec(), "application/vnd.apple.mpegurl"),
+            ("720.m3u8", std::fs::read(&media).unwrap(), "application/vnd.apple.mpegurl"),
+            ("720-0.ts", std::fs::read(home.join("720-0.ts")).unwrap(), "video/mp2t"),
             ("clip.mp4", std::fs::read(&clip).unwrap(), "video/mp4"),
             ("poster.jpg", std::fs::read(&jpeg).unwrap(), "image/jpeg"),
             ("clip.en.vtt", b"WEBVTT\n\n00:00.000 --> 00:01.000\nHello\n".to_vec(), "text/vtt"),
@@ -1852,13 +1869,28 @@ mod tests {
         let probe = command(&beside_or_path("ffprobe")).args(["-v", "error", "-show_entries", "stream=codec_name,codec_type", "-of", "csv=p=0"]).arg(dir.join("song.mp3")).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "mp3,audio");
         assert_eq!(job.info().size, Some(std::fs::metadata(dir.join("song.mp3")).unwrap().len()));
-        // a Quality cap on a page whose video has no height (a page's own <video>): the video, not
-        // "Requested format is not available"
         let videos = home.join("Video");
-        let yt = crate::engine::YtOpts { quality: "720".into(), ..Default::default() };
-        let job = Job::new(Info { url: format!("{base}page.html"), folder: videos.display().to_string(), name: "clip.mp4".into(), ytdlp: true, yt, ..Default::default() });
-        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
-        assert_eq!(std::fs::read(job.info().path()).unwrap(), std::fs::read(&clip).unwrap());
+        let video_job = |page, name, quality: &str| Job::new(Info {
+            url: format!("{base}{page}"), folder: videos.display().to_string(), name,
+            ytdlp: true, yt: crate::engine::YtOpts { quality: quality.into(), ..Default::default() }, ..Default::default()
+        });
+        let agent = crate::engine::agent("", "ndm-test");
+        let unknown = video_job("page.html", "unknown.mp4".into(), "720");
+        assert_eq!(run(&unknown, &agent, &Limiter::default()).unwrap_err(),
+            "NDM could not verify a video format at or below 720p. Choose Best to download without a resolution limit.");
+        assert!(!unknown.info().path().exists());
+
+        let best = video_job("page.html", "best.mp4".into(), "");
+        assert_eq!(run(&best, &agent, &Limiter::default()), Ok(true));
+        assert_eq!(std::fs::read(best.info().path()).unwrap(), std::fs::read(&clip).unwrap());
+
+        let known = video_job("master.m3u8", "known.mp4".into(), "720");
+        assert_eq!(run(&known, &agent, &Limiter::default()), Ok(true));
+        let height = command(&beside_or_path("ffprobe"))
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height", "-of", "csv=p=0"])
+            .arg(known.info().path()).output().unwrap();
+        assert!(height.status.success());
+        assert_eq!(String::from_utf8_lossy(&height.stdout).lines().next(), Some("720"));
         let _ = std::fs::remove_dir_all(&home);
     }
     /// Deno's real release zip (NDM_TEST_DENO_ZIP=<path>, NDM_TEST_DENO_SHA256=<the program's SHA-256>).
@@ -1949,17 +1981,16 @@ mod tests {
         assert_eq!(formats("https://vimeo.com/1", true), MERGED);
         assert_eq!(formats("https://vimeo.com/1", false), format!("b/{PAIR}"));
     }
-    /// File Info's Quality: a height cap on every video selector (formats of unknown height pass), no
-    /// fallback above it, the sound alone for MP3 / M4A, and the file's type to match.
+    /// File Info's Quality: a strict height cap, audio-only selection, and the corresponding filename.
     #[test]
     fn quality_choices() {
         assert_eq!(chosen("https://vimeo.com/1", true, ""), MERGED);
-        assert_eq!(chosen("https://vimeo.com/1", true, "720"), "bv*[height<=?720]+ba/b[height<=?720]/bv[height<=?720]");
+        assert_eq!(chosen("https://vimeo.com/1", true, "720"), "bv*[height<=720]+ba/b[height<=720]/bv[height<=720]");
         let yt = chosen("https://www.youtube.com/watch?v=x", false, "1080");
-        assert!(yt.starts_with("bv*[height<=?1080][acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/"), "{yt}");
+        assert!(yt.starts_with("bv*[height<=1080][acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/"), "{yt}");
         assert!(!yt.contains("/b/"), "{yt}");
         let tiktok = chosen("https://www.tiktok.com/@a/video/1", true, "480");
-        assert!(tiktok.starts_with("b[height<=?480][vcodec^=h264]/"), "{tiktok}");
+        assert!(tiktok.starts_with("b[height<=480][vcodec^=h264]/"), "{tiktok}");
         assert_eq!(chosen("https://www.youtube.com/watch?v=x", true, "mp3"), "ba[ext=m4a]/ba/b");
         assert_eq!(chosen("https://www.youtube.com/watch?v=x", true, "bogus"), MERGED);
         assert_eq!(named("Song.mp4", "mp3"), "Song.mp3");

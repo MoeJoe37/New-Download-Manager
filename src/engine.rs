@@ -1514,9 +1514,8 @@ impl Job {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
                 (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), etag: String::new(), stream: false, page: false, ytdlp: false }, r)
             } else {
-                let many = self.info().conns > 1;
                 let first_req = |agent: &Agent| {
-                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-").part_of_many(many);
+                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-");
                     if let Some((_, since)) = &cached {
                         req = req.set("If-Modified-Since", since);
                     }
@@ -1667,7 +1666,7 @@ impl Job {
                         // the first request's body becomes the first connection on its network
                         let pre = if *net == first_net { first.take() } else { None };
                         let (a, l) = (lane_agent.clone(), net.clone());
-                        hs.push((sc.spawn(move || self.worker(k, part, (a, l), global, pre)), net.clone()));
+                        hs.push((sc.spawn(move || self.worker(k, part, (a, l), global, pre, n > 0)), net.clone()));
                         grown.insert(net.clone(), Instant::now());
                         started = true;
                     }
@@ -1750,7 +1749,7 @@ impl Job {
         }
     }
 
-    fn worker(&self, mut k: usize, part: &Path, (agent, net): (Agent, String), global: &Limiter, mut pre: Option<Body>) -> Option<String> {
+    fn worker(&self, mut k: usize, part: &Path, (agent, net): (Agent, String), global: &Limiter, mut pre: Option<Body>, extra: bool) -> Option<String> {
         let mut fails = 0;
         loop {
             // a network that is gone (unplugged, unticked) hands its part back to the others
@@ -1763,7 +1762,7 @@ impl Job {
                 i.segs[k].net = net.clone();
                 i.segs[k].next
             };
-            match self.fetch(k, part, &agent, global, pre.take()) {
+            match self.fetch(k, part, &agent, global, pre.take(), extra) {
                 Ok(()) if self.stopping() => return None,
                 Err(e) if e == CHANGED => {
                     self.stop();
@@ -1829,7 +1828,7 @@ impl Job {
         }
     }
 
-    fn fetch(&self, k: usize, part: &Path, agent: &Agent, global: &Limiter, pre: Option<Body>) -> Result<(), String> {
+    fn fetch(&self, k: usize, part: &Path, agent: &Agent, global: &Limiter, pre: Option<Body>, extra: bool) -> Result<(), String> {
         let (url, referrer, cookies, ranges, start, stop, back, headers) = {
             let mut i = self.info();
             let ranges = i.ranges;
@@ -1850,8 +1849,7 @@ impl Job {
             Some(r) => r,
             None if is_ftp(&url) => ftp_open(&url, from)?.2,
             None => {
-                let many = self.info().conns > 1;
-                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).part_of_many(many);
+                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).prefer_http1(extra && ranges);
                 if ranges {
                     let range = stop.map_or(format!("bytes={from}-"), |e| format!("bytes={from}-{}", e - 1));
                     req = req.set("Range", &range);

@@ -214,16 +214,19 @@ impl Drop for Locked<'_> {
 
 impl Locked<'_> {
     fn set(&self, protocol: &Cf, dictionary: Ref) -> Result<(), String> {
-        self.save(protocol, dictionary)?;
+        self.stage(protocol, dictionary)?;
+        self.commit()?;
         self.apply()
     }
 
-    /// The change, saved to the system's preferences but not applied yet. An error here leaves the
-    /// preferences as they were (nothing was committed).
-    fn save(&self, protocol: &Cf, dictionary: Ref) -> Result<(), String> {
+    fn stage(&self, protocol: &Cf, dictionary: Ref) -> Result<(), String> {
         if unsafe { SCNetworkProtocolSetConfiguration(protocol.0, dictionary) } == 0 {
             return Err(sc_error("Set web proxy"));
         }
+        Ok(())
+    }
+
+    fn commit(&self) -> Result<(), String> {
         if unsafe { SCPreferencesCommitChanges(self.0.cf.0) } == 0 {
             return Err(sc_error("Save web proxy"));
         }
@@ -430,22 +433,29 @@ pub fn enable(id: &str, ready: &AtomicBool) -> Result<(), String> {
     }
     let update = WebProxy::ndm().edit(current)?;
     let path = journal_path();
-    write_journal(
-        &path,
-        &Journal {
-            id: id.into(),
-            absent: current.is_null(),
-            previous,
-        },
-    )?;
-    // Nothing committed (the administrator prompt was cancelled, say): the preferences are as they were,
-    // so the record goes too, or every start and quit would try to restore them. Once committed the
-    // record stays, even if applying fails.
-    if let Err(error) = lock.save(&protocol, update.0) {
-        let _ = fs::remove_file(&path);
+    let journal = Journal {
+        id: id.into(),
+        absent: current.is_null(),
+        previous,
+    };
+    // Staging changes only this preferences session. Persist recovery data before the commit.
+    lock.stage(&protocol, update.0)?;
+    write_journal(&path, &journal)?;
+    if let Err(error) = lock.commit() {
+        // Read through a fresh session. The writer's in-memory values reflect the staged edit.
+        if persisted_proxy_matches(&journal).unwrap_or(false) {
+            let _ = fs::remove_file(&path);
+        }
         return Err(error);
     }
     lock.apply()
+}
+
+fn persisted_proxy_matches(journal: &Journal) -> Result<bool, String> {
+    let prefs = Preferences::new(false)?;
+    let protocol = proxy_protocol(&prefs, &journal.id, false)?;
+    let current = unsafe { SCNetworkProtocolGetConfiguration(protocol.0) };
+    Ok(current.is_null() == journal.absent && WebProxy::read(current)? == journal.previous)
 }
 
 pub fn restore() -> Result<(), String> {

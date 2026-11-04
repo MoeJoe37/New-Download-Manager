@@ -205,13 +205,12 @@ into the issue form. Raw panic messages and stack traces stay in the local logs.
 
 ### HTTP connection and macOS capture options
 
-Direct HTTPS negotiates HTTP/2 by default. The parts of a download that uses several connections each
-get a TCP connection of their own (HTTP/1.1): over HTTP/2 they would share one, and a server's
-per-connection speed limit would hold the whole download to that one connection's speed.
-**Options → Connection → HTTP/1.1...** accepts exact hosts separated by spaces, to use HTTP/1.1 for
-everything from them (pages, probes, single-connection downloads). Proxy routing
-and authentication continue to use their existing connection paths. The local comparison fixture
-runs with `cargo test --release http_protocol_benchmark -- --ignored --nocapture`.
+The first direct HTTPS request negotiates the protocol with the server. Once a download uses
+additional connections for file ranges or parallel media fragments, those requests can use HTTP/1.1
+to get separate TCP connections. This can help when the server limits speed per connection. If a
+server rejects that protocol and the retry succeeds over HTTP/2, NDM remembers the result for that
+server during the session. **Options → Connection → HTTP/1.1...** can force HTTP/1.1 for exact hosts.
+The local comparison fixture runs with `cargo test --release http_protocol_benchmark -- --ignored --nocapture`.
 
 On macOS, **Options → General → macOS HTTP capture** can enable plain HTTP capture for one selected
 network service until NDM quits. macOS may ask for administrator authorization. The browser extension

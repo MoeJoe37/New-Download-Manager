@@ -643,11 +643,9 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn transfer(&self, part: &Part, output: &mut dyn Write, got: &AtomicU64, tick: &dyn Fn(), max: u64) -> Result<u64, String> {
+    fn transfer(&self, part: &Part, output: &mut dyn Write, got: &AtomicU64, tick: &dyn Fn(), max: u64, extra: bool) -> Result<u64, String> {
         let cookies = if crate::transport::same_origin(&self.origin, &part.url) { &self.cookies } else { "" };
-        // the pieces come over several connections at once: each on its own (transport `part_of_many`)
-        let many = self.job.info().conns > 1;
-        let mut request = engine::request(self.agent, &part.url, &self.referrer, cookies).part_of_many(many);
+        let mut request = engine::request(self.agent, &part.url, &self.referrer, cookies).prefer_http1(extra);
         if let Some((first, last)) = part.range {
             request = request.set("Range", &format!("bytes={first}-{last}"));
         }
@@ -685,7 +683,7 @@ impl Ctx<'_> {
         result
     }
 
-    fn piece(&self, part: &Part, file: &Path, got: &AtomicU64, tick: &dyn Fn()) -> Result<(), String> {
+    fn piece(&self, part: &Part, file: &Path, got: &AtomicU64, tick: &dyn Fn(), extra: bool) -> Result<(), String> {
         let tmp = file.with_extension("tmp");
         let mut committed_bytes = 0;
         let result = (|| {
@@ -696,19 +694,19 @@ impl Ctx<'_> {
                     if let Some(key) = keys.get(url) { key.clone() } else {
                         let mut key = Vec::with_capacity(16);
                         self.transfer(&Part { url: url.clone(), range: None, key: None, seq: 0, shift: 0.0 },
-                            &mut key, &AtomicU64::new(0), &|| {}, 16)?;
+                            &mut key, &AtomicU64::new(0), &|| {}, 16, false)?;
                         keys.insert(url.clone(), key.clone());
                         key
                     }
                 };
                 let mut encrypted = Vec::new();
-                committed_bytes = self.transfer(part, &mut encrypted, got, tick, 64 << 20)?;
+                committed_bytes = self.transfer(part, &mut encrypted, got, tick, 64 << 20, extra)?;
                 let decrypted = aes_cbc(&key, *iv, &encrypted)?;
                 output.write_all(&decrypted).map_err(|e| e.to_string())?;
                 got.fetch_sub(committed_bytes - decrypted.len() as u64, Relaxed);
                 committed_bytes = decrypted.len() as u64;
             } else {
-                committed_bytes = self.transfer(part, &mut output, got, tick, u64::MAX)?;
+                committed_bytes = self.transfer(part, &mut output, got, tick, u64::MAX, extra)?;
             }
             output.sync_data().map_err(|e| e.to_string())?;
             drop(output);
@@ -819,6 +817,7 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
         c[t] += 1;
         Some((t, c[t] - 1, l[t][c[t] - 1].clone()))
     };
+    let active = AtomicUsize::new(0);
     let work = || loop {
         if job.stopping() || failed.lock().unwrap().is_some() {
             return;
@@ -839,7 +838,9 @@ pub fn run(job: &Job, agent: &engine::Agent, global: &Limiter) -> Result<bool, S
             if job.stopping() || failed.lock().unwrap().is_some() {
                 return;
             }
-            let r = ctx.piece(&part, &f, &got[t], &tick);
+            let extra = active.fetch_add(1, Relaxed) != 0;
+            let r = ctx.piece(&part, &f, &got[t], &tick, extra);
+            active.fetch_sub(1, Relaxed);
             match r {
                 Ok(()) => {
                     have[t].fetch_add(1, Relaxed);
@@ -1500,7 +1501,7 @@ pub(crate) mod tests {
             origin: url.clone(), keys: Mutex::default() };
         let got = AtomicU64::new(0);
         let part = Part { url, range: None, key: None, seq: 0, shift: 0.0 };
-        let result = ctx.transfer(&part, &mut LimitedDisk(engine::CHUNK), &got, &|| {}, u64::MAX);
+        let result = ctx.transfer(&part, &mut LimitedDisk(engine::CHUNK), &got, &|| {}, u64::MAX, false);
         assert_eq!(result, Err("disk full".into()));
         assert_eq!(got.load(Relaxed), 0);
         handle.join().unwrap();

@@ -1,4 +1,4 @@
-//! Local TLS comparison of automatic HTTP/2 and an exact-host HTTP/1.1 override.
+//! Local TLS fixtures for negotiated HTTPS and extra connections.
 use super::*;
 use rustls::pki_types::PrivatePkcs8KeyDer;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -63,7 +63,11 @@ async fn serve(socket: tokio_rustls::server::TlsStream<tokio::net::TcpStream>, d
     }
 }
 
-fn measure(http1: bool, delay: Duration) -> (Duration, usize) {
+fn with_server<T>(
+    h2_only: bool,
+    delay: Duration,
+    run: impl FnOnce(&str, &reqwest::blocking::Client, &reqwest::blocking::Client) -> T,
+) -> (T, usize) {
     let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let der = certificate.cert.der().clone();
     let mut tls = rustls::ServerConfig::builder_with_provider(
@@ -77,7 +81,10 @@ fn measure(http1: bool, delay: Duration) -> (Duration, usize) {
         PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into(),
     )
     .unwrap();
-    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    if !h2_only {
+        tls.alpn_protocols.push(b"http/1.1".to_vec());
+    }
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
@@ -117,36 +124,87 @@ fn measure(http1: bool, delay: Duration) -> (Duration, usize) {
         builder().build().unwrap(),
         builder().http1_only().build().unwrap(),
     );
-    let agent = crate::engine::agent("", "").with_http1_hosts(if http1 { "localhost" } else { "" });
-    let read = |path: &str| {
-        let req = request(&agent, &format!("{url}{path}"), "", "")
-            .set("Range", &format!("bytes=0-{}", CHUNK - 1));
-        let response = call_with(req, |http1_only| {
-            Some(if http1_only { &forced } else { &auto })
-        })
-        .unwrap();
-        let version = if http1 {
-            reqwest::Version::HTTP_11
-        } else {
-            reqwest::Version::HTTP_2
-        };
-        assert!(matches!(&response, Response::Tls(r) if r.version() == version));
-        assert_eq!(response.status(), 206);
-        let mut bytes = Vec::new();
-        response.into_reader().read_to_end(&mut bytes).unwrap();
-        assert_eq!(bytes, FILE);
-    };
-    read("/warm");
-    let started = Instant::now();
-    std::thread::scope(|scope| {
-        for n in 0..4 {
-            scope.spawn(move || read(&format!("/{n}")));
-        }
-    });
-    let elapsed = started.elapsed();
+    let result = run(&url, &auto, &forced);
     stop.send(()).unwrap();
     server.join().unwrap();
-    (elapsed, total.load(SeqCst))
+    (result, total.load(SeqCst))
+}
+
+fn range_request(agent: &Agent, url: &str, path: &str, extra: bool) -> Request {
+    request(agent, &format!("{url}{path}"), "", "")
+        .set("Range", &format!("bytes=0-{}", CHUNK - 1))
+        .prefer_http1(extra)
+}
+
+fn check_response(response: Response, version: reqwest::Version) {
+    assert!(matches!(&response, Response::Tls(r) if r.version() == version));
+    assert_eq!(response.status(), 206);
+    let mut bytes = Vec::new();
+    response.into_reader().read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, FILE);
+}
+
+#[test]
+fn extra_request_retries_with_http2_and_remembers_the_origin() {
+    let ((), connections) = with_server(true, Duration::ZERO, |url, auto, http1| {
+        let agent = crate::engine::agent("", "");
+        let check = |extra, expected: &[bool]| {
+            let offered = std::cell::RefCell::new(Vec::new());
+            let response = call_with(range_request(&agent, url, "/warm", extra), |forced| {
+                offered.borrow_mut().push(forced);
+                Some(if forced { http1 } else { auto })
+            })
+            .unwrap();
+            check_response(response, reqwest::Version::HTTP_2);
+            assert_eq!(offered.into_inner(), expected);
+        };
+        check(false, &[false]);
+        check(true, &[true, false]);
+        check(true, &[false]);
+
+        // An explicit user override still forces HTTP/1.1, even for an origin NDM learned.
+        let agent = agent.with_http1_hosts("localhost");
+        let result = call_with(range_request(&agent, url, "/forced", true), |forced| {
+            assert!(forced);
+            Some(http1)
+        });
+        assert!(result.is_err());
+    });
+    assert_eq!(connections, 1, "fallback reuses the negotiated connection");
+}
+
+fn measure(split: bool, delay: Duration) -> (Duration, usize) {
+    with_server(false, delay, |url, auto, http1| {
+        let agent = crate::engine::agent("", "");
+        let read = |path: &str, extra| {
+            let response = call_with(range_request(&agent, url, path, extra), |forced| {
+                Some(if forced { http1 } else { auto })
+            })
+            .unwrap();
+            check_response(
+                response,
+                if extra {
+                    reqwest::Version::HTTP_11
+                } else {
+                    reqwest::Version::HTTP_2
+                },
+            );
+        };
+        read("/warm", false);
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            for n in 0..4 {
+                scope.spawn(move || read(&format!("/{n}"), split && n > 0));
+            }
+        });
+        started.elapsed()
+    })
+}
+
+#[test]
+fn extra_requests_can_use_http1_without_downgrading_the_first() {
+    let (_, connections) = measure(true, Duration::from_millis(24));
+    assert!(connections > 1);
 }
 
 #[test]
@@ -156,13 +214,13 @@ fn http_protocol_benchmark() {
         ("unrestricted", Duration::ZERO),
         ("per-connection budget", Duration::from_millis(24)),
     ] {
-        for http1 in [false, true] {
-            let mut trials: Vec<_> = (0..5).map(|_| measure(http1, delay)).collect();
+        for split in [false, true] {
+            let mut trials: Vec<_> = (0..5).map(|_| measure(split, delay)).collect();
             trials.sort_unstable();
             let (median, connections) = trials[2];
             println!("{workload}: {} {:.1} ms median, {connections} TLS connections (4 x 48 KiB, 5 trials)",
-                if http1 { "HTTP/1.1" } else { "HTTP/2" }, median.as_secs_f64() * 1000.0);
-            if !http1 {
+                if split { "HTTP/2 plus extra HTTP/1.1" } else { "HTTP/2 only" }, median.as_secs_f64() * 1000.0);
+            if !split {
                 assert_eq!(connections, 1);
             }
         }

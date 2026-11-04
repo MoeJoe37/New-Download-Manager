@@ -478,6 +478,7 @@ Mozilla Firefox=Mozilla Firefox
 Music=Music
 NDM cannot download the update file.\nYou can download a new version of NDM from NDM home site and install it over your current version manually=NDM cannot download the update file.\nYou can download a new version of NDM from NDM home site and install it over your current version manually
 NDM cannot download yt-dlp or ffmpeg. Check your connection and try again.=NDM cannot download yt-dlp or ffmpeg. Check your connection and try again.
+NDM could not verify a video format at or below %dp. Choose Best to download without a resolution limit.=NDM could not verify a video format at or below %dp. Choose Best to download without a resolution limit.
 NDM export files=NDM export files
 NDM Grabber Statistics=NDM Grabber Statistics
 NDM Home Page=NDM Home Page

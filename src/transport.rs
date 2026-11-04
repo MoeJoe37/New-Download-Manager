@@ -1,7 +1,8 @@
 //! HTTP transport for downloads. Direct TLS connections share a pool that negotiates HTTP/2.
 //! Proxy routes and connection-oriented authentication retain the original HTTP/1.1 client.
+use std::collections::HashSet;
 use std::io::{self, Read};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use url::Url;
 
@@ -71,7 +72,7 @@ pub struct Request {
     url: String,
     headers: Vec<(String, String)>,
     https_only: bool,
-    own_connection: bool,
+    prefer_http1: bool,
 }
 
 impl Request {
@@ -80,12 +81,9 @@ impl Request {
         self
     }
 
-    /// One of the parts a download fetches over several connections at once (`many`): over HTTPS it goes
-    /// on a TCP connection of its own (HTTP/1.1), as the parts are meant to. HTTP/2 would put them all on
-    /// one connection, which a server's per-connection speed limit then holds to one connection's speed
-    /// (`http_protocol_benchmark`: about 5 times slower).
-    pub(crate) fn part_of_many(mut self, many: bool) -> Self {
-        self.own_connection = many;
+    /// Extra requests can use separate TCP connections on hosts that accept HTTP/1.1.
+    pub(crate) fn prefer_http1(mut self, extra: bool) -> Self {
+        self.prefer_http1 = extra;
         self
     }
 
@@ -103,7 +101,7 @@ pub fn request(agent: &Agent, url: &str, referrer: &str, cookies: &str) -> Reque
         url: url.into(),
         headers: vec![],
         https_only: false,
-        own_connection: false,
+        prefer_http1: false,
     };
     if let (Ok(source), Ok(mut page)) = (Url::parse(url), Url::parse(referrer)) {
         if matches!(page.scheme(), "http" | "https")
@@ -269,31 +267,47 @@ fn call_with<'a>(
         if !matches!(url.scheme(), "http" | "https") {
             return Err("Unsupported HTTP redirect protocol".into());
         }
-        let client =
-            if url.scheme() == "https" && agent.proxy.is_empty() && url.username().is_empty() {
-                tls(request.own_connection || agent.http1_only(&url))
-            } else {
-                None
-            };
         let mut response = None;
-        if let Some(client) = client {
-            let mut send = client
-                .get(url.clone())
-                .header("User-Agent", &agent.user_agent);
-            for (key, value) in &headers {
-                send = send.header(key, value);
-            }
-            let received = send.send().map_err(|err| {
-                if err.is_timeout() {
-                    "HTTP request timed out".to_string()
-                } else if err.is_connect() {
-                    "Could not connect to the HTTPS server".to_string()
-                } else {
-                    "HTTPS request failed".to_string()
+        if url.scheme() == "https" && agent.proxy.is_empty() && url.username().is_empty() {
+            static NEGOTIATE: OnceLock<Mutex<HashSet<url::Origin>>> = OnceLock::new();
+            let negotiate = NEGOTIATE.get_or_init(Mutex::default);
+            let force = agent.http1_only(&url);
+            let origin = url.origin();
+            let prefer = request.prefer_http1 && !force && !negotiate.lock().unwrap().contains(&origin);
+            if let Some(client) = tls(force || prefer).or_else(|| prefer.then(|| tls(false)).flatten()) {
+                let send = |client: &reqwest::blocking::Client| {
+                    let mut req = client.get(url.clone()).header("User-Agent", &agent.user_agent);
+                    for (key, value) in &headers {
+                        req = req.header(key, value);
+                    }
+                    req.send()
+                };
+                let mut received = send(client);
+                if prefer {
+                    let rejected = match &received {
+                        // No headers or bytes were returned. Exclude timeouts and local request errors.
+                        Err(error) => !error.is_builder() && !error.is_timeout(),
+                        Ok(response) => response.status() == reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED,
+                    };
+                    if let Some(auto) = rejected.then(|| tls(false)).flatten().filter(|auto| !std::ptr::eq(*auto, client)) {
+                        received = send(auto);
+                        if received.as_ref().is_ok_and(|r| r.version() == reqwest::Version::HTTP_2 && r.status().is_success()) {
+                            negotiate.lock().unwrap().insert(origin);
+                        }
+                    }
                 }
-            })?;
-            if received.status() != reqwest::StatusCode::UNAUTHORIZED {
-                response = Some(Response::Tls(received));
+                let received = received.map_err(|err| {
+                    if err.is_timeout() {
+                        "HTTP request timed out".to_string()
+                    } else if err.is_connect() {
+                        "Could not connect to the HTTPS server".to_string()
+                    } else {
+                        "HTTPS request failed".to_string()
+                    }
+                })?;
+                if received.status() != reqwest::StatusCode::UNAUTHORIZED {
+                    response = Some(Response::Tls(received));
+                }
             }
         }
         let response = match response {
@@ -546,20 +560,6 @@ mod tests {
         assert!(!matches("https://cdn.example.org/file"));
         assert!(!matches("https://example.org.invalid/file"));
         assert!(!crate::engine::agent("", "").http1_only(&Url::parse("https://example.org/").unwrap()));
-    }
-
-    #[test]
-    fn parts_of_a_download_get_their_own_connection() {
-        let agent = crate::engine::agent("", "");
-        for (many, http1) in [(false, false), (true, true)] {
-            let asked = std::cell::Cell::new(None);
-            let req = request(&agent, "https://127.0.0.1:1/file", "", "").set("Range", "bytes=0-").part_of_many(many);
-            let _ = call_with(req, |http1_only| {
-                asked.set(Some(http1_only));
-                None
-            });
-            assert_eq!(asked.get(), Some(http1), "part of a download with several connections: {many}");
-        }
     }
 
     #[test]
