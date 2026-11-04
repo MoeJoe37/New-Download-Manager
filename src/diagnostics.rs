@@ -26,7 +26,9 @@ const CRASH_MODULES: &[&str] = &[
     "mac_capture", "main", "media", "net", "platform::linux::desktop", "platform::linux::drag_drop",
     "platform::linux::network", "platform::macos::desktop", "platform::macos::drag_drop",
     "platform::macos::network", "platform::windows::desktop", "platform::windows::drag_drop",
-    "platform::windows::network", "posix", "remux", "startup", "stream", "stream::dash", "stream::download",
+    "platform::windows::network", "posix", "remux", "remux::audio", "remux::bits", "remux::mp4",
+    "remux::mp4_boxes", "remux::regroup", "remux::ts", "remux::video", "remux::webm",
+    "startup", "stream", "stream::dash", "stream::download",
     "stream::fmp4", "stream::hls", "transport", "transport::auth", "transport::client", "update", "win",
     "ytdlp", "ytdlp::formats", "ytdlp::install", "ytdlp::playlist",
 ];
@@ -81,6 +83,7 @@ fn problem_report_excludes_raw_crash_data() {
     assert_eq!(crash_location("src/app/help.rs", 9), "app::help:9");
     assert_eq!(crash_location(r"src\app\help.rs", 9), "app::help:9");
     assert_eq!(crash_location("src/core/mod.rs", 10), "core:10");
+    assert_eq!(crash_location("src/remux/webm.rs", 14), "remux::webm:14");
     assert_eq!(crash_location(r"src\app\dialogs\options\mod.rs", 20), "app::dialogs::options:20");
     assert_eq!(crash_location("src/transport/client.rs", 12), "transport::client:12");
     assert_eq!(crash_location("src/platform/linux/drag_drop.rs", 15), "platform::linux::drag_drop:15");
