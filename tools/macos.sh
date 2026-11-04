@@ -11,7 +11,7 @@ export MACOSX_DEPLOYMENT_TARGET=11.0
 targets=(aarch64-apple-darwin x86_64-apple-darwin)
 rustup target add "${targets[@]}" >/dev/null
 for t in "${targets[@]}"; do
-    cargo build --release --target "$t"
+    cargo build --release --locked --target "$t"
 done
 
 work="$(mktemp -d)"

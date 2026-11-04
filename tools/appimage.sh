@@ -13,7 +13,7 @@ mkdir -p "$work"
 rsync -a --delete --exclude target --exclude installer/out --exclude .git "$src/" "$work/src/" 2>/dev/null ||
     { rm -rf "$work/src"; mkdir -p "$work/src"; (cd "$src" && tar --exclude=./target --exclude=./installer/out --exclude=./.git -cf - .) | tar -xf - -C "$work/src"; }
 cd "$work/src"
-cargo build --release
+cargo build --release --locked
 arch="$(uname -m)" # x86_64 or aarch64: linuxdeploy and appimagetool come for both
 
 # AppDir: the program with help, languages and the browser extension next to it (NDM looks beside its exe)
