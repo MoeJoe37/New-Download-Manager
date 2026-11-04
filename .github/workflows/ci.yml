@@ -126,6 +126,7 @@ jobs:
         if: matrix.runner == 'ubuntu-latest'
         env:
           TZ: UTC
+          LC_ALL: C
         run: cargo test --release --locked dialog_snapshots -- --ignored --test-threads=1
       - name: Clippy (no warnings)
         run: cargo clippy --release --locked --all-targets -- -D warnings

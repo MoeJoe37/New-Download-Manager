@@ -112,7 +112,7 @@ Integrate "Browsers integration" 676.6x320.0
   rect 8.5,35.0 668.0,249.5
   text 19.5,46.0 655.5,67.0 "To capture downloads from Firefox, open its extensions page (about:debugging), click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in this folder. Firefox removes the add-on when it closes, so load it again after a restart:"
   rect 19.5,147.0 658.5,169.5
-  text 22.5,154.0 341.5,164.0 "/workspace/scratch/ff7a34271ff9/New-Download-Manager/extension"
+  text 22.5,154.0 "<extension directory>"
   rect 19.5,259.0 145.0,281.5
   text 33.0,266.0 131.0,276.0 "Open extensions page"
   rect 153.5,259.0 251.0,281.5
@@ -575,7 +575,7 @@ FileProps "File Properties" 443.6x393.6
   line 9.5,49.0 434.5,50.0
   line 9.5,50.0 434.5,51.0
   text 10.0,61.5 33.0,70.5 "Type:"
-  text 81.0,60.5 128.0,70.5 "Zip archive"
+  text 81.0,60.5 "<system file type>"
   text 10.0,80.5 40.0,88.5 "Status:"
   text 81.0,79.5 124.0,89.5 "Complete"
   text 10.0,98.5 28.0,107.5 "Size:"
@@ -1236,7 +1236,7 @@ About "About New Download Manager" 362.7x374.4
   rect 0.0,0.0 362.5,374.5
   rect 7.5,9.5 39.5,41.5
   text 47.0,10.5 201.0,25.5 "New Download Manager"
-  text 44.5,32.5 101.5,41.5 "Version: 2.9.1"
+  text 44.5,32.5 "Version: <installed version>"
   rect 104.5,49.5 242.5,72.0
   text 134.5,56.5 212.5,66.5 "Check for Update"
   rect 142.5,339.0 219.0,361.5
@@ -1430,7 +1430,7 @@ NewVersion "New version of New Download Manager is available" 520.0x420.0
   rect inf,inf -inf,-inf
   rect 18.0,18.0 66.0,66.0
   text 80.0,21.0 290.0,37.0 "A new version is available"
-  text 80.0,46.0 206.0,57.0 "Version 2.9.1 → 9.0.0"
+  text 80.0,46.0 "Version <installed version> → 9.0.0"
   text 18.0,83.0 88.0,95.0 "What's new"
   rect 18.0,105.0 502.0,322.0
   text 31.0,117.0 101.0,127.0 "Example release"
@@ -1461,4 +1461,3 @@ Find "Find file" 320.9x236.8
   text 92.5,210.0 110.5,219.0 "Find"
   rect 183.0,203.0 252.5,225.5
   text 203.0,210.0 233.0,219.0 "Cancel"
-

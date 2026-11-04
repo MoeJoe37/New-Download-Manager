@@ -216,12 +216,20 @@ fn dialog_snapshots() {
                 app.dialog_body(ctx, ui, &mut dialog);
             });
         });
+        // Keep the position of machine-dependent text while ignoring its content width.
+        let variable_text = match name {
+            "Integrate" => extension_dir().map(|path| (path.display().to_string(), "<extension directory>")),
+            "FileProps" => Some((win::type_name("zip"), "<system file type>")),
+            "About" | "NewVersion" => Some((env!("CARGO_PKG_VERSION").into(), "<installed version>")),
+            _ => None,
+        };
         for entry in output.shapes {
-            write_shape(&mut snapshot, &entry.shape);
+            write_shape(&mut snapshot, &entry.shape, variable_text.as_ref());
         }
         snapshot.push('\n');
     }
 
+    snapshot.pop(); // remove the separator after the final dialog
     let path = root.join("tools/snapshots/dialogs.txt");
     if std::env::var_os("NDM_BLESS").as_deref() == Some(std::ffi::OsStr::new("1")) {
         std::fs::write(path, snapshot).unwrap();
@@ -236,11 +244,11 @@ fn dialog_snapshots() {
     }
 }
 
-fn write_shape(out: &mut String, shape: &egui::Shape) {
+fn write_shape(out: &mut String, shape: &egui::Shape, variable: Option<&(String, &str)>) {
     let kind = match shape {
         egui::Shape::Noop => return,
         egui::Shape::Vec(shapes) => {
-            for shape in shapes { write_shape(out, shape); }
+            for shape in shapes { write_shape(out, shape, variable); }
             return;
         }
         egui::Shape::Text(_) => "text",
@@ -256,6 +264,14 @@ fn write_shape(out: &mut String, shape: &egui::Shape) {
     };
     let rect = shape.visual_bounding_rect();
     let half = |v: f32| (v * 2.0).round() / 2.0 + 0.0;
+    if let (egui::Shape::Text(text), Some((value, placeholder))) = (shape, variable) {
+        let label = text.galley.text();
+        if !value.is_empty() && label.contains(value.as_str()) {
+            writeln!(out, "  {kind} {:.1},{:.1} {:?}",
+                half(rect.min.x), half(rect.min.y), label.replace(value.as_str(), placeholder)).unwrap();
+            return;
+        }
+    }
     write!(out, "  {kind} {:.1},{:.1} {:.1},{:.1}", half(rect.min.x), half(rect.min.y), half(rect.max.x), half(rect.max.y)).unwrap();
     if let egui::Shape::Text(text) = shape {
         write!(out, " {:?}", text.galley.text()).unwrap();
