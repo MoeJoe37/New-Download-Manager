@@ -71,11 +71,21 @@ pub struct Request {
     url: String,
     headers: Vec<(String, String)>,
     https_only: bool,
+    own_connection: bool,
 }
 
 impl Request {
     pub(crate) fn https_only(mut self) -> Self {
         self.https_only = true;
+        self
+    }
+
+    /// One of the parts a download fetches over several connections at once (`many`): over HTTPS it goes
+    /// on a TCP connection of its own (HTTP/1.1), as the parts are meant to. HTTP/2 would put them all on
+    /// one connection, which a server's per-connection speed limit then holds to one connection's speed
+    /// (`http_protocol_benchmark`: about 5 times slower).
+    pub(crate) fn part_of_many(mut self, many: bool) -> Self {
+        self.own_connection = many;
         self
     }
 
@@ -93,6 +103,7 @@ pub fn request(agent: &Agent, url: &str, referrer: &str, cookies: &str) -> Reque
         url: url.into(),
         headers: vec![],
         https_only: false,
+        own_connection: false,
     };
     if let (Ok(source), Ok(mut page)) = (Url::parse(url), Url::parse(referrer)) {
         if matches!(page.scheme(), "http" | "https")
@@ -260,7 +271,7 @@ fn call_with<'a>(
         }
         let client =
             if url.scheme() == "https" && agent.proxy.is_empty() && url.username().is_empty() {
-                tls(agent.http1_only(&url))
+                tls(request.own_connection || agent.http1_only(&url))
             } else {
                 None
             };
@@ -535,6 +546,20 @@ mod tests {
         assert!(!matches("https://cdn.example.org/file"));
         assert!(!matches("https://example.org.invalid/file"));
         assert!(!crate::engine::agent("", "").http1_only(&Url::parse("https://example.org/").unwrap()));
+    }
+
+    #[test]
+    fn parts_of_a_download_get_their_own_connection() {
+        let agent = crate::engine::agent("", "");
+        for (many, http1) in [(false, false), (true, true)] {
+            let asked = std::cell::Cell::new(None);
+            let req = request(&agent, "https://127.0.0.1:1/file", "", "").set("Range", "bytes=0-").part_of_many(many);
+            let _ = call_with(req, |http1_only| {
+                asked.set(Some(http1_only));
+                None
+            });
+            assert_eq!(asked.get(), Some(http1), "part of a download with several connections: {many}");
+        }
     }
 
     #[test]

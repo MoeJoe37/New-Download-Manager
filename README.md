@@ -205,8 +205,11 @@ into the issue form. Raw panic messages and stack traces stay in the local logs.
 
 ### HTTP connection and macOS capture options
 
-Direct HTTPS negotiates HTTP/2 by default. **Options → Connection → HTTP/1.1...** accepts exact hosts
-separated by spaces. Use it for a host where a comparison shows HTTP/1.1 works better. Proxy routing
+Direct HTTPS negotiates HTTP/2 by default. The parts of a download that uses several connections each
+get a TCP connection of their own (HTTP/1.1): over HTTP/2 they would share one, and a server's
+per-connection speed limit would hold the whole download to that one connection's speed.
+**Options → Connection → HTTP/1.1...** accepts exact hosts separated by spaces, to use HTTP/1.1 for
+everything from them (pages, probes, single-connection downloads). Proxy routing
 and authentication continue to use their existing connection paths. The local comparison fixture
 runs with `cargo test --release http_protocol_benchmark -- --ignored --nocapture`.
 

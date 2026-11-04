@@ -253,6 +253,8 @@ fn formats(url: &str, ff: bool) -> String {
 
 /// The formats for a download's Quality choice (`YtOpts::quality`): only the sound ("m4a" / "mp3": the
 /// M4A track when there is one), or the site's formats with the video at most `quality` lines high, with no fallback above it.
+/// A format whose height the site doesn't give passes (`<=?`): many sites (a page's own <video>, some
+/// players) give none, and the cap would otherwise refuse every format there.
 fn chosen(url: &str, ff: bool, quality: &str) -> String {
     let all = formats(url, ff);
     if quality == "m4a" || quality == "mp3" {
@@ -264,7 +266,7 @@ fn chosen(url: &str, ff: bool, quality: &str) -> String {
             .map(|part| {
                 let name = part.split('[').next().unwrap_or("");
                 if matches!(name, "b" | "bv" | "bv*" | "best" | "bestvideo") {
-                    format!("{name}[height<={h}]{}", &part[name.len()..])
+                    format!("{name}[height<=?{h}]{}", &part[name.len()..])
                 } else {
                     part.to_string()
                 }
@@ -1850,6 +1852,13 @@ mod tests {
         let probe = command(&beside_or_path("ffprobe")).args(["-v", "error", "-show_entries", "stream=codec_name,codec_type", "-of", "csv=p=0"]).arg(dir.join("song.mp3")).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "mp3,audio");
         assert_eq!(job.info().size, Some(std::fs::metadata(dir.join("song.mp3")).unwrap().len()));
+        // a Quality cap on a page whose video has no height (a page's own <video>): the video, not
+        // "Requested format is not available"
+        let videos = home.join("Video");
+        let yt = crate::engine::YtOpts { quality: "720".into(), ..Default::default() };
+        let job = Job::new(Info { url: format!("{base}page.html"), folder: videos.display().to_string(), name: "clip.mp4".into(), ytdlp: true, yt, ..Default::default() });
+        assert_eq!(run(&job, &crate::engine::agent("", "ndm-test"), &Limiter::default()), Ok(true));
+        assert_eq!(std::fs::read(job.info().path()).unwrap(), std::fs::read(&clip).unwrap());
         let _ = std::fs::remove_dir_all(&home);
     }
     /// Deno's real release zip (NDM_TEST_DENO_ZIP=<path>, NDM_TEST_DENO_SHA256=<the program's SHA-256>).
@@ -1940,17 +1949,17 @@ mod tests {
         assert_eq!(formats("https://vimeo.com/1", true), MERGED);
         assert_eq!(formats("https://vimeo.com/1", false), format!("b/{PAIR}"));
     }
-    /// File Info's Quality: a height cap on every video selector with the uncapped formats after it, the
-    /// sound alone for MP3 / M4A, and the file's type to match.
+    /// File Info's Quality: a height cap on every video selector (formats of unknown height pass), no
+    /// fallback above it, the sound alone for MP3 / M4A, and the file's type to match.
     #[test]
     fn quality_choices() {
         assert_eq!(chosen("https://vimeo.com/1", true, ""), MERGED);
-        assert_eq!(chosen("https://vimeo.com/1", true, "720"), "bv*[height<=720]+ba/b[height<=720]/bv[height<=720]");
+        assert_eq!(chosen("https://vimeo.com/1", true, "720"), "bv*[height<=?720]+ba/b[height<=?720]/bv[height<=?720]");
         let yt = chosen("https://www.youtube.com/watch?v=x", false, "1080");
-        assert!(yt.starts_with("bv*[height<=1080][acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/"), "{yt}");
+        assert!(yt.starts_with("bv*[height<=?1080][acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a]/"), "{yt}");
         assert!(!yt.contains("/b/"), "{yt}");
         let tiktok = chosen("https://www.tiktok.com/@a/video/1", true, "480");
-        assert!(tiktok.starts_with("b[height<=480][vcodec^=h264]/"), "{tiktok}");
+        assert!(tiktok.starts_with("b[height<=?480][vcodec^=h264]/"), "{tiktok}");
         assert_eq!(chosen("https://www.youtube.com/watch?v=x", true, "mp3"), "ba[ext=m4a]/ba/b");
         assert_eq!(chosen("https://www.youtube.com/watch?v=x", true, "bogus"), MERGED);
         assert_eq!(named("Song.mp4", "mp3"), "Song.mp3");

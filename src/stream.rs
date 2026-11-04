@@ -645,7 +645,9 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     fn transfer(&self, part: &Part, output: &mut dyn Write, got: &AtomicU64, tick: &dyn Fn(), max: u64) -> Result<u64, String> {
         let cookies = if crate::transport::same_origin(&self.origin, &part.url) { &self.cookies } else { "" };
-        let mut request = engine::request(self.agent, &part.url, &self.referrer, cookies);
+        // the pieces come over several connections at once: each on its own (transport `part_of_many`)
+        let many = self.job.info().conns > 1;
+        let mut request = engine::request(self.agent, &part.url, &self.referrer, cookies).part_of_many(many);
         if let Some((first, last)) = part.range {
             request = request.set("Range", &format!("bytes={first}-{last}"));
         }

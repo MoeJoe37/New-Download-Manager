@@ -1514,8 +1514,9 @@ impl Job {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
                 (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), etag: String::new(), stream: false, page: false, ytdlp: false }, r)
             } else {
+                let many = self.info().conns > 1;
                 let first_req = |agent: &Agent| {
-                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-");
+                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-").part_of_many(many);
                     if let Some((_, since)) = &cached {
                         req = req.set("If-Modified-Since", since);
                     }
@@ -1849,7 +1850,8 @@ impl Job {
             Some(r) => r,
             None if is_ftp(&url) => ftp_open(&url, from)?.2,
             None => {
-                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers);
+                let many = self.info().conns > 1;
+                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).part_of_many(many);
                 if ranges {
                     let range = stop.map_or(format!("bytes={from}-"), |e| format!("bytes={from}-{}", e - 1));
                     req = req.set("Range", &range);
