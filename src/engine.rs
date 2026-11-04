@@ -146,6 +146,18 @@ pub struct Info {
     /// The browser's own proxy when the extension handed the download over ("http://h:p", "socks5://h:p"
     /// or "pac:URL"), used after a failure with "Use proxy/socks from a browser's request".
     pub browser_proxy: String,
+    /// What yt-dlp gets for a video page (File Info's Quality, Subtitles and Thumbnail).
+    pub yt: YtOpts,
+}
+
+/// A video download's choices: the quality ("" best, "1080"... at most that many lines, "m4a" / "mp3"
+/// only the sound), and the extras saved next to the video.
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct YtOpts {
+    pub quality: String,
+    pub subs: bool,
+    pub thumb: bool,
 }
 
 impl Info {

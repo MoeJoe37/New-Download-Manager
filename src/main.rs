@@ -678,6 +678,28 @@ fn integration(b: &core::Browser) -> &'static str {
 }
 
 /// Stop a download that was started early from "Download File Info" and delete its data.
+/// The rows File Info adds: the name as it reads (`i18n::shown`) when the edit box can't show it so
+/// (right-to-left letters), and a video page's Quality, Subtitles and Thumbnail.
+fn file_info_rows(info: &Info, path: &str) -> (f32, f32) {
+    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let shown = if i18n::shown(&name) != name { 12.0 } else { 0.0 };
+    let video = if info.ytdlp || ytdlp::is_video_page(&info.url) { 17.0 } else { 0.0 };
+    (shown, video)
+}
+
+/// File Info's Quality choices and the `YtOpts::quality` each stands for.
+const QUALITIES: [(&str, &str); 9] = [
+    ("Best", ""),
+    ("2160p", "2160"),
+    ("1440p", "1440"),
+    ("1080p", "1080"),
+    ("720p", "720"),
+    ("480p", "480"),
+    ("360p", "360"),
+    ("Audio only (M4A)", "m4a"),
+    ("Audio only (MP3)", "mp3"),
+];
+
 fn discard(j: &engine::Job) {
     j.stop();
     while j.running() {
@@ -1635,6 +1657,8 @@ enum Dialog {
     /// running while the dialog is open.
     /// `dir`: folder given on the command line (/p), used instead of the category's.
     FileInfo { info: Info, path: String, probe: ProbeSlot, applied: bool, error: String, hint: String, remember: bool, replace: Option<u64>, auto: bool, early: Option<Arc<engine::Job>>, dir: String },
+    /// "Choose videos" of a playlist (File Info's button): each checked one becomes a download like `info`.
+    Playlist { info: Info, entries: Vec<(ytdlp::Entry, bool)> },
     /// "Cancelling an automatically started download" (template 302, 0x5037a0).
     Cancelled { site: String, url: String, by_site: bool, by_addr: bool, dont_show: bool },
     /// "The list of address exceptions" (template 303) and its "Add" box (304).
@@ -4332,7 +4356,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::PanelType { .. } => ("Add file type".into(), tpl(126.0, 49.0)),
             Dialog::PanelSite { .. } => ("Enter site name".into(), tpl(186.0, 52.0)),
             Dialog::PanelMin { .. } => ("Minimum size".into(), tpl(239.0, 137.0)),
-            Dialog::FileInfo { .. } => ("Download File Info".into(), tpl(380.0, 128.0)),
+            Dialog::FileInfo { info, path, .. } => {
+                let (name, video) = file_info_rows(info, path);
+                ("Download File Info".into(), tpl(380.0, 128.0 + name + video))
+            }
+            Dialog::Playlist { .. } => ("Choose videos".into(), tpl(380.0, 230.0)),
             Dialog::Progress { id, details, .. } => {
                 // NDM (0x4a6d80) retitles when the whole percent changes: "N% name", the name alone at 0 and 100
                 let t = self.core.find(*id).map(|j| {
@@ -4532,9 +4560,15 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let name = Path::new(path.as_str()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     *path = Path::new(&self.core.settings().folder_for(&info.category)).join(name).display().to_string();
                 }
-                d.label_r(5.0, 41.0, 54.0, 10.0, "Save As");
-                d.edit(64.0, 39.0, 223.0, 14.0, path, true);
-                if d.button(292.0, 39.0, 16.0, 14.0, "...", true) {
+                let (pv, vq) = file_info_rows(info, path);
+                if pv > 0.0 {
+                    // the name as it reads; the edit box below shows it in the order it is typed
+                    let name = Path::new(path.as_str()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    d.label(66.0, 39.0, 240.0, 10.0, RichText::new(i18n::shown(&name)).strong());
+                }
+                d.label_r(5.0, 41.0 + pv, 54.0, 10.0, "Save As");
+                d.edit(64.0, 39.0 + pv, 223.0, 14.0, path, true);
+                if d.button(292.0, 39.0 + pv, 16.0, 14.0, "...", true) {
                     let p = Path::new(path.as_str());
                     let mut fd = rfd::FileDialog::new();
                     if let Some(dir) = p.parent().filter(|d| d.exists()) {
@@ -4547,12 +4581,33 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         *path = chosen.display().to_string();
                     }
                 }
-                d.group(64.0, 56.0, 244.0, 32.0, "");
-                d.check(69.0, 53.0, 200.0, 13.0, remember, &i18n::trf_os("Remember this path for \"%s\" category", &[&tr_os(&info.category)]));
+                d.group(64.0, 56.0 + pv, 244.0, 32.0, "");
+                d.check(69.0, 53.0 + pv, 200.0, 13.0, remember, &i18n::trf_os("Remember this path for \"%s\" category", &[&tr_os(&info.category)]));
                 let folder = Path::new(path.as_str()).parent().map(|f| f.display().to_string()).unwrap_or_default();
-                d.readonly(69.0, 69.0, 232.0, 14.0, &folder);
-                d.label_r(5.0, 93.0, 54.0, 10.0, "Description");
-                d.edit(64.0, 91.0, 244.0, 14.0, &mut info.description, true);
+                d.readonly(69.0, 69.0 + pv, 232.0, 14.0, &folder);
+                d.label_r(5.0, 93.0 + pv, 54.0, 10.0, "Description");
+                d.edit(64.0, 91.0 + pv, 244.0, 14.0, &mut info.description, true);
+                let mut choose = false;
+                if vq > 0.0 {
+                    let y = 108.0 + pv;
+                    d.label_r(5.0, y + 2.0, 54.0, 10.0, "Quality");
+                    let mut q = QUALITIES.iter().find(|q| q.1 == info.yt.quality).unwrap_or(&QUALITIES[0]).0.to_string();
+                    let names: Vec<&str> = QUALITIES.iter().map(|q| q.0).collect();
+                    if d.combo(64.0, y, 92.0, 14.0, "quality", &mut q, &names, true) {
+                        info.yt.quality = QUALITIES.iter().find(|c| c.0 == q).map_or("", |c| c.1).to_string();
+                        let p = Path::new(path.as_str());
+                        if let Some(n) = p.file_name() {
+                            *path = p.with_file_name(ytdlp::named(&n.to_string_lossy(), &info.yt.quality)).display().to_string();
+                        }
+                    }
+                    d.check(162.0, y + 1.0, 66.0, 12.0, &mut info.yt.subs, "Subtitles");
+                    d.check(230.0, y + 1.0, 70.0, 12.0, &mut info.yt.thumb, "Thumbnail");
+                    let list = ytdlp::playlist(&info.url).filter(|l| !l.is_empty());
+                    if ytdlp::listing(&info.url) {
+                        ctx.request_repaint_after(Duration::from_millis(300));
+                    }
+                    choose = d.button(311.0, y, 64.0, 14.0, "Choose videos...", list.is_some());
+                }
                 if let Some(t) = icon {
                     let r = d.rect(333.0, 28.0, 20.0, 20.0);
                     d.ui.put(Rect::from_center_size(r.center(), Vec2::splat(32.0)), egui::Image::new((t, Vec2::splat(32.0))));
@@ -4564,9 +4619,21 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let r = d.rect(333.0, 72.0, 20.0, 12.0);
                     d.ui.put(r, egui::Spinner::new());
                 }
-                let later = d.button(64.0, 110.0, 74.0, 14.0, "Download Later", true);
-                let now = d.button(149.0, 110.0, 74.0, 14.0, "Start Download", true);
-                let cancel = d.button(234.0, 110.0, 74.0, 14.0, "Cancel", true);
+                let by = 110.0 + pv + vq;
+                let later = d.button(64.0, by, 74.0, 14.0, "Download Later", true);
+                let now = d.button(149.0, by, 74.0, 14.0, "Start Download", true);
+                let cancel = d.button(234.0, by, 74.0, 14.0, "Cancel", true);
+                if let Some(list) = ytdlp::playlist(&info.url).filter(|_| choose) {
+                    // the playlist's videos instead of this one: they go to this folder, with these choices
+                    let mut i = info.clone();
+                    i.folder = Path::new(path.as_str()).parent().map(|f| f.display().to_string()).filter(|f| !f.is_empty()).unwrap_or_else(|| info.folder.clone());
+                    i.ytdlp = true;
+                    if let Some(j) = early.take() {
+                        discard(&j);
+                    }
+                    self.open(Dialog::Playlist { info: i, entries: list.into_iter().map(|e| (e, true)).collect() });
+                    return false;
+                }
                 if later || now {
                     let p = PathBuf::from(path.trim());
                     let mut i = info.clone();
@@ -4585,6 +4652,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     (i.queued, i.queue) = (later, core::MAIN_QUEUE);
                     self.cancels.remove(&i.url);
+                    if i.yt != engine::YtOpts::default() {
+                        // the early start fetched the default formats: start over with the chosen ones
+                        if let Some(j) = early.take() {
+                            discard(&j);
+                        }
+                    }
                     let job = match early.take() {
                         Some(j) => {
                             // keep what was downloaded: stop, move the .part to the chosen name, continue
@@ -4630,6 +4703,63 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         self.cancels.remove(&info.url);
                         let site = url::Url::parse(&info.url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
                         self.open(Dialog::Cancelled { site, url: info.url.clone(), by_site: false, by_addr: true, dont_show: false });
+                    }
+                }
+                !(later || now || cancel)
+            }
+            Dialog::Playlist { info, entries } => {
+                let mut d = dlu::D::new(ui);
+                let n = entries.iter().filter(|e| e.1).count();
+                d.label(7.0, 5.0, 366.0, 10.0, i18n::trf_os("%d of %d videos chosen", &[&n.to_string(), &entries.len().to_string()]));
+                let r = d.rect(7.0, 17.0, 366.0, 186.0);
+                let edge = d.ui.visuals().widgets.noninteractive.bg_stroke;
+                d.ui.painter().rect_stroke(r, 0.0, edge, egui::StrokeKind::Inside);
+                d.ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink(3.0)), |ui| {
+                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                        for (k, (e, on)) in entries.iter_mut().enumerate() {
+                            ui.checkbox(on, RichText::new(format!("{}. {}", k + 1, i18n::shown(&e.title))));
+                        }
+                    });
+                });
+                let y = 210.0;
+                if d.button(7.0, y, 60.0, 14.0, "Select all", true) {
+                    entries.iter_mut().for_each(|e| e.1 = true);
+                }
+                if d.button(72.0, y, 60.0, 14.0, "Select none", true) {
+                    entries.iter_mut().for_each(|e| e.1 = false);
+                }
+                let later = d.button(145.0, y, 74.0, 14.0, "Download Later", n > 0);
+                let now = d.button(224.0, y, 74.0, 14.0, "Start Download", n > 0);
+                let cancel = d.button(303.0, y, 70.0, 14.0, "Cancel", true);
+                if later || now {
+                    let mut ids = Vec::new();
+                    for (e, _) in entries.iter().filter(|e| e.1) {
+                        let fresh = self.core.new_info(&e.url);
+                        let name = ytdlp::named(&engine::sanitize(&format!("{}.mp4", e.title)), &info.yt.quality);
+                        let name = self.core.unique_name(&info.folder, &name);
+                        let i = Info {
+                            folder: info.folder.clone(),
+                            category: info.category.clone(),
+                            description: info.description.clone(),
+                            referrer: info.referrer.clone(),
+                            cookies: info.cookies.clone(),
+                            parent: info.parent.clone(),
+                            browser_proxy: info.browser_proxy.clone(),
+                            yt: info.yt.clone(),
+                            ytdlp: true,
+                            name,
+                            queued: later,
+                            queue: core::MAIN_QUEUE,
+                            ..fresh
+                        };
+                        let job = self.core.add(i);
+                        if now {
+                            self.core.start(&job);
+                        }
+                        ids.push(job.info().id);
+                    }
+                    if later {
+                        self.pick_queue(ids, true);
                     }
                 }
                 !(later || now || cancel)

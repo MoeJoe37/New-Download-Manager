@@ -73,24 +73,27 @@ EXTRA += ["Joining the pieces...", "Getting the audio...", "Moving the file to i
 
 
 def without_tests(src):
-    """The source without its #[test] functions (some files keep a few among their code) and the messages of
-    .expect(...), which only a crash report shows."""
+    """The source without its tests: #[cfg(test)] items (the tests module, helpers kept among the code) and
+    #[test] functions, and without the messages of .expect(...), which only a crash report shows."""
     out, at = [], 0
-    for m in re.finditer(r"#\[test\]", src):
+    for m in re.finditer(r"#\[(?:cfg\(test\)|test)\]", src):
         if m.start() < at:
             continue
-        brace = src.find("{", m.end())
-        if brace < 0:
+        brace, semi = src.find("{", m.end()), src.find(";", m.end())
+        if brace < 0 and semi < 0:
             break
-        depth, i = 0, brace
-        while i < len(src):
-            if src[i] == "{":
-                depth += 1
-            elif src[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            i += 1
+        if semi >= 0 and (brace < 0 or semi < brace):
+            i = semi  # #[cfg(test)] use ...;
+        else:
+            depth, i = 0, brace
+            while i < len(src):
+                if src[i] == "{":
+                    depth += 1
+                elif src[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
         out.append(src[at:m.start()])
         at = i + 1
     out.append(src[at:])
@@ -101,7 +104,7 @@ def strings():
     found = set(EXTRA)
     for f in sorted(glob.glob(os.path.join(ROOT, "src", "*.rs"))):
         src = open(f, encoding="utf-8").read()
-        src = without_tests(src.split("#[cfg(test)]")[0])  # tests aren't UI
+        src = without_tests(src)  # tests aren't UI
         src = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("//"))  # nor are comments
         for m in CALLS.finditer(src):
             s = unescape(m.group(1))

@@ -25,12 +25,12 @@ jobs:
       - run: cargo test --release
       - name: Clippy (no warnings)
         run: cargo clippy --release --all-targets -- -D warnings
-      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg)
+      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg; MP3, subtitles, thumbnail with ffmpeg)
         shell: pwsh
         run: |
           $env:NDM_TEST_YTDLP = Join-Path $env:RUNNER_TEMP 'ndm-test-yt-dlp.exe'
           Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile $env:NDM_TEST_YTDLP
-          cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+          cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1 real_ytdlp_audio_and_extras
       - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
         run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: Language files are up to date
@@ -54,12 +54,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: cargo test --release
-      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg)
+      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg; MP3, subtitles, thumbnail with ffmpeg)
         shell: pwsh
         run: |
           $env:NDM_TEST_YTDLP = Join-Path $env:RUNNER_TEMP 'ndm-test-yt-dlp.exe'
           Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_arm64.exe' -OutFile $env:NDM_TEST_YTDLP
-          cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+          cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1 real_ytdlp_audio_and_extras
       - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
         run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: NDM starts
@@ -90,14 +90,14 @@ jobs:
       - run: cargo test --release
       - name: Clippy (no warnings)
         run: cargo clippy --release --all-targets -- -D warnings
-      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg)
+      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg; MP3, subtitles, thumbnail with ffmpeg)
         shell: bash
         run: |
           asset=yt-dlp_linux
           if [ "$(uname -m)" = aarch64 ]; then asset=yt-dlp_linux_aarch64; fi
           curl --fail --location --retry 3 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$asset" -o /tmp/ndm-test-yt-dlp
           chmod +x /tmp/ndm-test-yt-dlp
-          NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+          NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1 real_ytdlp_audio_and_extras
       - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
         run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: FFmpeg media integration (TS, HLS, MP4, MKV and synchronization)
@@ -161,11 +161,11 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release
-      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg)
+      - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg; MP3, subtitles, thumbnail with ffmpeg)
         run: |
           curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o /tmp/ndm-test-yt-dlp
           chmod +x /tmp/ndm-test-yt-dlp
-          NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1
+          NDM_TEST_YTDLP=/tmp/ndm-test-yt-dlp cargo test --release real_ytdlp_separate_streams -- --ignored --test-threads=1 real_ytdlp_audio_and_extras
       - name: ffmpeg downloads and runs (Downloads -> Set yt-dlp)
         run: cargo test --release real_ffmpeg_install -- --ignored --test-threads=1
       - name: NDM.app and the disk image (Apple Silicon and Intel)
