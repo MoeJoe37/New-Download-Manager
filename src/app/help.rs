@@ -1,5 +1,6 @@
 use crate::i18n::{self, tr, tr_os};
-use crate::{cached_texture, glyph_strip, open_url, UPDATE_REPO};
+use crate::update::UPDATE_REPO;
+use crate::{cached_texture, glyph_strip, open_url};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Rect, RichText, Sense, Vec2};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

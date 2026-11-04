@@ -5,8 +5,10 @@
 mod app;
 mod checksum;
 mod core;
+mod diagnostics;
 mod dlu;
 mod engine;
+mod file_ops;
 mod grabber;
 mod i18n;
 mod net;
@@ -16,6 +18,7 @@ mod stream;
 mod transport;
 #[cfg(test)]
 mod test_support;
+mod update;
 mod ytdlp;
 #[cfg(target_os = "macos")]
 mod mac_capture;
@@ -28,7 +31,10 @@ mod win;
 
 use app::help::{help, help_body, take_help_request};
 use crate::core::{Core, Incoming, Settings, GENERAL};
+use crate::diagnostics::{crash_diagnostics, issue_text};
+use crate::update::{check_update, install_update, Release, UPDATED, UPDATE_REPO};
 use crate::engine::{Info, Probe, Status};
+use crate::file_ops::copy_dir;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 use egui_extras::{Column, TableBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -43,10 +49,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const TITLE: &str = "New Download Manager 1.0";
-/// Where new versions are published: a GitHub "owner/repo" whose latest release carries the new program
-/// (Help -> Check for updates, About -> Check for Update, and the automatic check every 2 weeks).
-/// Empty = no update source; the check says so.
-const UPDATE_REPO: &str = "MoeJoe37/New-Download-Manager";
+
 /// The Linux tray icon is up (its GTK thread owns it): closing the window hides it instead of quitting.
 static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The main window's X11 window (0 on Wayland, or before the first frame).
@@ -55,339 +58,11 @@ static MAIN_XID: AtomicIsize = AtomicIsize::new(0);
 // The Linux tray's Speed Limiter tick and its other items with their English text, on the GTK thread.
 #[cfg(target_os = "linux")]
 thread_local!(static LIMIT_ITEM: std::cell::RefCell<Option<(CheckMenuItem, Vec<(MenuItem, &'static str)>)>> = const { std::cell::RefCell::new(None) });
-/// First argument of the copy started by "Update now".
-const UPDATED: &str = "/updated";
-/// The message when the release information can't be read.
-const UPDATE_INVALID: &str = "Check for updates failed, because update information is invalid.\r\nIf you use wi-fi that requires logging in in the browser, please log in before checking for updates";
-
-/// A newer release: its version, notes, this platform's program to download ("" = none attached) and
-/// the release's web page.
-#[derive(Clone, Debug, PartialEq)]
-struct Release {
-    version: String,
-    notes: String,
-    exe: String,
-    page: String,
-}
-
-/// Installed by the setup (its uninstaller sits next to the exe): then an update runs the new setup, which also
-/// brings the new language, help and extension files.
-fn installed() -> bool {
-    cfg!(windows) && std::env::current_exe().is_ok_and(|e| e.with_file_name("unins000.exe").exists())
-}
-
-/// How NDM was installed on Linux, which decides the release file "Update now" fetches and how it
-/// installs it.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum LinuxInstall {
-    AppImage,
-    Deb,
-    Rpm,
-    /// The .tar.gz, unpacked where its user can write.
-    Folder,
-}
-
-fn linux_install() -> LinuxInstall {
-    static KIND: std::sync::OnceLock<LinuxInstall> = std::sync::OnceLock::new();
-    *KIND.get_or_init(|| {
-        if std::env::var_os("APPIMAGE").is_some() {
-            return LinuxInstall::AppImage;
-        }
-        let exe = std::env::current_exe().unwrap_or_default();
-        match win::package_owner(&exe) {
-            Some("deb") => LinuxInstall::Deb,
-            Some(_) => LinuxInstall::Rpm,
-            None => LinuxInstall::Folder,
-        }
-    })
-}
-
-/// The release file that replaces this program, for this system and processor: the setup (or a loose
-/// ndm.exe) on Windows; on Linux the AppImage, the .deb, the .rpm or the .tar.gz, whichever this copy came as;
-/// on macOS the disk image. ARM builds' names never match what NDM 1.x looks for (it would take them for
-/// its own): NDM-ARM64-Setup-*.exe, ndm-arm64.exe, *aarch64*, *_arm64.deb.
-fn update_asset(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    let arm = cfg!(target_arch = "aarch64");
-    if cfg!(target_os = "macos") {
-        return n.ends_with(".dmg") && n.contains("macos");
-    }
-    if !cfg!(windows) {
-        let (deb, rpm, arch) = if arm { ("_arm64.deb", ".aarch64.rpm", "aarch64") } else { ("_amd64.deb", ".x86_64.rpm", "x86_64") };
-        match linux_install() {
-            LinuxInstall::AppImage => n.ends_with(".appimage") && n.contains(arch),
-            LinuxInstall::Deb => n.ends_with(deb),
-            LinuxInstall::Rpm => n.ends_with(rpm),
-            LinuxInstall::Folder => n.starts_with("ndm-") && n.ends_with(&format!("-{arch}.tar.gz")),
-        }
-    } else if installed() {
-        n.starts_with(if arm { "ndm-arm64-setup" } else { "ndm-setup" }) && n.ends_with(".exe")
-    } else {
-        n == if arm { "ndm-arm64.exe" } else { "ndm.exe" }
-    }
-}
-
-#[test]
-fn update_assets() {
-    let names = ["NDM-Setup-2.0.0.exe", "NDM-ARM64-Setup-2.0.0.exe", "ndm.exe", "ndm-arm64.exe", "NDM-x86_64.AppImage", "NDM-aarch64.AppImage", "ndm_2.0.0_amd64.deb", "ndm_2.0.0_arm64.deb",
-        "ndm-2.0.0-1.x86_64.rpm", "ndm-2.0.0-1.aarch64.rpm", "ndm-2.0.0-x86_64.tar.gz", "ndm-2.0.0-aarch64.tar.gz", "NDM-2.0.0-macOS.dmg", "NDM-2.0.0-windows-x64.zip"];
-    // exactly one file is this build's (whatever way it was installed)
-    assert_eq!(names.iter().filter(|n| update_asset(n)).count(), 1, "{:?}", names.iter().filter(|n| update_asset(n)).collect::<Vec<_>>());
-    // what NDM 1.x looks for on x64 Windows (setup or loose exe) and x86_64 Linux never matches an ARM file
-    let old = |n: &str| {
-        let n = n.to_ascii_lowercase();
-        (n.starts_with("ndm-setup") && n.ends_with(".exe")) || n == "ndm.exe" || (n.ends_with(".appimage") && n.contains("x86_64")) || n.ends_with("_amd64.deb") || n.ends_with(".x86_64.rpm")
-            || (n.starts_with("ndm-") && n.ends_with("-x86_64.tar.gz"))
-    };
-    assert!(names.iter().filter(|n| old(n)).all(|n| !n.to_ascii_lowercase().contains("arm") && !n.contains("aarch64")));
-}
-
-/// The latest release on GitHub, if newer than this build (None = this is the latest).
-fn check_update(agent: &ureq::Agent) -> Result<Option<Release>, String> {
-    if UPDATE_REPO.is_empty() {
-        return Err(i18n::tr(UPDATE_INVALID)); // no update source in this build
-    }
-    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
-    let v: serde_json::Value = agent.get(&url).set("Accept", "application/vnd.github+json").call().map_err(|e| e.to_string())?.into_string().map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
-    let tag = v["tag_name"].as_str().unwrap_or("").trim_start_matches(['v', 'V']).to_string();
-    let exe = v["assets"].as_array().into_iter().flatten().filter(|a| a["name"].as_str().is_some_and(update_asset)).find_map(|a| a["browser_download_url"].as_str()).unwrap_or("").to_string();
-    if tag.is_empty() {
-        return Err(i18n::tr(UPDATE_INVALID));
-    }
-    let page = v["html_url"].as_str().map_or_else(|| format!("https://github.com/{UPDATE_REPO}/releases/latest"), str::to_string);
-    Ok(newer(&tag, env!("CARGO_PKG_VERSION")).then(|| Release { version: tag, notes: v["body"].as_str().unwrap_or("").to_string(), exe, page }))
-}
-
-/// "1.10.0" > "1.9.2": dotted numbers compared field by field.
-fn newer(a: &str, b: &str) -> bool {
-    let parse = |s: &str| s.split(['.', '-']).map(|x| x.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parse(a) > parse(b)
-}
-
-#[test]
-fn versions() {
-    assert!(newer("1.10.0", "1.9.2") && newer("2", "1.9") && !newer("1.0.0", "1.0.0") && !newer("0.9", "1.0.0"));
-}
-
-/// Update now: download the release's program, swap it for the running one (Windows lets a running exe be
-/// renamed, Linux replaces the AppImage's file) and start it. `got` = (bytes, total) for the progress bar.
-fn install_update(agent: &ureq::Agent, url: &str, got: &std::sync::atomic::AtomicU64, total: &std::sync::atomic::AtomicU64) -> Result<(), String> {
-    use std::io::Read;
-    // an AppImage runs from a temporary mount: replace the AppImage file itself
-    let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).map_or_else(std::env::current_exe, Ok).map_err(|e| e.to_string())?;
-    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
-    total.store(resp.header("Content-Length").and_then(|l| l.parse().ok()).unwrap_or(0), Relaxed);
-    let (mut r, mut data, mut buf) = (resp.into_reader(), Vec::new(), [0u8; 65536]);
-    loop {
-        let n = r.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        data.extend_from_slice(&buf[..n]);
-        got.store(data.len() as u64, Relaxed);
-    }
-    #[cfg(target_os = "macos")]
-    return mac_update(&exe, &data);
-    #[allow(unreachable_code)]
-    let kind = if cfg!(windows) { None } else { Some(linux_install()) };
-    let magic: &[u8] = match kind {
-        None => b"MZ",
-        Some(LinuxInstall::AppImage) => b"\x7fELF",
-        Some(LinuxInstall::Deb) => b"!<arch>",
-        Some(LinuxInstall::Rpm) => b"\xed\xab\xee\xdb",
-        Some(LinuxInstall::Folder) => b"\x1f\x8b",
-    };
-    if data.len() < 1024 || !data.starts_with(magic) {
-        return Err(String::new()); // not the right file: just "cannot download the update file"
-    }
-    match kind {
-        Some(LinuxInstall::Deb | LinuxInstall::Rpm) => {
-            // the system's package manager installs it, after the desktop asks for the password
-            let file = std::env::temp_dir().join(if kind == Some(LinuxInstall::Deb) { "ndm-update.deb" } else { "ndm-update.rpm" });
-            std::fs::write(&file, &data).map_err(|e| e.to_string())?;
-            win::install_package(&file)?;
-            std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        Some(LinuxInstall::Folder) => {
-            update_folder(&data, exe.parent().ok_or("no folder")?)?;
-            std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        _ => {}
-    }
-    if installed() {
-        // the setup waits for this copy to exit, installs over it and starts the new version
-        let setup = std::env::temp_dir().join("NDM-Setup.exe");
-        std::fs::write(&setup, &data).map_err(|e| e.to_string())?;
-        let log = format!("/LOG={}", setup.with_extension("log").display());
-        std::process::Command::new(&setup).args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", &log, &format!("/NDMPID={}", std::process::id())]).spawn().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    let new = exe.with_extension("new.exe");
-    std::fs::write(&new, &data).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-    }
-    let old = exe.with_extension("old.exe");
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|e| e.to_string())?;
-    if let Err(e) = std::fs::rename(&new, &exe) {
-        let _ = std::fs::rename(&old, &exe); // put the old one back
-        return Err(e.to_string());
-    }
-    std::process::Command::new(&exe).arg(UPDATED).spawn().map_err(|e| e.to_string())?;
-    Ok(())
-}
-/// macOS: the disk image's NDM.app takes the place of the one this copy runs from (the old one is kept as
-/// "<name>.old" until the next start), then the new one starts.
-#[cfg(target_os = "macos")]
-fn mac_update(exe: &Path, dmg: &[u8]) -> Result<(), String> {
-    // a disk image ends with its "koly" trailer
-    if dmg.len() < 4096 || !dmg[dmg.len() - 512..].starts_with(b"koly") {
-        return Err(String::new());
-    }
-    let bundle = exe.ancestors().find(|a| a.extension().is_some_and(|e| e == "app")).ok_or("NDM isn't running from its app: download the new version from the release page")?;
-    let file = std::env::temp_dir().join("NDM-update.dmg");
-    let mnt = std::env::temp_dir().join(format!("ndm-update-{}", std::process::id()));
-    std::fs::write(&file, dmg).map_err(|e| e.to_string())?;
-    let attached = std::process::Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"]).arg(&mnt).arg(&file).status().is_ok_and(|s| s.success());
-    if !attached {
-        return Err("the update file is damaged".into());
-    }
-    let result = (|| -> Result<(), String> {
-        let app = std::fs::read_dir(&mnt).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "app")).ok_or("the update file is damaged")?;
-        let old = bundle.with_extension("old");
-        let _ = std::fs::remove_dir_all(&old);
-        std::fs::rename(bundle, &old).map_err(|e| format!("{e}: {}", bundle.display()))?;
-        // ditto keeps the app's links, permissions and signature
-        if !std::process::Command::new("ditto").arg(&app).arg(bundle).status().is_ok_and(|s| s.success()) {
-            let _ = std::fs::remove_dir_all(bundle);
-            let _ = std::fs::rename(&old, bundle); // put the old one back
-            return Err("the new version couldn't be copied".into());
-        }
-        Ok(())
-    })();
-    let _ = std::process::Command::new("hdiutil").arg("detach").arg(&mnt).arg("-quiet").status();
-    let _ = std::fs::remove_file(&file);
-    result?;
-    std::process::Command::new("open").arg("-n").arg(bundle).args(["--args", UPDATED]).spawn().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// The .tar.gz's update: unpacked beside the old folder, then each file put in place (the running program
-/// by renaming over it, which Linux allows).
-fn update_folder(tgz: &[u8], dir: &Path) -> Result<(), String> {
-    let tmp = dir.with_file_name(format!(".ndm-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    let file = tmp.join("ndm.tar.gz");
-    std::fs::write(&file, tgz).map_err(|e| e.to_string())?;
-    let ok = std::process::Command::new("tar").arg("-xzf").arg(&file).arg("-C").arg(&tmp).status().is_ok_and(|s| s.success());
-    let new = std::fs::read_dir(&tmp).ok().into_iter().flatten().flatten().map(|e| e.path()).find(|p| p.join("ndm").is_file());
-    let result = match new.filter(|_| ok) {
-        None => Err("the update file is damaged".to_string()),
-        Some(new) => (|| -> std::io::Result<()> {
-            for e in std::fs::read_dir(&new)? {
-                let e = e?;
-                let target = dir.join(e.file_name());
-                if e.file_type()?.is_dir() {
-                    let _ = std::fs::remove_dir_all(&target);
-                    copy_dir(&e.path(), &target)?;
-                } else {
-                    std::fs::rename(e.path(), &target)?;
-                }
-            }
-            Ok(())
-        })()
-        .map_err(|e| e.to_string()),
-    };
-    let _ = std::fs::remove_dir_all(&tmp);
-    result
-}
 
 const DARK_DLG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
 const DARK_TREE: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 const BAR: Color32 = Color32::from_rgb(38, 120, 220);
-
-/// A problem report's title and text for GitHub (in English, for NDM's developers): what to fill in, NDM's
-/// version, the system, and the language.
-fn issue_text(version: &str, lang: &str) -> (String, String) {
-    let lang = if lang.is_empty() { "en (English)".to_string() } else { lang.to_string() };
-    let text = format!(
-        "### What happened?\n\n\n### What did you expect?\n\n\n### Steps to reproduce\n1. \n\n### System\n- NDM {version}\n- {} {}\n- Language: {lang}\n",
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
-    (format!("[{version}] "), text)
-}
-
-const CRASH_MODULES: &[&str] = &[
-    "app::help", "checksum", "core", "dlu", "engine", "grabber", "i18n", "linux", "mac", "mac_capture",
-    "main", "media", "net", "posix", "remux", "stream", "transport", "win", "ytdlp",
-];
-
-fn crash_location(file: &str, line: u32) -> String {
-    let module = file.strip_prefix("src/").or_else(|| file.strip_prefix("src\\"))
-        .and_then(|name| name.strip_suffix(".rs")).map(|name| name.replace(['/', '\\'], "::"));
-    match module.filter(|name| CRASH_MODULES.contains(&name.as_str())) {
-        Some(name) => format!("{name}:{line}"),
-        None => "unavailable".into(),
-    }
-}
-
-fn crash_diagnostics(store: &Path) -> String {
-    use std::io::Read;
-    let mut report = String::new();
-    for (file, label) in [("crash.log", "Application crash"), ("renderer-crash.log", "Renderer crash")] {
-        let path = store.with_file_name(file);
-        if !path.is_file() { continue; }
-        let Ok(file) = std::fs::File::open(path) else { continue };
-        let mut prefix = Vec::new();
-        if file.take(128).read_to_end(&mut prefix).is_err() { continue; }
-        let header = prefix.split(|byte| *byte == b'\n').next()
-            .and_then(|line| std::str::from_utf8(line).ok())
-            .and_then(|line| line.strip_prefix("NDM crash location "))
-            .and_then(|line| line.rsplit_once(':'))
-            .and_then(|(module, line)| {
-                CRASH_MODULES.contains(&module).then_some(())?;
-                Some((module, line.parse::<u32>().ok()?))
-            });
-        if report.is_empty() {
-            report.push_str("\n### Local diagnostics\n");
-        }
-        if let Some((module, line)) = header {
-            report.push_str(&format!("- {label} recorded (module {module}, line {line}).\n"));
-        } else {
-            report.push_str(&format!("- {label} recorded.\n"));
-        }
-    }
-    report
-}
-
-#[test]
-fn problem_report_excludes_raw_crash_data() {
-    let dir = std::env::temp_dir().join(format!("ndm-crash-report-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = dir.join("state.json");
-    assert!(crash_diagnostics(&store).is_empty());
-    assert_eq!(crash_location("src/engine.rs", 42), "engine:42");
-    assert_eq!(crash_location("src/app/help.rs", 9), "app::help:9");
-    assert_eq!(crash_location(r"src\app\help.rs", 9), "app::help:9");
-    assert_eq!(crash_location("src/app/private.rs", 9), "unavailable");
-    assert_eq!(crash_location(r"C:\private\engine.rs", 42), "unavailable");
-    std::fs::write(dir.join("crash.log"),
-        "NDM crash location engine:42\nhttps://user:secret@example.com/private?token=123\nCookie: session=private\n/home/user/file").unwrap();
-    std::fs::write(dir.join("renderer-crash.log"), "NDM crash location private:15\nAuthorization: Bearer secret").unwrap();
-    assert_eq!(crash_diagnostics(&store),
-        "\n### Local diagnostics\n- Application crash recorded (module engine, line 42).\n- Renderer crash recorded.\n");
-    std::fs::write(dir.join("renderer-crash.log"), "NDM crash location app::help:9\nprivate renderer trace").unwrap();
-    assert!(crash_diagnostics(&store).contains("- Renderer crash recorded (module app::help, line 9)."));
-    std::fs::remove_dir_all(dir).unwrap();
-}
 
 /// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon.
 fn tray_start() -> bool {
@@ -395,12 +70,7 @@ fn tray_start() -> bool {
 }
 
 fn main() -> eframe::Result {
-    // no console: a panic would vanish without a trace, so it goes to crash.log next to state.json
-    std::panic::set_hook(Box::new(|p| {
-        let bt = std::backtrace::Backtrace::force_capture();
-        let location = p.location().map_or_else(|| "unavailable".into(), |loc| crash_location(loc.file(), loc.line()));
-        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("NDM crash location {location}\n{p}\n{bt}"));
-    }));
+    diagnostics::install_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if win::is_host_launch(&args) {
         win::native_host(TITLE);
@@ -912,19 +582,7 @@ impl App {
     }
 }
 
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for e in std::fs::read_dir(from)? {
-        let e = e?;
-        let target = to.join(e.file_name());
-        if e.file_type()?.is_dir() {
-            copy_dir(&e.path(), &target)?;
-        } else {
-            std::fs::copy(e.path(), target)?;
-        }
-    }
-    Ok(())
-}
+
 
 #[test]
 fn extension_copy_refreshes() {
@@ -2725,7 +2383,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         }
         self.core.save();
     }
-
 
     fn rows(&self) -> Vec<Row> {
         let grab_urls: HashSet<String> = match &self.cat {
@@ -8431,28 +8088,6 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn folder_update_replaces_files() {
-        let base = std::env::temp_dir().join(format!("ndm-test-upd-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let (old, src) = (base.join("ndm-1.0"), base.join("src/ndm-1.1"));
-        for (d, v) in [(&old, "old"), (&src, "new")] {
-            std::fs::create_dir_all(d.join("help")).unwrap();
-            std::fs::write(d.join("ndm"), v).unwrap();
-            std::fs::write(d.join("help/index.htm"), v).unwrap();
-        }
-        std::fs::write(old.join("help/gone.htm"), "old").unwrap();
-        std::fs::write(old.join("state-like.json"), "kept").unwrap();
-        let tgz = base.join("u.tar.gz");
-        assert!(std::process::Command::new("tar").arg("-czf").arg(&tgz).arg("-C").arg(base.join("src")).arg("ndm-1.1").status().unwrap().success());
-        update_folder(&std::fs::read(&tgz).unwrap(), &old).unwrap();
-        let read = |p: &str| std::fs::read_to_string(old.join(p)).unwrap();
-        assert_eq!((read("ndm").as_str(), read("help/index.htm").as_str(), read("state-like.json").as_str()), ("new", "new", "kept"));
-        assert!(!old.join("help/gone.htm").exists(), "folders are replaced whole");
-        assert!(update_folder(b"\x1f\x8bnot really", &old).is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
     fn close_rules() {
         assert_eq!(close_action(true, false), Close::Hide);
         assert_eq!(close_action(true, true), Close::Hide);
@@ -8508,12 +8143,4 @@ fn batch_ranges() {
     assert_eq!(batch_range(true, 0, 0, 1, "x", "z"), ["x", "y", "z"]);
     assert!(batch_range(true, 0, 0, 1, "a", "Z").is_empty());
     assert!(batch_range(false, 5, 1, 1, "", "").is_empty());
-}
-
-#[test]
-fn problem_report() {
-    let (title, text) = issue_text("2.9.0", "ndm_ar");
-    assert_eq!(title, "[2.9.0] ");
-    assert!(text.contains("- NDM 2.9.0\n") && text.contains("Language: ndm_ar") && text.contains(std::env::consts::OS));
-    assert!(issue_text("2.9.0", "").1.contains("Language: en (English)"));
 }
