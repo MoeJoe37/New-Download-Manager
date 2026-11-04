@@ -186,7 +186,9 @@ fn queues() {
 
     // synchronization: a finished file stays queued; each pass checks it with the server and the
     // queue waits for the check, then starts again after "Start again every"
-    let mut i = core.new_info("http://127.0.0.1:9/a.bin");
+    // Keep the probe pending until the test observes it. Closing the listener releases the request.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut i = core.new_info(&format!("http://{}/a.bin", listener.local_addr().unwrap()));
     (i.status, i.size) = (Status::Complete, Some(1));
     let id = i.id;
     core.add(i);
@@ -200,7 +202,10 @@ fn queues() {
     core.start_queue(1);
     core.tick_queue();
     assert!(core.queue_running(1) && core.checking.lock().unwrap().contains(&id));
+    drop(listener);
+    let deadline = Instant::now() + Duration::from_secs(5);
     while core.checking.lock().unwrap().contains(&id) {
+        assert!(Instant::now() < deadline, "synchronization probe did not finish");
         thread::sleep(Duration::from_millis(20));
     }
     core.tick_queue();
