@@ -567,3 +567,10 @@ impl App {
         !d.button(183.0, 143.0, 54.0, 14.0, "Close", true)
     }
 }
+
+/// The height (DLU) of a message window's text: room for about 55 characters a line, at least the 38 of NDM's
+/// own message windows (translations run longer, so the translated text is measured).
+pub(in crate::app) fn info_height(text: &str) -> f32 {
+    let lines: usize = tr(text).split('\n').map(|l| l.chars().count() / 55 + 1).sum();
+    (lines as f32 * 9.0).max(38.0)
+}

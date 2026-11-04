@@ -342,3 +342,34 @@ impl App {
         !(add || d.button(247.0, 217.0, 50.0, 14.0, "Cancel", true))
     }
 }
+
+/// A Scheduler time as typed: "11:00:00 PM", "11:00 PM", "23:00:00" or "23:00".
+pub(in crate::app) fn sched_time(s: &str) -> Option<chrono::NaiveTime> {
+    let s = s.trim().to_uppercase();
+    ["%I:%M:%S %p", "%I:%M %p", "%H:%M:%S", "%H:%M"].iter().find_map(|f| chrono::NaiveTime::parse_from_str(&s, f).ok())
+}
+
+/// "Download limits" node in the Scheduler's queue tree.
+const LIMITS: u32 = u32::MAX;
+
+/// Batch download's replacements for `*`: numbers `from..=to` padded to `width`, or letters `lf..=lt`
+/// (one letter each, same case). Empty when the range is invalid.
+pub(in crate::app) fn batch_range(letters: bool, from: u32, to: u32, width: u32, lf: &str, lt: &str) -> Vec<String> {
+    let one = |s: &str| {
+        let mut c = s.trim().chars();
+        c.next().filter(|x| x.is_ascii_alphabetic() && c.next().is_none())
+    };
+    match (letters, one(lf), one(lt)) {
+        (false, ..) => (from..=to).map(|n| format!("{n:0w$}", w = width as usize)).collect(),
+        (true, Some(a), Some(b)) if a.is_ascii_lowercase() == b.is_ascii_lowercase() => (a..=b).map(String::from).collect(),
+        _ => vec![],
+    }
+}
+
+#[test]
+fn batch_ranges() {
+    assert_eq!(batch_range(false, 8, 10, 3, "", ""), ["008", "009", "010"]);
+    assert_eq!(batch_range(true, 0, 0, 1, "x", "z"), ["x", "y", "z"]);
+    assert!(batch_range(true, 0, 0, 1, "a", "Z").is_empty());
+    assert!(batch_range(false, 5, 1, 1, "", "").is_empty());
+}

@@ -604,3 +604,98 @@ impl App {
         self.refreshing.is_some()
     }
 }
+
+/// RichText keeps the filename's already-shaped text out of the translation and bidi pass in D::label.
+fn file_info_name(name: &str) -> RichText {
+    RichText::new(i18n::shown(name)).strong()
+}
+
+#[test]
+fn file_info_renders_both_logical_hebrew_names() {
+    let ctx = egui::Context::default();
+    let output = ctx.run(egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 200.0))),
+        ..Default::default()
+    }, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut d = dlu::D::new(ui);
+            d.label(7.0, 7.0, 200.0, 12.0, file_info_name("שלום"));
+            d.label(7.0, 24.0, 200.0, 12.0, file_info_name("םולש"));
+        });
+    });
+    let rendered: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) => Some(text.galley.text()),
+        _ => None,
+    }).collect();
+    assert_eq!(rendered, ["םולש", "שלום"]);
+}
+
+/// The rows File Info adds: the name as it reads (`i18n::shown`) when the edit box can't show it so
+/// (right-to-left letters), and a video page's Quality, Subtitles and Thumbnail.
+pub(in crate::app) fn file_info_rows(info: &Info, path: &str) -> (f32, f32) {
+    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let shown = if i18n::shown(&name) != name { 12.0 } else { 0.0 };
+    let video = if info.ytdlp || ytdlp::is_video_page(&info.url) { 17.0 } else { 0.0 };
+    (shown, video)
+}
+
+/// File Info's Quality choices and the `YtOpts::quality` each stands for.
+const QUALITIES: [(&str, &str); 9] = [
+    ("Best", ""),
+    ("2160p", "2160"),
+    ("1440p", "1440"),
+    ("1080p", "1080"),
+    ("720p", "720"),
+    ("480p", "480"),
+    ("360p", "360"),
+    ("Audio only (M4A)", "m4a"),
+    ("Audio only (MP3)", "mp3"),
+];
+
+/// "Start positions and download progress by connections" bar: one filled span per segment.
+/// "Start positions and download progress by connections" (static 1179). With NDM's bar bitmaps (358 ends,
+/// 359 background, 361 downloaded, 362 start marker: 15 px columns stretched across) it is drawn
+/// draws it: the background, each connection's downloaded run in blue and a red mark where it started.
+fn segment_bar(ui: &mut egui::Ui, info: &Info, h: f32, bars: Option<[egui::TextureId; 4]>) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
+    let c = dlu::pal(ui);
+    let p = ui.painter();
+    if let Some([ends, bg, blue, red]) = bars {
+        let ppp = ui.ctx().pixels_per_point();
+        let snap = |v: f32| (v * ppp).round() / ppp;
+        let px = 1.0 / ppp;
+        let top = snap(rect.center().y - 7.5 / ppp);
+        let bar = egui::Rect::from_min_max(egui::pos2(snap(rect.left()), top), egui::pos2(snap(rect.right()), top + 15.0 / ppp));
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        let col = |t: egui::TextureId, a: f32, b: f32| p.image(t, egui::Rect::from_x_y_ranges(snap(a)..=snap(b).max(snap(a) + px), bar.y_range()), uv, Color32::WHITE);
+        col(bg, bar.left(), bar.right());
+        col(ends, bar.left(), bar.left() + px);
+        col(ends, bar.right() - px, bar.right());
+        let Some(size) = info.size.filter(|s| *s > 0) else { return };
+        let inner = bar.shrink2(Vec2::new(px, 0.0));
+        // the file's start at the right in right-to-left languages, as the progress bar fills
+        let rtl = i18n::is_rtl();
+        let x = |b: u64| if rtl { inner.right() - inner.width() * (b as f32 / size as f32) } else { inner.left() + inner.width() * (b as f32 / size as f32) };
+        let span = |t: egui::TextureId, a: f32, b: f32| col(t, a.min(b), a.max(b));
+        let dir = if rtl { -px } else { px };
+        for s in &info.segs {
+            let done = if info.status == Status::Complete { s.stop.unwrap_or(s.next) } else { s.next };
+            if done > s.start {
+                span(blue, x(s.start) + dir, x(done));
+            }
+            span(red, x(s.start), x(s.start) + dir);
+        }
+        return;
+    }
+    p.rect_filled(rect, 0.0, c.field);
+    p.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, c.edge), egui::StrokeKind::Inside);
+    let Some(size) = info.size.filter(|s| *s > 0) else { return };
+    let inner = rect.shrink(1.0);
+    let rtl = i18n::is_rtl();
+    let x = |b: u64| if rtl { inner.right() - inner.width() * (b as f32 / size as f32) } else { inner.left() + inner.width() * (b as f32 / size as f32) };
+    for s in &info.segs {
+        let done = if info.status == Status::Complete { s.stop.unwrap_or(s.next) } else { s.next };
+        let (a, b) = (x(s.start), x(done));
+        p.rect_filled(egui::Rect::from_x_y_ranges(a.min(b)..=a.max(b), inner.y_range()), 0.0, BAR);
+    }
+}

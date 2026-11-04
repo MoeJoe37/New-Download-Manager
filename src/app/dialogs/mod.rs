@@ -1,6 +1,9 @@
 mod download;
 mod options;
-mod scheduler;
+pub(super) mod scheduler;
+
+use self::download::file_info_rows;
+use self::misc::info_height;
 mod playlist;
 #[cfg(target_os = "macos")]
 mod mac;
