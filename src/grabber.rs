@@ -720,7 +720,7 @@ mod tests {
                 let mut line = String::new();
                 let mut r = BufReader::new(&s);
                 r.read_line(&mut line).unwrap();
-                while r.read_line(&mut String::new()).map_or(false, |n| n > 2) {}
+                while r.read_line(&mut String::new()).is_ok_and(|n| n > 2) {}
                 let body = match line.split(' ').nth(1).unwrap() {
                     "/" => r#"<a href="a.zip">A</a><a href="sub/">next</a><a href="page.txt">t</a>"#,
                     "/sub/" => r#"<a href="b.zip">B</a><a href="deeper.html">d</a>"#,

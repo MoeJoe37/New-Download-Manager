@@ -154,7 +154,7 @@ pub(crate) fn probe_transport(
         .take(SAMPLE)
         .read_to_end(&mut bytes)
         .map_err(|err| err.to_string())?;
-    if bytes.get(0) != Some(&0x47) || bytes.get(188) != Some(&0x47) {
+    if bytes.first() != Some(&0x47) || bytes.get(188) != Some(&0x47) {
         return Err("The source is not a supported transport stream".into());
     }
     bytes.truncate(bytes.len() - bytes.len() % 188);

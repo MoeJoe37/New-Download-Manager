@@ -44,7 +44,7 @@ pub fn list() -> Vec<(String, String)> {
         let name = header.split_once(' ').map_or(header.clone(), |h| h.1.trim().to_string());
         Some((stem.clone(), if rtl_stem(&stem) { rtl(&name) } else { name }))
     }).collect();
-    v.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    v.sort_by_key(|a| a.1.to_lowercase());
     v
 }
 
@@ -204,10 +204,27 @@ fn message(s: &str) -> Option<(&'static str, Vec<String>)> {
 /// left to right, as Windows lays out an Arabic or Hebrew file name in an English window ("فيلم.mp4" reads
 /// its Arabic right to left, then ".mp4"). Text with no right-to-left letters stays as it is.
 fn visual(t: &str) -> String {
-    if !unshaped(t) {
+    if !unshaped(t) || laid_out(t) {
         return t.to_string();
     }
-    if rtl_stem(&current()) { rtl(t) } else { reorder(t, unicode_bidi::Level::ltr()) }
+    let out = if rtl_stem(&current()) { rtl(t) } else { reorder(t, unicode_bidi::Level::ltr()) };
+    // Hebrew has no joined forms: laid out, it still looks unshaped, and a label put together from laid-out
+    // pieces (`line`) goes through here again. The texts made here are remembered so that isn't reversed back.
+    if unshaped(&out) && out != t {
+        let mut done = LAID_OUT.lock().unwrap();
+        if done.len() >= 4096 {
+            done.clear();
+        }
+        done.insert(out.clone());
+    }
+    out
+}
+
+/// Display-order texts `visual` made (see there).
+static LAID_OUT: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+fn laid_out(t: &str) -> bool {
+    LAID_OUT.lock().unwrap().contains(t)
 }
 
 /// A file name, folder, address or description as it is shown (the download list, File Info, Properties):
@@ -394,5 +411,16 @@ mod tests {
         // the letters come out joined (presentation forms), not the separate letters
         assert!(!unshaped(&ltr("فيلم.mp4")), "joined forms");
         assert!(unshaped("فيلم.mp4"));
+    }
+
+    /// A label put together from a laid-out piece (File Info's "Save To:" line) is laid out once, not twice:
+    /// a Hebrew folder name isn't reversed back.
+    #[test]
+    fn laid_out_text_is_not_laid_out_again() {
+        let once = shown("Save To: /home/שלום");
+        assert_eq!(once, "Save To: /home/םולש");
+        assert_eq!(shown(&once), once);
+        let arabic = shown("Save To: /home/فيلم");
+        assert_eq!(shown(&arabic), arabic);
     }
 }

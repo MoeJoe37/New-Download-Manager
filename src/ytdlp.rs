@@ -217,7 +217,7 @@ fn cookie_header(list: &str) -> String {
 fn picked(v: &serde_json::Value) -> Option<Vec<Stream>> {
     match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
         Some(r) => r.iter().map(Stream::of).collect(),
-        None => Some(vec![Stream::of(&v)?]),
+        None => Some(vec![Stream::of(v)?]),
     }
 }
 
@@ -1047,17 +1047,20 @@ fn unpack_ffmpeg(archive: &Path, file: &str, dir: &Path) -> Result<(), String> {
 }
 
 /// Downloads (or brings up to date) yt-dlp and Deno in NDM's tools folder, each checked against the SHA-256
-/// its release lists, and ffmpeg when there is none yet; makes sure the folder is on PATH. `got` / `total`:
-/// progress for the window. Returns yt-dlp's version.
-pub fn install(agent: &ureq::Agent, got: &AtomicU64, total: &AtomicU64) -> Result<String, String> {
+/// its release lists, and (`with_ffmpeg`: Downloads -> Set yt-dlp, asked for) ffmpeg when there is none yet;
+/// makes sure the folder is on PATH. The daily update leaves ffmpeg out: it is 100+ MB, and comes only when
+/// the user asks for it. `got` / `total`: progress for the window. Returns yt-dlp's version.
+pub fn install(agent: &ureq::Agent, got: &AtomicU64, total: &AtomicU64, with_ffmpeg: bool) -> Result<String, String> {
     let dir = tools_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fetch_ytdlp(agent, YTDLP_LATEST, &dir, got, total)?;
     fetch_deno(agent, DENO_LATEST, &dir, got, total)?;
     // yt-dlp works without ffmpeg (NDM joins the usual formats itself): it is on PATH before ffmpeg's turn
     add_to_path(&dir);
-    fetch_ffmpeg(agent, &dir, got, total)?;
-    add_to_path(&dir);
+    if with_ffmpeg {
+        fetch_ffmpeg(agent, &dir, got, total)?;
+        add_to_path(&dir);
+    }
     Ok(version(&dir.join(exe_file("yt-dlp"))))
 }
 
@@ -1109,7 +1112,7 @@ pub fn keep_updated(core: std::sync::Arc<crate::core::Core>) {
             if due && tools_dir().join(exe_file("yt-dlp")).is_file() {
                 core.settings().ytdlp_checked = now;
                 let (got, total) = (AtomicU64::new(0), AtomicU64::new(0));
-                if let Err(e) = install(&core.agent(YTDLP_LATEST), &got, &total) {
+                if let Err(e) = install(&core.agent(YTDLP_LATEST), &got, &total, false) {
                     eprintln!("yt-dlp update: {e}");
                 }
             }
@@ -1451,7 +1454,7 @@ mod tests {
         let d = std::fs::read(dir.join("clip.mp4")).unwrap();
         let top = crate::stream::boxes(&d, 0, d.len());
         let moov = top.iter().find(|b| &b.3 == b"moov").copied().expect("one MP4");
-        assert_eq!(crate::stream::find(&d, moov, &[b"trak"]).is_some(), true);
+        assert!(crate::stream::find(&d, moov, &[b"trak"]).is_some());
         let traks = crate::stream::boxes(&d, moov.1, moov.2).iter().filter(|b| &b.3 == b"trak").count();
         assert_eq!(traks, 2, "video and audio in one file");
         let order: Vec<u8> = top.iter().filter(|b| &b.3 == b"mdat").map(|b| d[b.1]).collect();

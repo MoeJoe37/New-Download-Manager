@@ -1,4 +1,7 @@
 #![windows_subsystem = "windows"]
+// Dialogs are laid out in dialog units: their helpers take x, y, width, height and the text, and the UI keeps
+// its state in a few nested shared structures. Those two lints would only rename that.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 mod checksum;
 mod core;
 mod dlu;
@@ -1621,6 +1624,8 @@ impl Row {
 
 type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 
+// a handful of dialogs is open at a time: their size doesn't matter, boxing each would only add noise
+#[allow(clippy::large_enum_variant)]
 enum Dialog {
     /// `clip`: opened by the clipboard monitor.
     AddUrl { url: String, auth: bool, login: String, pass: String, clip: bool },
@@ -1661,7 +1666,7 @@ enum Dialog {
     ProgCustom { view: u8, sl: bool, c: bool, btns: bool },
     Complete { id: u64, dont_show: bool },
     Delete { ids: Vec<u64>, files: bool, dont_show: bool },
-    Options { tab: u8, s: Settings },
+    Options { tab: u8, s: Box<Settings> },
     /// `queue` is the edited copy of the queue selected in the tree; Apply stores it.
     Scheduler { tab: u8, queue: core::Queue, qsel: Option<u64>, error: String },
     /// Duplicate download link (template 298): the new link and the download already in the list.
@@ -2300,11 +2305,11 @@ impl App {
     /// the window is hidden, so they act on Core and the HWND directly.
     #[cfg(windows)]
     fn tray(ctx: &egui::Context, core: &Arc<Core>, hwnd: &Arc<AtomicIsize>) -> Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)> {
-        let open = MenuItem::new(&i18n::tr_os("Open"), true, None);
-        let startq = MenuItem::new(&i18n::tr_os("Start queue"), true, None);
-        let stopq = MenuItem::new(&i18n::tr_os("Stop queue"), true, None);
-        let limit = CheckMenuItem::new(&i18n::tr_os("Speed Limiter"), true, core.settings().limit_on, None);
-        let exit = MenuItem::new(&i18n::tr_os("Exit"), true, None);
+        let open = MenuItem::new(i18n::tr_os("Open"), true, None);
+        let startq = MenuItem::new(i18n::tr_os("Start queue"), true, None);
+        let stopq = MenuItem::new(i18n::tr_os("Stop queue"), true, None);
+        let limit = CheckMenuItem::new(i18n::tr_os("Speed Limiter"), true, core.settings().limit_on, None);
+        let exit = MenuItem::new(i18n::tr_os("Exit"), true, None);
         let menu = Menu::new();
         menu.append_items(&[&open, &PredefinedMenuItem::separator(), &startq, &stopq, &limit, &PredefinedMenuItem::separator(), &exit]).ok()?;
         let style = core.settings().tray_icon;
@@ -2500,7 +2505,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
         let (agent, g, t, d, c) = (self.core.agent("https://github.com/"), got.clone(), total.clone(), done.clone(), ctx.clone());
         let core = self.core.clone();
         std::thread::spawn(move || {
-            let r = ytdlp::install(&agent, &g, &t);
+            let r = ytdlp::install(&agent, &g, &t, true);
             if r.is_ok() {
                 core.settings().ytdlp_checked = chrono::Local::now().timestamp();
             }
@@ -2572,10 +2577,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 i.folder = inc.folder.clone();
             }
             i.name = inc.filename.clone();
-            i.queued = inc.later;
+            // Options -> Downloads "Do not start downloading, only add files to the queue": a download
+            // handed over without questions goes to the main queue instead of starting
+            let later = inc.later || self.core.settings().only_queue;
+            i.queued = later;
             let id = i.id;
             let job = self.core.add(i);
-            if !inc.later {
+            if !later {
                 self.core.start(&job);
                 if inc.quit {
                     self.on_done.insert(id, (true, false));
@@ -3308,7 +3316,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 s.browsers.push(core::Browser { name, exe, on: true });
             }
         }
-        self.open(Dialog::Options { tab, s });
+        self.open(Dialog::Options { tab, s: Box::new(s) });
     }
 
     fn new_queue(&mut self, files: Vec<u64>) {
@@ -4338,7 +4346,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::Complete { .. } => ("Download complete".into(), tpl(303.0, 132.0)),
             Dialog::ProgCustom { .. } => ("Customize download progress dialog".into(), tpl(268.0, 145.0)),
             Dialog::Delete { .. } => ("Confirm deletion of downloads".into(), tpl(278.0, 86.0)),
-            Dialog::Options { .. } => ("New Download Manager Configuration".replace("New Download Manager", "New Download Manager"), tpl(327.0, 309.0)),
+            Dialog::Options { .. } => ("New Download Manager Configuration".into(), tpl(327.0, 309.0)),
             // NDM widens CNewSchedulerDlg past its template (434 DLU): 833 px at 125% (measured)
             Dialog::Scheduler { .. } => ("Scheduler".into(), tpl(478.0, 286.0)),
             Dialog::Batch { .. } => ("Batch download".into(), tpl(316.0, 238.0)),
@@ -4904,10 +4912,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let (x, y) = e(0.0, 0.0);
                         let mut d2 = dlu::D::new_offset(d.ui, x, y).with_dx(PAGE_DX);
                         d2.page_header(res.0, 48.0, "Browser/System Integration");
-                        if d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup").changed() {}
-                        d2.check_off(13.0, 37.0, 248.0, 10.0, "Run module for click monitoring in IE-based browsers (MSN, Avant, etc)");
-                        d2.check(13.0, 49.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
-                        d2.check(13.0, 61.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
+                        d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup");
+                        d2.check(13.0, 39.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
+                        d2.check(13.0, 53.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
                         d2.group(4.0, 73.0, 261.0, 144.0, "Capture downloads from the following browsers:");
                         let list = d2.listview(13.0, 84.0, 241.0, 84.0, &[("Browser", 120.0), ("Type of integration", 119.0)]);
                         let sel_id = egui::Id::new("browser_sel");
@@ -5346,7 +5353,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if ok {
                     let autostart_changed = self.core.settings().autostart != s.autostart;
                     let dark_changed = self.core.settings().dark_support != s.dark_support;
-                    *self.core.settings() = s.clone();
+                    *self.core.settings() = (**s).clone();
                     self.core.apply_settings();
                     self.core.apply_integration(s.adv_integration);
                     self.core.save();
@@ -6799,7 +6806,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let ok = d.button(155.0, 117.0, 50.0, 14.0, "OK", !user.is_empty());
                 if ok {
                     if *save {
-                        self.core.settings().logins.push(core::Login { site: site.clone(), user: user.clone(), pass: pass.clone(), ..Default::default() });
+                        self.core.settings().logins.push(core::Login { site: site.clone(), user: user.clone(), pass: pass.clone() });
                         self.core.save();
                     }
                     self.grab_auth = Some((user.clone(), pass.clone()));

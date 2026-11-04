@@ -834,7 +834,7 @@ pub fn drop_target(show: bool, (iw, ih, px): &Rgba) {
 fn make_drop_target(w: i32, h: i32, px: Vec<u8>) -> gtk::Window {
     let win = gtk::Window::new(gtk::WindowType::Toplevel);
     win.set_title("Drop target");
-    (win.set_decorated(false), win.set_keep_above(true), win.set_skip_taskbar_hint(true), win.set_skip_pager_hint(true));
+    win.set_decorated(false); win.set_keep_above(true); win.set_skip_taskbar_hint(true); win.set_skip_pager_hint(true);
     win.set_type_hint(gdk::WindowTypeHint::Utility);
     win.set_accept_focus(false);
     win.set_default_size(w, h);
@@ -995,6 +995,6 @@ pub fn install_package(file: &Path) -> Result<(), String> {
         Some(0) => Ok(()),
         // pkexec: the password dialog was closed, or the user may not install software
         Some(126 | 127) => Err("The update wasn't installed: the password wasn't given.".into()),
-        _ => Err(String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("the package manager failed").to_string()),
+        _ => Err(String::from_utf8_lossy(&o.stderr).lines().rfind(|l| !l.trim().is_empty()).unwrap_or("the package manager failed").to_string()),
     }
 }
