@@ -5,7 +5,8 @@ copy of ndm_en.lng named ndm_xx.lng with its `lang=` line changed and the right 
 translated; NDM lists it under View -> Language (src/i18n.rs, `own`).
 
     python tools/ndm_lng.py           # write Languages/ndm_en.lng
-    python tools/ndm_lng.py --check   # exit 1 if the file is out of date (new UI strings)
+    python tools/ndm_lng.py --check   # exit 1 if the file is out of date (new UI strings), or a translation
+                                      # lacks a string or breaks its placeholders
 """
 import glob, os, re, sys
 
@@ -41,6 +42,11 @@ NOT_UI = re.compile(
     # yt-dlp's arguments and output, the extension's feed protocol (src/ytdlp.rs, core.rs `feed`)
     r"|^download:ndm |^ERROR: $|^ndm $|^no (at|id)$|^no such download$|^unknown op$|^%\("
     # Set yt-dlp and macOS drops: diagnostics, test data and the registry key (src/ytdlp.rs, mac.rs, win.rs)
+    # DASH attributes and PAC functions the parsers look for, the localhost protocol, folder names in code
+    r"|^(availabilityStartTime|mediaPresentationDuration|mediaRange|mimeType|minimumUpdatePeriod|presentationTimeOffset"
+    r"|sourceURL|startNumber|timeShiftBufferDepth|contentType|dnsResolve|myIpAddress|FindProxyForURL|NoProxyFor|ProxyType"
+    r"|NativeMessagingHosts|NDM extension|POST |only CONNECT|no answer|worker panicked|with ndm|open\(|url\(|<body)$"
+    r"|^&(gt|lt|nbsp|quot);$"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
 )
 
@@ -60,15 +66,42 @@ EXTRA += ["OK", "KB", "MB", "GB", "URL", "sec", "min", "seconds", "hours", "ever
 EXTRA += ["Main download queue", "Synchronization queue", "%b %d %H:%M:%S %Y"]
 # a video download's state (ytdlp.rs, shown through the segment info)
 EXTRA += ["Joining video and audio..."]
+# checkbox labels drawn with dlu::checkbox (Options -> Keyboard)
+EXTRA += ["Del"]
 # what NDM does after a download (Job::set_post, shown through Info::post)
 EXTRA += ["Joining the pieces...", "Getting the audio...", "Moving the file to its folder...", "Processing...", "Processing"]
+
+
+def without_tests(src):
+    """The source without its #[test] functions (some files keep a few among their code) and the messages of
+    .expect(...), which only a crash report shows."""
+    out, at = [], 0
+    for m in re.finditer(r"#\[test\]", src):
+        if m.start() < at:
+            continue
+        brace = src.find("{", m.end())
+        if brace < 0:
+            break
+        depth, i = 0, brace
+        while i < len(src):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        out.append(src[at:m.start()])
+        at = i + 1
+    out.append(src[at:])
+    return re.sub(r'\.expect\(\s*"(?:[^"\\]|\\.)*"\s*\)', ".expect()", "".join(out))
 
 
 def strings():
     found = set(EXTRA)
     for f in sorted(glob.glob(os.path.join(ROOT, "src", "*.rs"))):
         src = open(f, encoding="utf-8").read()
-        src = src.split("#[cfg(test)]")[0]  # tests aren't UI
+        src = without_tests(src.split("#[cfg(test)]")[0])  # tests aren't UI
         src = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("//"))  # nor are comments
         for m in CALLS.finditer(src):
             s = unescape(m.group(1))
@@ -92,15 +125,21 @@ def render(items):
 SLOTS = re.compile(r"%(?:I64d|ld|lu|d|s|u|S)|\\n")
 
 
-def translation_problems():
-    """Lines of the translated language files that would show wrong: not "English=text", or with other
-    placeholders than their English."""
+def translation_problems(strings):
+    """What would show wrong in the translated language files: a line not "English=text", one with other
+    placeholders than its English, and UI strings a file doesn't have (they would show in English; a name
+    that stays the same in a language is written as "Name=Name")."""
     bad = []
     for path in sorted(glob.glob(os.path.join(ROOT, "Languages", "ndm_*.lng"))):
         if os.path.abspath(path) == os.path.abspath(OUT):
             continue
         name = os.path.basename(path)
-        for n, line in enumerate(open(path, encoding="utf-8-sig").read().split("\n")[1:], 2):
+        lines = open(path, encoding="utf-8-sig").read().split("\n")[1:]
+        have = {l.partition("=")[0] for l in lines if "=" in l and not l.startswith("//")}
+        missing = [s for s in strings if s not in have]
+        if missing:
+            bad.append(f"{name}: {len(missing)} strings not translated: " + "; ".join(repr(s[:40]) for s in missing[:8]) + (" ..." if len(missing) > 8 else ""))
+        for n, line in enumerate(lines, 2):
             if not line.strip() or line.startswith("//"):
                 continue
             en, sep, t = line.partition("=")
@@ -112,12 +151,13 @@ def translation_problems():
 
 
 if __name__ == "__main__":
-    text = render(strings())
+    found = strings()
+    text = render(found)
     if "--check" in sys.argv:
         same = os.path.exists(OUT) and open(OUT, encoding="utf-8").read() == text
         print("ndm_en.lng is up to date" if same else "ndm_en.lng is out of date: run tools/ndm_lng.py")
-        bad = translation_problems()
-        print("\n".join(bad) if bad else "translations keep their placeholders")
+        bad = translation_problems(found)
+        print("\n".join(bad) if bad else "translations are complete and keep their placeholders")
         sys.exit(0 if same and not bad else 1)
     open(OUT, "w", encoding="utf-8", newline="\n").write(text)
     print(f"{OUT}: {text.count(chr(10)) - 5} strings")
