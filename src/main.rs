@@ -307,6 +307,25 @@ const DARK_TREE: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 const BAR: Color32 = Color32::from_rgb(38, 120, 220);
 
+/// A problem report's title and text for GitHub (in English, for NDM's developers): what to fill in, NDM's
+/// version, the system, the language, and the start of a crash report with the user's folder as "~". The
+/// text stays short enough for an address (GitHub takes about 8 KB).
+fn issue_text(version: &str, lang: &str, log: Option<&str>, home: &str) -> (String, String) {
+    let lang = if lang.is_empty() { "en (English)".to_string() } else { lang.to_string() };
+    let mut text = format!(
+        "### What happened?\n\n\n### What did you expect?\n\n\n### Steps to reproduce\n1. \n\n### System\n- NDM {version}\n- {} {}\n- Language: {lang}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    if let Some(log) = log {
+        let log = if home.len() > 1 { log.replace(home, "~") } else { log.to_string() };
+        let cut: String = log.chars().take(2500).collect();
+        let more = if cut.len() < log.len() { "\n..." } else { "" };
+        text += &format!("\n### Crash report\n```\n{}{more}\n```\n", cut.trim_end());
+    }
+    (format!("[{version}] "), text)
+}
+
 /// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon.
 fn tray_start() -> bool {
     std::env::args().any(|a| a.eq_ignore_ascii_case("/tray"))
@@ -1766,6 +1785,8 @@ enum Dialog {
     Tip { text: String },
     /// Speed Limiter settings (template 337).
     Limiter { kb: String, startup: bool, sched: bool, from: String, to: String },
+    /// The list's "Speed limit...": the chosen downloads' own limit (`Info::limit_kb`).
+    SpeedLimit { ids: Vec<u64>, on: bool, kb: String },
     /// Columns (template 209): in display order.
     Columns { list: Vec<(u8, bool, u16)>, sel: usize, width: String },
     /// "Max. connections number for a server" (template 226); `orig` = edited row of the exceptions.
@@ -1804,6 +1825,9 @@ struct App {
     updating: bool,
     /// "Refresh download address": the download waiting for a fresh link from the browser.
     refreshing: Option<u64>,
+    /// Downloads whose file was checked against the SHA-256 their site publishes, and whether it has it
+    /// (`check_sum`): saved, and a warning for each that doesn't.
+    sums: Arc<Mutex<Vec<(u64, bool)>>>,
     /// Login typed in "Connecting to the site" for the grabber to explore again with.
     grab_auth: Option<(String, String)>,
     /// Manual login page done: the browser's cookies for the grabber to explore with.
@@ -2170,6 +2194,7 @@ impl App {
             cat: Cat::Files(Which::All, None),
             expanded,
             refreshing: None,
+            sums: Arc::default(),
             grab_auth: None,
             grab_cookies: None,
             grab_load: None,
@@ -2393,6 +2418,17 @@ impl App {
     fn add_url(&mut self) {
         let url = links(&clipboard()).into_iter().next().unwrap_or_default();
         self.open(Dialog::AddUrl { url, auth: false, login: String::new(), pass: String::new(), clip: false });
+    }
+
+    /// Help -> "Report a problem...": a new GitHub issue on NDM's page, filled in with NDM's version, the
+    /// system and the last crash report (crash.log, renderer-crash.log), the user's folder left out.
+    fn report_problem() {
+        let dir = core::store_path();
+        let log = ["crash.log", "renderer-crash.log"].iter().find_map(|n| std::fs::read_to_string(dir.with_file_name(n)).ok().filter(|t| !t.trim().is_empty()));
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let (title, body) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current(), log.as_deref(), &home);
+        let enc = |t: &str| percent_encoding::utf8_percent_encode(t, percent_encoding::NON_ALPHANUMERIC).to_string();
+        open_url(&format!("https://github.com/{UPDATE_REPO}/issues/new?title={}&body={}", enc(&title), enc(&body)));
     }
 
     /// "Tell a friend": a ready-to-send letter in the default mail program.
@@ -2768,6 +2804,24 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
         }
         self.open(Dialog::FileInfo { info, path, probe: slot, applied: false, error: String::new(), hint, remember: false, replace: None, auto: !inc.force, early, dir: inc.folder });
+    }
+
+    /// Options -> Downloads "Check a downloaded file against the SHA-256 its site publishes": on a thread,
+    /// the sum beside the file on its site (a plain file NDM fetched itself), then the file's.
+    fn check_sum(&self, ctx: &egui::Context, j: &Arc<engine::Job>) {
+        let i = j.info().clone();
+        if !self.core.settings().check_sums || i.ytdlp || i.stream || i.fed || !i.media_output.is_empty() {
+            return;
+        }
+        let (j, agent, sums, ctx) = (j.clone(), self.core.agent(&i.url), self.sums.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let Some(want) = checksum::published_sha256(&agent, &i.url, &i.referrer, &i.cookies, &i.name) else { return };
+            let Ok(have) = checksum::sha256_of(&i.path()) else { return };
+            let ok = have == want;
+            j.info().sha256 = Some((want, ok));
+            sums.lock().unwrap().push((i.id, ok));
+            ctx.request_repaint();
+        });
     }
 
     fn resume(&mut self, ids: &[u64]) {
@@ -3263,6 +3317,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         explore(format!("https://github.com/{UPDATE_REPO}{page}"));
                         ui.close_menu();
                     }
+                }
+                if ui.button(tr("Report a problem...")).clicked() {
+                    App::report_problem();
+                    ui.close_menu();
                 }
                 ui.separator();
                 if ui.button(tr("Check for updates...")).clicked() {
@@ -4154,6 +4212,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     ui.separator();
                     item(ui, "Resume Download", !done && !r.running);
                     item(ui, "Stop Download", r.running);
+                    item(ui, "Speed limit...", !done);
                     ui.separator();
                     item(ui, "Refresh download address", !done);
                     ui.separator();
@@ -4274,6 +4333,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 "Stop Download" => self.stop(&ids),
                 "Redownload" => self.redownload(&ids),
                 "Delete from queue" => self.core.set_queue(&ids, None),
+                "Speed limit..." => {
+                    let kb = self.core.find(id).map_or(0, |j| j.info().limit_kb);
+                    self.open(Dialog::SpeedLimit { ids, on: kb > 0, kb: if kb > 0 { kb.to_string() } else { "200".into() } });
+                }
                 "Remove" => self.ask_delete(ids),
                 _ => self.properties(row),
             }
@@ -4388,6 +4451,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::DialUp => ("Dial up".into(), tpl(186.0, 55.0)),
             Dialog::Help { .. } => ("New Download Manager Help".into(), None),
             Dialog::Limiter { .. } => ("Speed Limiter settings".into(), tpl(302.0, 107.0)),
+            Dialog::SpeedLimit { .. } => ("Speed limit".into(), tpl(230.0, 46.0)),
             Dialog::Update { .. } => ("Quick Update".into(), tpl(186.0, 34.0)),
             Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), Some(Vec2::new(520.0, 420.0))),
             Dialog::Virus { .. } => ("Virus checking".into(), tpl(379.0, 235.0)),
@@ -4970,7 +5034,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     d.ui.put(r, egui::Image::new((t, Vec2::splat(32.0))));
                 }
                 d.text(34.0, 7.0, 262.0, 32.0, format!("{}\n{}", tr_os("Download complete"), i18n::trf_os("Downloaded %s (%I64d Bytes)", &[&human_os(i.done()), &i.done()])));
-                d.label(7.0, 38.0, 289.0, 9.0, "Address");
+                d.label(7.0, 38.0, 120.0, 9.0, "Address");
+                if let Some((_, ok)) = &i.sha256 {
+                    let th = dlu::theme(d.ui.visuals().dark_mode);
+                    let (text, ink) = if *ok { ("SHA-256 checked: the file is the one the site publishes", th.success) } else { ("SHA-256 doesn't match the one the site publishes!", th.danger) };
+                    d.label(100.0, 38.0, 196.0, 9.0, RichText::new(tr(text)).color(ink));
+                }
                 d.readonly(7.0, 48.0, 289.0, 14.0, &i.url);
                 d.label(7.0, 66.0, 289.0, 9.0, "The file saved as");
                 d.readonly(7.0, 76.0, 289.0, 14.0, &path.display().to_string());
@@ -5185,26 +5254,27 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.label(14.0, 82.0, 237.0, 10.0, "Note: These settings don't relate to queue processing");
                         d2.hline(7.0, 93.0, 254.0);
                         d2.check(9.0, 96.0, 251.0, 19.0, &mut s.start_at_once, "Start downloading immediately while displaying \"Download File Info\" dialog");
-                        d2.check(9.0, 119.0, 251.0, 10.0, &mut s.ask_queue_later, "Show queue selection panel on pressing \"Download Later\"");
-                        d2.check(9.0, 134.0, 252.0, 10.0, &mut s.ask_queue_batch, "Show queue selection panel on adding batch downloads");
-                        d2.check(9.0, 149.0, 251.0, 10.0, &mut s.ignore_date, "Ignore file modification time changes when resuming a download");
-                        d2.hline(7.0, 164.0, 254.0);
-                        d2.label(7.0, 170.0, 246.0, 10.0, "If a duplicate download link is added:");
+                        d2.check(9.0, 117.0, 251.0, 10.0, &mut s.ask_queue_later, "Show queue selection panel on pressing \"Download Later\"");
+                        d2.check(9.0, 130.0, 252.0, 10.0, &mut s.ask_queue_batch, "Show queue selection panel on adding batch downloads");
+                        d2.check(9.0, 143.0, 251.0, 10.0, &mut s.ignore_date, "Ignore file modification time changes when resuming a download");
+                        d2.check(9.0, 156.0, 251.0, 10.0, &mut s.check_sums, "Check a downloaded file against the SHA-256 its site publishes");
+                        d2.hline(7.0, 168.0, 254.0);
+                        d2.label(7.0, 174.0, 246.0, 10.0, "If a duplicate download link is added:");
                         let k = if s.dupl_ask { 0 } else { [3, 1, 2][s.dupl_action.min(2) as usize] };
                         let mut dup = DUPL[k].to_string();
-                        if d2.combo(7.0, 180.0, 253.0, 14.0, "dup", &mut dup, &DUPL, true) {
+                        if d2.combo(7.0, 184.0, 253.0, 14.0, "dup", &mut dup, &DUPL, true) {
                             match DUPL.iter().position(|x| *x == dup) {
                                 Some(0) => s.dupl_ask = true,
                                 Some(k) => (s.dupl_ask, s.dupl_action) = (false, [0, 1, 2, 0][k]),
                                 None => {}
                             }
                         }
-                        d2.hline(7.0, 197.0, 254.0);
-                        d2.label(7.0, 203.0, 254.0, 9.0, "User-Agent for manually added downloads:");
-                        d2.edit(7.0, 216.0, 254.0, 14.0, &mut s.user_agent, true);
-                        d2.hline(7.0, 233.0, 254.0);
-                        d2.label(7.0, 242.0, 188.0, 8.0, "Virus checking settings");
-                        if d2.button(205.0, 239.0, 50.0, 14.0, "Edit...", true) {
+                        d2.hline(7.0, 201.0, 254.0);
+                        d2.label(7.0, 206.0, 254.0, 9.0, "User-Agent for manually added downloads:");
+                        d2.edit(7.0, 218.0, 254.0, 14.0, &mut s.user_agent, true);
+                        d2.hline(7.0, 235.0, 254.0);
+                        d2.label(7.0, 244.0, 188.0, 8.0, "Virus checking settings");
+                        if d2.button(205.0, 241.0, 50.0, 14.0, "Edit...", true) {
                             open = Some(Dialog::Virus { exe: s.virus_exe.clone(), args: s.virus_args.clone() });
                         }
                     }
@@ -5555,7 +5625,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 }
                 let sync = &mut queue.sync;
-                let (sched, max_active) = (&mut queue.sched, &mut queue.max_active);
+                let (sched, max_active, limit_kb) = (&mut queue.sched, &mut queue.max_active, &mut queue.limit_kb);
                 if !is_limits {
                 // the queue's name centred over the tabs; pages are laid out 2.0 px/DLU across (1.6 at 100%)
                 let r = d.rect(142.0, 3.0, 327.0, 9.0);
@@ -5631,7 +5701,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     // template 307
                     d2.label(7.0, 8.0, 41.0, 10.0, "Download");
                     d2.drag(53.0, 5.0, 26.0, 14.0, max_active, 1, 20);
-                    d2.label(83.0, 8.0, 99.0, 10.0, "files at the same time");
+                    d2.label(83.0, 8.0, 90.0, 10.0, "files at the same time");
+                    // each of the queue's downloads at most this fast while it runs
+                    let mut on = *limit_kb > 0;
+                    if d2.check(176.0, 7.0, 40.0, 10.0, &mut on, "Limit to").changed() {
+                        *limit_kb = if on { 200 } else { 0 };
+                    }
+                    if on {
+                        d2.drag(216.0, 5.0, 28.0, 14.0, limit_kb, 1, 1_000_000);
+                    }
+                    d2.label(246.0, 8.0, 29.0, 10.0, "KBytes/sec");
                     let queued: Vec<(u64, String, String, String)> = self
                         .core
                         .jobs()
@@ -7465,6 +7544,21 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 !(ok || d.button(245.0, 86.0, 50.0, 14.0, "Cancel", true))
             }
+            Dialog::SpeedLimit { ids, on, kb } => {
+                let mut d = dlu::D::new(ui);
+                d.check(7.0, 8.0, 120.0, 10.0, on, "Limit the speed of this download to");
+                d.edit(130.0, 6.0, 40.0, 14.0, kb, *on);
+                d.label(174.0, 8.0, 50.0, 9.0, "KBytes/sec");
+                let v = kb.trim().parse::<u64>().ok().filter(|v| *v > 0);
+                let ok = d.button(118.0, 27.0, 50.0, 14.0, "OK", !*on || v.is_some());
+                if ok {
+                    for j in ids.iter().filter_map(|id| self.core.find(*id)) {
+                        j.set_limit_kb(if *on { v.unwrap_or(0) } else { 0 });
+                    }
+                    self.core.save();
+                }
+                !(ok || d.button(173.0, 27.0, 50.0, 14.0, "Cancel", true))
+            }
             Dialog::Columns { list, sel, width } => {
                 let mut d = dlu::D::new(ui);
                 d.text(7.0, 7.0, 222.0, 25.0, "Check the columns that you would like visible in this list. Use the Move Up and Move Down buttons to reorder the columns however you like.");
@@ -8276,6 +8370,16 @@ impl eframe::App for App {
             self.core.settings().drop_target = false;
             self.drop_shown = false;
         }
+        let checked: Vec<(u64, bool)> = std::mem::take(&mut *self.sums.lock().unwrap());
+        if !checked.is_empty() {
+            self.core.save();
+        }
+        for (id, _) in checked.into_iter().filter(|c| !c.1) {
+            if let Some(j) = self.core.find(id) {
+                let name = j.info().name.clone();
+                self.open(Dialog::Info { title: "Checksum".into(), text: i18n::trf_os("%s doesn't have the SHA-256 checksum its site publishes: the file is damaged or isn't the one published. Download it again, or ask the site.", &[&name]) });
+            }
+        }
         for j in self.core.jobs() {
             if j.just_completed.swap(false, Relaxed) {
                 // a file whose name didn't say what it is: named and filed by its contents
@@ -8292,6 +8396,7 @@ impl eframe::App for App {
                         self.open(Dialog::Info { title: "Virus checking".into(), text: i18n::trf_os("Can not start virus checking program.\n%s", &[&e]) });
                     }
                 }
+                self.check_sum(ctx, &j);
                 if self.core.settings().show_complete {
                     self.open(Dialog::Complete { id, dont_show: false });
                 }
@@ -8618,4 +8723,17 @@ fn batch_ranges() {
     assert_eq!(batch_range(true, 0, 0, 1, "x", "z"), ["x", "y", "z"]);
     assert!(batch_range(true, 0, 0, 1, "a", "Z").is_empty());
     assert!(batch_range(false, 5, 1, 1, "", "").is_empty());
+}
+
+/// Help -> "Report a problem...": the issue names NDM's version and system and carries the start of the
+/// crash report, the user's folder left out.
+#[test]
+fn problem_report() {
+    let (title, text) = issue_text("2.9.0", "ndm_ar", Some("panicked at /home/sam/src/x.rs\nbacktrace"), "/home/sam");
+    assert_eq!(title, "[2.9.0] ");
+    assert!(text.contains("- NDM 2.9.0\n") && text.contains("Language: ndm_ar") && text.contains(std::env::consts::OS));
+    assert!(text.contains("panicked at ~/src/x.rs") && !text.contains("/home/sam"));
+    let (_, text) = issue_text("2.9.0", "", Some(&"x".repeat(9000)), "");
+    assert!(text.contains("Language: en (English)") && text.contains("\n...\n") && text.len() < 3500);
+    assert!(!issue_text("2.9.0", "", None, "").1.contains("Crash report"));
 }

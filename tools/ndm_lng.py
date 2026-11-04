@@ -46,7 +46,7 @@ NOT_UI = re.compile(
     r"|^(availabilityStartTime|mediaPresentationDuration|mediaRange|mimeType|minimumUpdatePeriod|presentationTimeOffset"
     r"|sourceURL|startNumber|timeShiftBufferDepth|contentType|dnsResolve|myIpAddress|FindProxyForURL|NoProxyFor|ProxyType"
     r"|NativeMessagingHosts|NDM extension|POST |only CONNECT|no answer|worker panicked|with ndm|open\(|url\(|<body)$"
-    r"|^&(gt|lt|nbsp|quot);$"
+    r"|^&(gt|lt|nbsp|quot);$|^SHA256 \($"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
 )
 

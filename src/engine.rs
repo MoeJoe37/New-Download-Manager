@@ -148,6 +148,9 @@ pub struct Info {
     pub browser_proxy: String,
     /// What yt-dlp gets for a video page (File Info's Quality, Subtitles and Thumbnail).
     pub yt: YtOpts,
+    /// The SHA-256 the site publishes for the file and whether the downloaded file has it
+    /// (`Settings::check_sums`).
+    pub sha256: Option<(String, bool)>,
 }
 
 /// A video download's choices: the quality ("" best, "1080"... at most that many lines, "m4a" / "mp3"
@@ -1482,6 +1485,7 @@ impl Job {
         i.etag.clear();
         i.modified.clear();
         i.probed = false;
+        i.sha256 = None;
         i.status = Status::Stopped;
     }
 

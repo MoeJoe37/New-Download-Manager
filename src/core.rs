@@ -185,6 +185,9 @@ pub struct Settings {
     pub limit_kb: u64,
     pub show_progress: bool,
     pub show_complete: bool,
+    /// After a download: look for the SHA-256 its site publishes beside it (`checksum::published_sha256`)
+    /// and compare.
+    pub check_sums: bool,
     pub file_types: String,
     /// Main download queue first.
     pub queues: Vec<Queue>,
@@ -519,6 +522,7 @@ impl Default for Settings {
             limit_kb: 500,
             show_progress: true,
             show_complete: true,
+            check_sums: true,
             file_types: types.join(" "),
             queues: vec![Queue::default(), Queue::sync_default(1)],
             categories: CATEGORIES.iter().map(|(n, e)| Category { name: n.to_string(), exts: e.to_string(), ..Default::default() }).collect(),
