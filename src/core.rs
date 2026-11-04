@@ -181,13 +181,12 @@ pub const MAIN_QUEUE: u32 = 0;
 pub struct Settings {
     pub base_dir: String,
     pub conns: usize,
+    /// Exact hosts that opt out of HTTP/2 for direct HTTPS downloads.
+    pub http1_hosts: String,
     pub limit_on: bool,
     pub limit_kb: u64,
     pub show_progress: bool,
     pub show_complete: bool,
-    /// After a download: look for the SHA-256 its site publishes beside it (`checksum::published_sha256`)
-    /// and compare.
-    pub check_sums: bool,
     pub file_types: String,
     /// Main download queue first.
     pub queues: Vec<Queue>,
@@ -518,11 +517,11 @@ impl Default for Settings {
         Settings {
             base_dir: Path::new(&home).join("Downloads").display().to_string(),
             conns: 8,
+            http1_hosts: String::new(),
             limit_on: false,
             limit_kb: 500,
             show_progress: true,
             show_complete: true,
-            check_sums: true,
             file_types: types.join(" "),
             queues: vec![Queue::default(), Queue::sync_default(1)],
             categories: CATEGORIES.iter().map(|(n, e)| Category { name: n.to_string(), exts: e.to_string(), ..Default::default() }).collect(),
@@ -780,26 +779,6 @@ pub struct Incoming {
     pub start_queue: bool,
 }
 
-/// The Chromium extension ids NDM answers: the unpacked extension's (fixed by its manifest's "key") and
-/// the stores' copies (Chrome Web Store, Edge Add-ons: ids of their own), given when NDM is built as
-/// NDM_EXTENSION_IDS="id,id" (release.yml passes the repository variable of that name). Firefox's id is
-/// the manifest's gecko id everywhere.
-pub fn extension_ids() -> Vec<&'static str> {
-    let mut ids = vec!["fjkomnlijmdmohmlbfgkepgdieleinoa"];
-    ids.extend(store_ids(option_env!("NDM_EXTENSION_IDS").unwrap_or("")));
-    ids
-}
-
-/// The well-formed Chromium extension ids in a comma-separated list (32 letters a..p).
-fn store_ids(list: &str) -> impl Iterator<Item = &str> {
-    list.split([',', ' ', '\n']).map(str::trim).filter(|id| id.len() == 32 && id.bytes().all(|c| (b'a'..=b'p').contains(&c)))
-}
-
-/// The native messaging host's "allowed_origins" for the Chromium browsers.
-pub fn chrome_origins() -> serde_json::Value {
-    serde_json::json!({ "allowed_origins": extension_ids().iter().map(|id| format!("chrome-extension://{id}/")).collect::<Vec<_>>() })
-}
-
 /// Whether `t` is in [from, to); a window that ends before it starts runs past midnight.
 pub fn in_window(t: chrono::NaiveTime, from: chrono::NaiveTime, to: chrono::NaiveTime) -> bool {
     if from <= to { from <= t && t < to } else { t >= from || t < to }
@@ -807,11 +786,7 @@ pub fn in_window(t: chrono::NaiveTime, from: chrono::NaiveTime, to: chrono::Naiv
 
 /// A queued download's rate in bytes/s: its own limit and its queue's, the lower one (KB/s, 0: none).
 fn queue_rate(own_kb: u64, queue_kb: u64) -> u64 {
-    match (own_kb, queue_kb) {
-        (0, q) => q * 1024,
-        (o, 0) => o * 1024,
-        (o, q) => o.min(q) * 1024,
-    }
+    [own_kb, queue_kb].into_iter().filter(|rate| *rate > 0).min().unwrap_or(0).saturating_mul(1024)
 }
 
 /// Command-line arguments as an `Incoming` (None when there are none).
@@ -861,6 +836,8 @@ pub struct Core {
     pub limiter: Arc<Limiter>,
     /// One HTTP agent per proxy in use ("" = direct); rebuilt when the settings change.
     agents: Mutex<HashMap<String, engine::Agent>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) proxy_ready: std::sync::atomic::AtomicBool,
     next_id: AtomicU64,
     /// Per queue: the days its start / stop time last fired.
     fired: Mutex<HashMap<u32, (Option<NaiveDate>, Option<NaiveDate>)>>,
@@ -921,6 +898,11 @@ impl Core {
 
     fn from_saved(mut saved: Saved, store: PathBuf) -> Arc<Core> {
         let s = &mut saved.settings;
+        #[cfg(target_os = "macos")]
+        {
+            // The old macOS integration recorded this snapshot without changing system preferences.
+            s.saved_proxy = None;
+        }
         s.limit_on |= s.limit_startup;
         if !s.queues.iter().any(|q| q.id == MAIN_QUEUE) {
             s.queues.insert(0, Queue::default());
@@ -953,6 +935,8 @@ impl Core {
         let core = Arc::new(Core {
             jobs: Mutex::new(jobs),
             agents: Mutex::default(),
+            #[cfg(target_os = "macos")]
+            proxy_ready: Default::default(),
             settings: Mutex::new(saved.settings),
             running: Mutex::new(on_startup),
             queue_finished: Mutex::default(),
@@ -1009,12 +993,12 @@ impl Core {
 
     /// The agent for downloading `url`, with the proxy the settings choose for it.
     pub fn agent(&self, url: &str) -> engine::Agent {
-        let (proxy, ua, use_routes) = {
+        let (proxy, ua, use_routes, http1_hosts) = {
             let s = self.settings();
-            (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0)
+            (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0, s.http1_hosts.clone())
         };
         let proxy = crate::net::agent_proxy(&proxy);
-        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua)).clone();
+        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| engine::agent(&proxy, &ua).with_http1_hosts(&http1_hosts)).clone();
         if use_routes {
             agent.routes = engine::FTP.lock().unwrap().route.clone();
         }
@@ -1226,11 +1210,7 @@ impl Core {
     }
 
     fn start_now(&self, job: &Arc<Job>) {
-        // its own speed limit, and its queue's while the queue runs it
-        let (own, queued, queue) = { let i = job.info(); (i.limit_kb, i.queued, i.queue) };
-        let running = queued && self.running.lock().unwrap().contains(&queue);
-        let limit = if running { self.settings().queue(queue).map_or(0, |q| q.limit_kb) } else { 0 };
-        job.limiter.rate.store(queue_rate(own, limit), Relaxed);
+        self.update_job_limit(job);
         let url = job.info().url.clone();
         {
             let s = self.settings();
@@ -1254,6 +1234,24 @@ impl Core {
         job.multi_ok.store(!browser, Relaxed);
         *job.lanes.lock().unwrap() = if browser { vec![] } else { self.lanes(&url) };
         job.start(agent, self.limiter.clone());
+    }
+
+    pub fn set_job_limit(&self, job: &Job, kb: u64) {
+        job.info().limit_kb = kb;
+        self.update_job_limit(job);
+    }
+
+    fn update_job_limit(&self, job: &Job) {
+        let (own, queued, queue) = {
+            let info = job.info();
+            (info.limit_kb, info.queued, info.queue)
+        };
+        let queue_limit = if queued && self.queue_running(queue) {
+            self.settings().queue(queue).map_or(0, |q| q.limit_kb)
+        } else {
+            0
+        };
+        job.limiter.rate.store(queue_rate(own, queue_limit), Relaxed);
     }
 
     pub fn queue_running(&self, q: u32) -> bool {
@@ -1324,6 +1322,8 @@ impl Core {
             let mut i = j.info();
             i.queued = q.is_some() && (sync || i.status != Status::Complete);
             i.queue = q.unwrap_or(MAIN_QUEUE);
+            drop(i);
+            self.update_job_limit(&j);
         }
     }
 
@@ -1394,9 +1394,10 @@ impl Core {
                 i.queued && i.queue == q
             }).collect();
             for j in &mine {
-                // the queue's limit over the download's own (which stays the download's setting)
-                let own = j.info().limit_kb;
-                j.limiter.rate.store(queue_rate(own, limit), Relaxed);
+                let info = j.info();
+                if info.queued && info.queue == q {
+                    j.limiter.rate.store(queue_rate(info.limit_kb, limit), Relaxed);
+                }
             }
             let mut active = mine.iter().filter(|j| j.running()).count();
             let mut pending = false;
@@ -1789,6 +1790,7 @@ impl Core {
     /// plain http is set to NDM's (`proxy_conn`) and the user's own proxy kept for the other protocols;
     /// off puts the old setting back. Run at start (on), on Options OK and at exit (off, so http works
     /// while NDM isn't running).
+    #[cfg(not(target_os = "macos"))]
     pub fn apply_integration(&self, on: bool) {
         let mut s = self.settings();
         match (on, s.saved_proxy.clone()) {
@@ -1814,7 +1816,15 @@ impl Core {
 
     /// Puts the user's proxy back (every exit path comes here), stops the downloads and saves.
     pub fn shutdown(&self) {
+        #[cfg(not(target_os = "macos"))]
         self.apply_integration(false);
+        #[cfg(target_os = "macos")]
+        {
+            self.proxy_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Err(error) = crate::mac_capture::restore() {
+                eprintln!("NDM: {error}");
+            }
+        }
         let jobs = self.jobs();
         jobs.iter().for_each(|j| j.stop());
         let until = Instant::now() + Duration::from_secs(5);
@@ -1886,6 +1896,8 @@ impl Core {
         let inspections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let notify = Arc::new(notify);
         if let Ok(l) = TcpListener::bind(("127.0.0.1", PROXY_PORT)) {
+            #[cfg(target_os = "macos")]
+            self.proxy_ready.store(true, std::sync::atomic::Ordering::SeqCst);
             let (core, tx, notify) = (self.clone(), tx.clone(), notify.clone());
             thread::spawn(move || {
                 for c in l.incoming().flatten() {
@@ -2106,7 +2118,7 @@ fn handle(s: &std::net::TcpStream) -> Option<(String, Vec<u8>, String)> {
         }
     }
     let origin_ok = h.get("origin").is_none_or(|origin| {
-        origin.strip_prefix("chrome-extension://").is_some_and(|id| extension_ids().contains(&id)) || origin.strip_prefix("moz-extension://").is_some_and(|id| {
+        origin == "chrome-extension://fjkomnlijmdmohmlbfgkepgdieleinoa" || origin.strip_prefix("moz-extension://").is_some_and(|id| {
             id.len() == 36 && id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
         })
     });
@@ -2145,6 +2157,7 @@ mod tests {
     /// Changes Windows' real proxy setting for a moment: run by hand (`cargo test -- --ignored`).
     #[test]
     #[ignore]
+    #[cfg(not(target_os = "macos"))]
     fn integration_restores_system_proxy() {
         let core = Core::load();
         core.settings().saved_proxy = None;
@@ -2287,9 +2300,17 @@ mod tests {
         let mut i = core.new_info("http://x/a.bin");
         i.status = Status::Error("x".into());
         let id = i.id;
-        core.add(i);
+        let job = core.add(i);
+        core.settings().queues.iter_mut().find(|queue| queue.id == q).unwrap().limit_kb = 50;
+        core.start_queue(q);
         core.set_queue(&[id], Some(q));
-        assert!(core.find(id).unwrap().info().queued);
+        assert!(job.info().queued);
+        assert_eq!(job.limiter.rate.load(Relaxed), 50 * 1024);
+        core.set_job_limit(&job, 100);
+        assert_eq!(job.limiter.rate.load(Relaxed), 50 * 1024);
+        core.set_queue(&[id], None);
+        assert_eq!(job.limiter.rate.load(Relaxed), 100 * 1024);
+        core.set_queue(&[id], Some(q));
         core.delete_queue(MAIN_QUEUE); // not allowed
         core.delete_queue(1);
         core.delete_queue(q);
@@ -2439,12 +2460,4 @@ fn queue_speed_limit() {
     assert_eq!(queue_rate(0, 50), 50 * 1024);
     assert_eq!(queue_rate(100, 50), 50 * 1024);
     assert_eq!(queue_rate(20, 50), 20 * 1024);
-}
-
-#[test]
-fn extension_store_ids() {
-    let ids: Vec<&str> = store_ids("abcdefghijklmnopabcdefghijklmnop, bad, ponmlkjihgfedcbaponmlkjihgfedcba,qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq").collect();
-    assert_eq!(ids, ["abcdefghijklmnopabcdefghijklmnop", "ponmlkjihgfedcbaponmlkjihgfedcba"]);
-    assert!(extension_ids().contains(&"fjkomnlijmdmohmlbfgkepgdieleinoa"));
-    assert_eq!(chrome_origins()["allowed_origins"][0], "chrome-extension://fjkomnlijmdmohmlbfgkepgdieleinoa/");
 }

@@ -1,9 +1,8 @@
-//! HTTP transport for downloads: one HTTP/1.1 client (ureq) for every route. Each of a download's
-//! connections is a TCP connection of its own (HTTP/2 would share one between them, and servers that
-//! limit the speed per connection would then give the whole download one connection's speed). Redirects
-//! are followed here, so a request's context (cookies, headers, the route) stays scoped to its origin.
+//! HTTP transport for downloads. Direct TLS connections share a pool that negotiates HTTP/2.
+//! Proxy routes and connection-oriented authentication retain the original HTTP/1.1 client.
 use std::io::{self, Read};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use url::Url;
 
 #[derive(Clone)]
@@ -13,6 +12,7 @@ pub struct Agent {
     pub(crate) proxy: String,
     user_agent: String,
     pub(crate) invalid_proxy: bool,
+    http1_hosts: Arc<[url::Host<String>]>,
     pub(crate) routes: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
 }
 
@@ -30,8 +30,18 @@ impl Agent {
             proxy: proxy.into(),
             user_agent: user_agent.into(),
             invalid_proxy,
+            http1_hosts: Arc::default(),
             routes: None,
         }
+    }
+
+    pub(crate) fn with_http1_hosts(mut self, hosts: &str) -> Self {
+        self.http1_hosts = hosts.split_whitespace().filter_map(|host| url::Host::parse(host).ok()).collect();
+        self
+    }
+
+    fn http1_only(&self, url: &Url) -> bool {
+        url.host().is_some_and(|host| self.http1_hosts.iter().any(|entry| entry == &host))
     }
 
     fn for_url(&self, url: &str) -> Self {
@@ -43,6 +53,7 @@ impl Agent {
             return self.clone();
         }
         let mut agent = crate::engine::agent(&proxy, &self.user_agent);
+        agent.http1_hosts = self.http1_hosts.clone();
         agent.routes = self.routes.clone();
         agent
     }
@@ -59,9 +70,15 @@ pub struct Request {
     agent: Agent,
     url: String,
     headers: Vec<(String, String)>,
+    https_only: bool,
 }
 
 impl Request {
+    pub(crate) fn https_only(mut self) -> Self {
+        self.https_only = true;
+        self
+    }
+
     pub fn set(mut self, key: &str, value: &str) -> Self {
         self.headers
             .retain(|(name, _)| !name.eq_ignore_ascii_case(key));
@@ -75,6 +92,7 @@ pub fn request(agent: &Agent, url: &str, referrer: &str, cookies: &str) -> Reque
         agent: agent.for_url(url),
         url: url.into(),
         headers: vec![],
+        https_only: false,
     };
     if let (Ok(source), Ok(mut page)) = (Url::parse(url), Url::parse(referrer)) {
         if matches!(page.scheme(), "http" | "https")
@@ -132,34 +150,68 @@ pub(crate) fn redact(text: &str) -> String {
         .collect()
 }
 
+fn tls_client(http1_only: bool) -> Option<&'static reqwest::blocking::Client> {
+    static AUTO: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+    static HTTP1: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+    let cell = if http1_only { &HTTP1 } else { &AUTO };
+    let builder = || {
+        let builder = client_builder();
+        if http1_only { builder.http1_only() } else { builder }
+    };
+    cell.get_or_init(|| {
+        builder().build().or_else(|_| builder().tls_built_in_native_certs(false).build()).ok()
+    }).as_ref()
+}
+
+fn client_builder() -> reqwest::blocking::ClientBuilder {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(16)
+}
+
 pub enum Response {
     Legacy(ureq::Response),
+    Tls(reqwest::blocking::Response),
 }
 
 impl Response {
     pub fn status(&self) -> u16 {
         match self {
             Self::Legacy(r) => r.status(),
+            Self::Tls(r) => r.status().as_u16(),
         }
     }
     pub fn header(&self, name: &str) -> Option<&str> {
         match self {
             Self::Legacy(r) => r.header(name),
+            Self::Tls(r) => r.headers().get(name)?.to_str().ok(),
         }
     }
     pub fn all(&self, name: &str) -> Vec<&str> {
         match self {
             Self::Legacy(r) => r.all(name),
+            Self::Tls(r) => r
+                .headers()
+                .get_all(name)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect(),
         }
     }
     pub fn get_url(&self) -> &str {
         match self {
             Self::Legacy(r) => r.get_url(),
+            Self::Tls(r) => r.url().as_str(),
         }
     }
     pub fn into_reader(self) -> Box<dyn Read + Send> {
         match self {
             Self::Legacy(r) => r.into_reader(),
+            Self::Tls(r) => Box::new(r),
         }
     }
     pub fn into_string(self) -> io::Result<String> {
@@ -177,13 +229,22 @@ impl Response {
     }
 }
 
-/// "HTTP 404 Not Found": the status and the server's own reason phrase (a standard one when it sent none).
-pub(crate) fn http_error(code: u16, reason: &str) -> String {
-    let reason = reason.trim();
-    if reason.is_empty() { format!("HTTP {code}") } else { format!("HTTP {code} {reason}") }
+pub(crate) fn http_error(code: u16) -> String {
+    let reason = reqwest::StatusCode::from_u16(code)
+        .ok()
+        .and_then(|s| s.canonical_reason())
+        .unwrap_or("Request failed");
+    format!("HTTP {code} {reason}")
 }
 
 pub fn call(request: Request) -> Result<Response, String> {
+    call_with(request, tls_client)
+}
+
+fn call_with<'a>(
+    request: Request,
+    tls: impl Fn(bool) -> Option<&'a reqwest::blocking::Client>,
+) -> Result<Response, String> {
     if request.agent.invalid_proxy {
         return Err("Invalid proxy configuration".into());
     }
@@ -191,19 +252,53 @@ pub fn call(request: Request) -> Result<Response, String> {
     let mut headers = request.headers;
     let mut agent = request.agent;
     for _ in 0..=10 {
+        if request.https_only && url.scheme() != "https" {
+            return Err("An HTTPS-only request was redirected to an insecure address".into());
+        }
         if !matches!(url.scheme(), "http" | "https") {
             return Err("Unsupported HTTP redirect protocol".into());
         }
-        let mut send = agent.no_redirect.get(url.as_str());
-        for (key, value) in &headers {
-            send = send.set(key, value);
+        let client =
+            if url.scheme() == "https" && agent.proxy.is_empty() && url.username().is_empty() {
+                tls(agent.http1_only(&url))
+            } else {
+                None
+            };
+        let mut response = None;
+        if let Some(client) = client {
+            let mut send = client
+                .get(url.clone())
+                .header("User-Agent", &agent.user_agent);
+            for (key, value) in &headers {
+                send = send.header(key, value);
+            }
+            let received = send.send().map_err(|err| {
+                if err.is_timeout() {
+                    "HTTP request timed out".to_string()
+                } else if err.is_connect() {
+                    "Could not connect to the HTTPS server".to_string()
+                } else {
+                    "HTTPS request failed".to_string()
+                }
+            })?;
+            if received.status() != reqwest::StatusCode::UNAUTHORIZED {
+                response = Some(Response::Tls(received));
+            }
         }
-        let response = Response::Legacy(crate::engine::call_legacy(send).map_err(|err| redact(&err))?);
+        let response = match response {
+            Some(response) => response,
+            None => {
+                let mut send = agent.no_redirect.get(url.as_str());
+                for (key, value) in &headers {
+                    send = send.set(key, value);
+                }
+                Response::Legacy(crate::engine::call_legacy(send).map_err(|err| redact(&err))?)
+            }
+        };
         let code = response.status();
         if !matches!(code, 301 | 302 | 303 | 307 | 308) {
             if code >= 400 {
-                let Response::Legacy(r) = &response;
-                return Err(http_error(code, r.status_text()));
+                return Err(http_error(code));
             }
             return Ok(response);
         }
@@ -254,7 +349,6 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
     use std::sync::Arc;
-    use std::time::Duration;
 
     fn head(socket: &TcpStream) -> String {
         let mut reader = BufReader::new(socket);
@@ -388,64 +482,169 @@ mod tests {
         server.join().unwrap();
     }
 
-    /// HTTPS through the one client: a certificate the system (here: the test) trusts is accepted, one it
-    /// doesn't is refused, and two requests at once get two TCP connections of their own (a download's
-    /// segments each have their own connection's speed).
     #[test]
-    fn https_trusts_added_roots_and_gives_each_request_its_own_connection() {
-        use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+    fn legacy_https_accepts_a_configured_root_and_rejects_an_unknown_root() {
+        use rustls::pki_types::PrivatePkcs8KeyDer;
         let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let der: CertificateDer<'static> = certificate.cert.der().clone();
+        let der = certificate.cert.der().clone();
         let config = Arc::new(
             rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .unwrap()
+                .with_safe_default_protocol_versions().unwrap()
                 .with_no_client_auth()
                 .with_single_cert(vec![der.clone()], PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into())
                 .unwrap(),
         );
-        let server = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("https://localhost:{}/file", server.local_addr().unwrap().port());
-        let (accepted, active, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let (a, b, c) = (accepted.clone(), active.clone(), peak.clone());
-        std::thread::spawn(move || {
-            for socket in server.incoming().flatten() {
-                let (config, accepted, active, peak) = (config.clone(), a.clone(), b.clone(), c.clone());
-                std::thread::spawn(move || {
-                    accepted.fetch_add(1, SeqCst);
-                    let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), socket);
-                    let mut reader = BufReader::new(&mut tls);
-                    let mut line = String::new();
-                    // a client that refused the certificate ends the handshake here
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                        return;
-                    }
-                    while reader.read_line(&mut line).unwrap_or(0) > 2 {}
-                    drop(reader);
-                    peak.fetch_max(active.fetch_add(1, SeqCst) + 1, SeqCst);
-                    std::thread::sleep(Duration::from_millis(200));
-                    let _ = tls.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-2/3\r\nContent-Length: 3\r\n\r\nabc");
-                    let _ = tls.flush();
-                    active.fetch_sub(1, SeqCst);
-                    std::thread::sleep(Duration::from_millis(300));
-                });
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // Userinfo selects the HTTP/1.1 transport, as do authenticated proxy routes.
+        let url = format!("https://user:pass@localhost:{}/file", listener.local_addr().unwrap().port());
+        let server = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config.clone()).unwrap(), socket);
+                let mut headers = BufReader::new(&mut tls);
+                let mut line = String::new();
+                let read = headers.read_line(&mut line);
+                if index == 0 {
+                    assert!(read.is_err() || matches!(read, Ok(0)));
+                    continue;
+                }
+                assert!(read.is_ok() && line.starts_with("GET /file HTTP/1.1"));
+                while headers.read_line(&mut String::new()).is_ok_and(|n| n > 2) {}
+                tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc").unwrap();
+                tls.flush().unwrap();
             }
         });
-        // not trusted: refused
-        let untrusted = crate::engine::agent("", "");
-        assert!(call(request(&untrusted, &url, "", "")).is_err(), "a certificate nobody trusts");
-        let agent = crate::engine::agent_with_tls("", "", crate::engine::tls_config(&[der]));
-        let read = || {
-            let response = call(request(&agent, &url, "", "").set("Range", "bytes=0-")).unwrap();
-            assert_eq!(response.status(), 206);
+        let default = crate::engine::agent("", "");
+        assert!(call(request(&default, &url, "", "")).is_err());
+        let trusted = crate::engine::agent_with_tls("", "", crate::engine::tls_config(&[der]));
+        assert_eq!(call(request(&trusted, &url, "", "")).unwrap().into_string().unwrap(), "abc");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn protocol_override_matches_exact_hosts_after_routing() {
+        let mut agent = crate::engine::agent("", "").with_http1_hosts("EXAMPLE.org [::1] bücher.example");
+        agent.routes = Some(Arc::new(|_| "http://127.0.0.1:9876".into()));
+        let agent = agent.for_url("https://example.org:8443/media");
+        assert_eq!(agent.proxy, "http://127.0.0.1:9876");
+        let matches = |url: &str| agent.http1_only(&Url::parse(url).unwrap());
+        assert!(matches("https://example.org:8443/media"));
+        assert!(matches("https://[::1]/file"));
+        assert!(matches("https://xn--bcher-kva.example/file"));
+        assert!(!matches("https://cdn.example.org/file"));
+        assert!(!matches("https://example.org.invalid/file"));
+        assert!(!crate::engine::agent("", "").http1_only(&Url::parse("https://example.org/").unwrap()));
+    }
+
+    #[test]
+    fn publisher_request_refuses_a_plain_http_route() {
+        let agent = crate::engine::agent("", "");
+        let request = request(&agent, "http://127.0.0.1:1/", "", "").https_only();
+        assert_eq!(call(request).err().as_deref(), Some("An HTTPS-only request was redirected to an insecure address"));
+    }
+
+    #[test]
+    fn negotiates_http2_and_multiplexes_within_server_limit() {
+        use tokio_rustls::rustls::{self, pki_types::PrivatePkcs8KeyDer};
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let der = certificate.cert.der().clone();
+        let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![der.clone()],
+            PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der()).into(),
+        )
+        .unwrap();
+        tls.alpn_protocols = vec![b"h2".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://localhost:{}", server.local_addr().unwrap().port());
+        server.set_nonblocking(true).unwrap();
+        let peak = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let (peak_server, accepted_server) = (peak.clone(), accepted.clone());
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::from_std(server).unwrap();
+                loop {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let (acceptor, peak, accepted) = (
+                        acceptor.clone(),
+                        peak_server.clone(),
+                        accepted_server.clone(),
+                    );
+                    tokio::spawn(async move {
+                        let tls = acceptor.accept(socket).await.unwrap();
+                        assert_eq!(tls.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+                        accepted.fetch_add(1, SeqCst);
+                        let mut h2 = h2::server::Builder::new()
+                            .max_concurrent_streams(2)
+                            .handshake::<_, &'static [u8]>(tls)
+                            .await
+                            .unwrap();
+                        let active = Arc::new(AtomicUsize::new(0));
+                        while let Some(Ok((request, mut respond))) = h2.accept().await {
+                            assert_eq!(request.version(), http::Version::HTTP_2);
+                            if request.uri().path() == "/goaway" {
+                                h2.graceful_shutdown();
+                            }
+                            let (active, peak) = (active.clone(), peak.clone());
+                            tokio::spawn(async move {
+                                peak.fetch_max(active.fetch_add(1, SeqCst) + 1, SeqCst);
+                                tokio::time::sleep(Duration::from_millis(120)).await;
+                                let response = http::Response::builder()
+                                    .header("content-length", 3)
+                                    .body(())
+                                    .unwrap();
+                                respond
+                                    .send_response(response, false)
+                                    .unwrap()
+                                    .send_data(b"abc".as_slice(), true)
+                                    .unwrap();
+                                active.fetch_sub(1, SeqCst);
+                            });
+                        }
+                    });
+                }
+            });
+        });
+        let client = client_builder()
+            .add_root_certificate(reqwest::Certificate::from_der(der.as_ref()).unwrap())
+            .build()
+            .unwrap();
+        let agent = crate::engine::agent("", "");
+        let read = |path| {
+            let response = call_with(request(&agent, &format!("{url}{path}"), "", ""), |_| {
+                Some(&client)
+            })
+            .unwrap();
+            assert!(
+                matches!(&response, Response::Tls(r) if r.version() == reqwest::Version::HTTP_2)
+            );
             assert_eq!(response.into_string().unwrap(), "abc");
         };
-        let before = accepted.load(SeqCst);
+        read("/warm");
         std::thread::scope(|scope| {
-            scope.spawn(read);
-            scope.spawn(read);
+            scope.spawn(|| read("/one"));
+            scope.spawn(|| read("/two"));
         });
-        assert_eq!(peak.load(SeqCst), 2, "both requests at once");
-        assert_eq!(accepted.load(SeqCst) - before, 2, "each on a connection of its own");
+        assert_eq!(accepted.load(SeqCst), 1);
+        assert_eq!(peak.load(SeqCst), 2);
+        read("/goaway");
+        read("/reconnect");
+        assert_eq!(accepted.load(SeqCst), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "transport_bench.rs"]
+mod benchmark;

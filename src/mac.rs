@@ -188,7 +188,12 @@ pub fn system_dark() -> bool {
 /// The system's proxy (System Settings -> Network -> Proxies, as `scutil --proxy` shows it) in Windows'
 /// Internet Settings shape: (on, "http=host:port;https=host:port", bypass list).
 pub fn system_proxy() -> (bool, String, String) {
-    scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default())
+    let (on, mut server, bypass) = scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default());
+    if on && crate::mac_capture::has_journal() {
+        let local = format!("http=127.0.0.1:{}", crate::core::PROXY_PORT);
+        server = server.split(';').filter(|entry| *entry != local).collect::<Vec<_>>().join(";");
+    }
+    (!server.is_empty(), server, bypass)
 }
 
 fn scutil_proxy(text: &str) -> (bool, String, String) {
@@ -224,64 +229,6 @@ fn scutil_proxy_output() {
     assert_eq!(scutil_proxy(t), (true, "http=10.0.0.1:3128".into(), "*.local;169.254/16".into()));
     assert!(!scutil_proxy("<dictionary> {\n  HTTPEnable : 0\n}\n").0);
 }
-
-/// Sets the system's web proxy (System Settings -> Network -> Proxies) on every network service, in Windows'
-/// Internet Settings shape (`server`: "http=host:port;https=host:port" or "host:port"; `bypass`: ";"-separated),
-/// or turns it off. `networksetup` does it; when the account may not change network settings by itself, it
-/// runs once more through macOS' administrator prompt.
-pub fn set_system_proxy(on: bool, server: &str, bypass: &str) {
-    let list = output("networksetup", &["-listallnetworkservices"]).unwrap_or_default();
-    let services = network_services(&list);
-    if services.is_empty() {
-        return;
-    }
-    let cmds = proxy_commands(&services, on, server, bypass);
-    let ok = cmds.iter().all(|c| std::process::Command::new("networksetup").args(c).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success()));
-    if ok {
-        return;
-    }
-    let script = cmds.iter().map(|c| format!("/usr/sbin/networksetup {}", c.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" "))).collect::<Vec<_>>().join(" && ");
-    let apple = format!("do shell script \"{}\" with administrator privileges", script.replace('\\', "\\\\").replace('"', "\\\""));
-    let _ = std::process::Command::new("osascript").args(["-e", &apple]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-}
-
-/// The services `networksetup -listallnetworkservices` lists, without its first line and the disabled ones
-/// (marked "*").
-fn network_services(list: &str) -> Vec<String> {
-    list.lines().skip(1).map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('*')).map(String::from).collect()
-}
-
-/// `networksetup` argument lists that set (or turn off) the web and secure web proxy of each service.
-fn proxy_commands(services: &[String], on: bool, server: &str, bypass: &str) -> Vec<Vec<String>> {
-    let pick = |kind: &str| -> Option<(String, String)> {
-        let hp = server.split(';').find_map(|p| p.trim().strip_prefix(&format!("{kind}="))).or_else(|| (!server.contains('=')).then_some(server.trim()))?;
-        let (host, port) = hp.rsplit_once(':')?;
-        (!host.is_empty() && port.parse::<u16>().is_ok()).then(|| (host.to_string(), port.to_string()))
-    };
-    let mut cmds = Vec::new();
-    for svc in services {
-        let s = svc.clone();
-        for (kind, set, state) in [("http", "-setwebproxy", "-setwebproxystate"), ("https", "-setsecurewebproxy", "-setsecurewebproxystate")] {
-            match pick(kind).filter(|_| on) {
-                Some((host, port)) => cmds.push(vec![set.into(), s.clone(), host, port]),
-                None => cmds.push(vec![state.into(), s.clone(), "off".into()]),
-            }
-        }
-        if on {
-            let hosts: Vec<String> = bypass.split(';').map(str::trim).filter(|h| !h.is_empty()).map(|h| if h == "<local>" { "*.local".into() } else { h.to_string() }).collect();
-            let mut c = vec!["-setproxybypassdomains".to_string(), s.clone()];
-            c.extend(if hosts.is_empty() { vec!["Empty".to_string()] } else { hosts });
-            cmds.push(c);
-        }
-    }
-    cmds
-}
-
-/// A word for /bin/sh, in single quotes.
-fn sh_quote(a: &str) -> String {
-    format!("'{}'", a.replace('\'', "'\\''"))
-}
-
 
 // ---------- Dial Up / VPN: the system's VPN services through scutil --nc ----------
 
@@ -382,6 +329,7 @@ pub fn set_autostart(on: bool) {
 pub fn install_desktop_entry() {}
 
 const HOST: &str = "com.ndm.host";
+const EXT_ID: &str = "fjkomnlijmdmohmlbfgkepgdieleinoa";
 
 /// Writes the extension's native messaging host manifest where each installed browser looks for it.
 pub fn register_host(_dir: &Path) {
@@ -391,7 +339,7 @@ pub fn register_host(_dir: &Path) {
         m.as_object_mut().unwrap().extend(allow.as_object().unwrap().clone());
         m.to_string()
     };
-    let chrome = manifest(crate::core::chrome_origins());
+    let chrome = manifest(serde_json::json!({ "allowed_origins": [format!("chrome-extension://{EXT_ID}/")] }));
     let firefox = manifest(serde_json::json!({ "allowed_extensions": ["ndm@newdownloadmanager"] }));
     for (d, is_firefox) in host_dirs(&support()) {
         let _ = std::fs::create_dir_all(&d);
@@ -839,26 +787,4 @@ pub fn package_owner(_exe: &Path) -> Option<&'static str> {
 
 pub fn install_package(_file: &Path) -> Result<(), String> {
     Err("not on macOS".into())
-}
-
-#[cfg(test)]
-mod proxy_tests {
-    use super::*;
-
-    #[test]
-    fn networksetup_commands() {
-        let list = "An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n*Bluetooth PAN\nUSB 10/100 LAN\n";
-        let svcs = network_services(list);
-        assert_eq!(svcs, ["Wi-Fi", "USB 10/100 LAN"]);
-        let on = proxy_commands(&svcs[..1], true, "http=127.0.0.1:5050;https=10.0.0.2:3129", "<local>;*.corp");
-        assert_eq!(on, [
-            vec!["-setwebproxy", "Wi-Fi", "127.0.0.1", "5050"],
-            vec!["-setsecurewebproxy", "Wi-Fi", "10.0.0.2", "3129"],
-            vec!["-setproxybypassdomains", "Wi-Fi", "*.local", "*.corp"],
-        ]);
-        // only plain http to NDM: the secure proxy stays off
-        assert_eq!(proxy_commands(&svcs[..1], true, "http=127.0.0.1:5050", "")[1], ["-setsecurewebproxystate", "Wi-Fi", "off"]);
-        assert_eq!(proxy_commands(&svcs[..1], false, "", ""), [vec!["-setwebproxystate", "Wi-Fi", "off"], vec!["-setsecurewebproxystate", "Wi-Fi", "off"]]);
-        assert_eq!(sh_quote("it's"), "'it'\\''s'");
-    }
 }

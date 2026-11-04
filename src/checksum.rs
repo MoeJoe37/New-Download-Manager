@@ -60,80 +60,94 @@ pub fn compare(sums: &Sums, expected: &str) -> Option<(&'static str, bool)> {
     })
 }
 
-/// Where a site may publish a download's SHA-256: `<the file's address>.sha256`, else a sums file in its
-/// folder. Addresses with a query (a script hands the file out) have none.
-fn sidecars(url: &str) -> Vec<String> {
-    let Ok(mut u) = url::Url::parse(url) else { return Vec::new() };
-    if !matches!(u.scheme(), "http" | "https") || u.query().is_some() || u.path().ends_with('/') {
-        return Vec::new();
+const MAX_MANIFEST: u64 = 1024 * 1024;
+
+fn read_manifest(reader: impl Read) -> Result<String, String> {
+    let mut text = String::new();
+    reader.take(MAX_MANIFEST + 1).read_to_string(&mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_MANIFEST {
+        return Err("Checksum lists must be at most 1 MiB.".into());
     }
-    u.set_fragment(None);
-    let mut out = vec![format!("{u}.sha256")];
-    out.extend(["SHA256SUMS", "sha256sums.txt"].iter().filter_map(|n| u.join(n).ok()).map(|x| x.to_string()));
-    out
+    Ok(text)
 }
 
-fn hex64(t: &str) -> bool {
-    t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit())
+pub fn from_file(path: &std::path::Path, name: &str) -> Result<String, String> {
+    if !path.is_file() { return Err("Choose a regular checksum file.".into()); }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let text = read_manifest(file)?;
+    if is_sha256(text.trim()) {
+        return Ok(text.trim().to_ascii_lowercase());
+    }
+    matching_sha256(&text, name)
 }
 
-/// The SHA-256 `text` gives `file`: its line in a sums list ("hex  name", "hex *name" or BSD's
-/// "SHA256 (name) = hex"), or, in a file of its own (`own`), the one SHA-256 there.
-fn sum_for(text: &str, file: &str, own: bool) -> Option<String> {
-    let named = |n: &str| n.trim().trim_start_matches('*').rsplit(['/', '\\']).next() == Some(file);
-    let listed = text.lines().find_map(|l| {
-        let l = l.trim();
-        if let Some(rest) = l.strip_prefix("SHA256 (") {
-            let (name, hex) = rest.split_once(") = ")?;
-            return (named(name) && hex64(hex.trim())).then(|| hex.trim().to_ascii_lowercase());
-        }
-        let (hex, name) = l.split_once(char::is_whitespace)?;
-        (named(name) && hex64(hex)).then(|| hex.to_ascii_lowercase())
-    });
-    let only = || {
-        let sums: Vec<&str> = text.split(|c: char| !c.is_ascii_hexdigit()).filter(|t| hex64(t)).collect();
-        (sums.len() == 1).then(|| sums[0].to_ascii_lowercase())
-    };
-    listed.or_else(|| if own { only() } else { None })
+pub fn from_publisher(agent: &crate::engine::Agent, url: &str, name: &str) -> Result<String, String> {
+    let url = publisher_url(url).ok_or("Enter the publisher's HTTPS checksum-list address.")?;
+    let req = crate::transport::request(agent, url.as_str(), "", "").https_only();
+    let response = crate::transport::call(req)?;
+    matching_sha256(&read_manifest(response.into_reader())?, name)
 }
 
-/// The SHA-256 the site publishes beside the download at `url` for `file`, if it does (Options ->
-/// Downloads -> "Check a downloaded file against the SHA-256 its site publishes").
-pub fn published_sha256(agent: &crate::engine::Agent, url: &str, referrer: &str, cookies: &str, file: &str) -> Option<String> {
-    for (k, at) in sidecars(url).iter().enumerate() {
-        let Ok(r) = crate::engine::call(crate::engine::request(agent, at, referrer, cookies)) else { continue };
-        if r.header("Content-Type").is_some_and(|t| t.to_ascii_lowercase().contains("html")) {
-            continue; // a site's "not found" page
-        }
-        let mut text = String::new();
-        if r.into_reader().take(256 << 10).read_to_string(&mut text).is_err() {
+pub fn publisher_url(text: &str) -> Option<url::Url> {
+    let url = url::Url::parse(text.trim()).ok()?;
+    (url.scheme() == "https" && url.host_str().is_some()
+        && url.username().is_empty() && url.password().is_none()).then_some(url)
+}
+
+fn is_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// GNU sha256sum and BSD SHA256 listings. A publisher result must explicitly name the file.
+fn matching_sha256(text: &str, name: &str) -> Result<String, String> {
+    let mut found = None;
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        let (hash, filename) = if let Some((file, hash)) = line.strip_prefix("SHA256 (").and_then(|s| s.rsplit_once(") = ")) {
+            (hash.trim(), file)
+        } else if let Some((hash, file)) = line.split_once(char::is_whitespace) {
+            let file = file.trim_start();
+            (hash, file.strip_prefix('*').unwrap_or(file))
+        } else {
+            continue;
+        };
+        let filename = filename.strip_prefix("./").unwrap_or(filename);
+        if !is_sha256(hash) || filename != name {
             continue;
         }
-        if let Some(sum) = sum_for(&text, file, k == 0) {
-            return Some(sum);
+        let hash = hash.to_ascii_lowercase();
+        if found.as_ref().is_some_and(|previous| previous != &hash) {
+            return Err("The checksum list contains conflicting hashes for this filename.".into());
         }
+        found = Some(hash);
     }
-    None
-}
-
-/// A file's SHA-256 (hex).
-pub fn sha256_of(path: &std::path::Path) -> std::io::Result<String> {
-    let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0; 1 << 20];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(h.finalize().iter().map(|x| format!("{x:02x}")).collect())
+    found.ok_or_else(|| "The checksum list has no SHA-256 entry for this exact filename.".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checksum_lists_require_an_unambiguous_exact_filename() {
+        let one = "a".repeat(64);
+        let two = "b".repeat(64);
+        let list = format!("{two}  app-old.zip\n{one} *./NDM إصدار.zip\nSHA256 (NDM إصدار.zip) = {}\n", one.to_uppercase());
+        assert_eq!(matching_sha256(&list, "NDM إصدار.zip"), Ok(one.clone()));
+        assert!(matching_sha256(&list, "ndm إصدار.zip").is_err());
+        assert!(matching_sha256(&one, "NDM إصدار.zip").is_err());
+        assert!(matching_sha256(&format!("{list}{two}  NDM إصدار.zip"), "NDM إصدار.zip").is_err());
+        assert!(publisher_url("http://example.org/checksums").is_none());
+        assert!(publisher_url("https://user:pass@example.org/checksums").is_none());
+        assert!(publisher_url("https://example.org/checksums").is_some());
+        assert!(read_manifest(std::io::repeat(b'a').take(MAX_MANIFEST + 1)).is_err());
+
+        let file = std::env::temp_dir().join(format!("ndm-checksum-list-{}", std::process::id()));
+        std::fs::write(&file, list).unwrap();
+        assert_eq!(from_file(&file, "NDM إصدار.zip"), Ok(one.clone()));
+        std::fs::write(&file, &one).unwrap();
+        assert_eq!(from_file(&file, "explicit.zip"), Ok(one));
+        std::fs::remove_file(file).unwrap();
+    }
 
     #[test]
     fn sums_and_compare() {
@@ -154,23 +168,5 @@ mod tests {
         assert_eq!(compare(&sums, "a9993e364706816aba3e25717850c26c9cd0d89d  abc.txt"), Some(("SHA-1", true)));
         assert_eq!(compare(&sums, "00000000000000000000000000000000"), Some(("MD5", false)));
         assert_eq!(compare(&sums, "not a checksum"), None);
-    }
-
-    /// A site's published SHA-256 beside the download: its own .sha256 file, or a sums list's line.
-    #[test]
-    fn published_sums() {
-        let a = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        assert_eq!(sidecars("https://x.org/pub/app-1.0.zip"), ["https://x.org/pub/app-1.0.zip.sha256", "https://x.org/pub/SHA256SUMS", "https://x.org/pub/sha256sums.txt"]);
-        assert!(sidecars("https://x.org/get.php?id=1").is_empty() && sidecars("ftp://x.org/a.zip").is_empty());
-        assert_eq!(sum_for(&a.to_uppercase(), "app.zip", true).as_deref(), Some(a));
-        assert_eq!(sum_for(&format!("{a}  other.zip\n"), "app.zip", true).as_deref(), Some(a), "a .sha256 of its own may name the file otherwise");
-        let list = format!("{}  other.zip\n{a} *dist/app.zip\n", "0".repeat(64));
-        assert_eq!(sum_for(&list, "app.zip", false).as_deref(), Some(a));
-        assert_eq!(sum_for(&list, "missing.zip", false), None);
-        assert_eq!(sum_for(&format!("SHA256 (app.zip) = {a}\n"), "app.zip", false).as_deref(), Some(a));
-        let p = std::env::temp_dir().join(format!("ndm-test-sha-{}", std::process::id()));
-        std::fs::write(&p, b"abc").unwrap();
-        assert_eq!(sha256_of(&p).unwrap(), a);
-        let _ = std::fs::remove_file(&p);
     }
 }

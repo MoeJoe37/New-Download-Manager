@@ -46,6 +46,7 @@ NOT_UI = re.compile(
     r"|^(availabilityStartTime|mediaPresentationDuration|mediaRange|mimeType|minimumUpdatePeriod|presentationTimeOffset"
     r"|sourceURL|startNumber|timeShiftBufferDepth|contentType|dnsResolve|myIpAddress|FindProxyForURL|NoProxyFor|ProxyType"
     r"|NativeMessagingHosts|NDM extension|POST |only CONNECT|no answer|worker panicked|with ndm|open\(|url\(|<body)$"
+    r"|^(HTTPEnable|HTTPPort|HTTPProxy|ProxyAutoConfigEnable|ProxyAutoDiscoveryEnable|SOCKSEnable|Proxies|Youtube|NDM crash location |Application crash|Renderer crash)$|^\\n### Local diagnostics"
     r"|^&(gt|lt|nbsp|quot);$|^SHA256 \($"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
 )
@@ -70,6 +71,8 @@ EXTRA += ["Joining video and audio..."]
 EXTRA += ["Del"]
 # what NDM does after a download (Job::set_post, shown through Info::post)
 EXTRA += ["Joining the pieces...", "Getting the audio...", "Moving the file to its folder...", "Processing...", "Processing"]
+EXTRA += ["HTTP/1.1...", "HTTP/1.1 hosts"]
+
 
 
 def without_tests(src):

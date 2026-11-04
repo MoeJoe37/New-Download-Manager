@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Builds NDM.app and installer/out/NDM-<version>-macOS.dmg on a Mac:  bash tools/macos.sh
-# One app for Apple Silicon and Intel Macs (both builds joined with lipo), for macOS 11 and later.
-# Signed ad hoc (Apple Silicon runs signed code only), so the first start needs right click -> Open
-# (README, Installing); with MACOS_SIGN_IDENTITY (a "Developer ID Application" certificate in the
-# keychain) signed with it for the hardened runtime, and with APPLE_ID, APPLE_TEAM_ID and
-# APPLE_APP_PASSWORD as well, notarized by Apple and stapled, so it opens like any app (release.yml).
-# Needs: Rust (rustup) and Xcode's command line tools.
+# One app for Apple Silicon and Intel Macs (both builds joined with lipo), for macOS 11 and later. It is
+# signed ad hoc (Apple Silicon runs signed code only) but not notarized, so the first start needs
+# right click -> Open (README, Installing). Needs: Rust (rustup) and Xcode's command line tools.
 set -euo pipefail
 src="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$src"
@@ -45,12 +42,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-identity="${MACOS_SIGN_IDENTITY:--}"
-if [ "$identity" = "-" ]; then
-    codesign --force --deep --sign - "$app"
-else
-    codesign --force --deep --options runtime --timestamp --sign "$identity" "$app"
-fi
+codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
 # the disk image: the app and a link to Applications to drag it onto
@@ -59,15 +51,5 @@ mkdir -p installer/out
 dmg="installer/out/NDM-$version-macOS.dmg"
 rm -f "$dmg"
 hdiutil create -volname "New Download Manager" -srcfolder "$work/dmg" -ov -format UDZO "$dmg" >/dev/null
-if [ "$identity" != "-" ]; then
-    codesign --force --timestamp --sign "$identity" "$dmg"
-    if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
-        # Apple checks the disk image and the app in it; the ticket is then stapled to the image so it
-        # opens without a network check
-        xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
-        xcrun stapler staple "$dmg"
-        xcrun stapler validate "$dmg"
-    fi
-fi
 lipo -info "$app/Contents/MacOS/ndm"
 ls -l "$dmg"

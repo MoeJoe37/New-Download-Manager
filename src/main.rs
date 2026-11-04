@@ -14,6 +14,8 @@ mod remux;
 mod stream;
 mod transport;
 mod ytdlp;
+#[cfg(target_os = "macos")]
+mod mac_capture;
 use i18n::{tr, tr_os};
 #[cfg(unix)]
 mod posix;
@@ -124,8 +126,7 @@ fn update_asset(name: &str) -> bool {
 #[test]
 fn update_assets() {
     let names = ["NDM-Setup-2.0.0.exe", "NDM-ARM64-Setup-2.0.0.exe", "ndm.exe", "ndm-arm64.exe", "NDM-x86_64.AppImage", "NDM-aarch64.AppImage", "ndm_2.0.0_amd64.deb", "ndm_2.0.0_arm64.deb",
-        "ndm-2.0.0-1.x86_64.rpm", "ndm-2.0.0-1.aarch64.rpm", "ndm-2.0.0-x86_64.tar.gz", "ndm-2.0.0-aarch64.tar.gz", "NDM-2.0.0-macOS.dmg", "NDM-2.0.0-windows-x64.zip",
-        "NDM-2.0.0-chrome-extension.zip", "NDM-2.0.0-firefox-extension.zip"];
+        "ndm-2.0.0-1.x86_64.rpm", "ndm-2.0.0-1.aarch64.rpm", "ndm-2.0.0-x86_64.tar.gz", "ndm-2.0.0-aarch64.tar.gz", "NDM-2.0.0-macOS.dmg", "NDM-2.0.0-windows-x64.zip"];
     // exactly one file is this build's (whatever way it was installed)
     assert_eq!(names.iter().filter(|n| update_asset(n)).count(), 1, "{:?}", names.iter().filter(|n| update_asset(n)).collect::<Vec<_>>());
     // what NDM 1.x looks for on x64 Windows (setup or loose exe) and x86_64 Linux never matches an ARM file
@@ -309,22 +310,74 @@ const DARK_MENU_HOT: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
 const BAR: Color32 = Color32::from_rgb(38, 120, 220);
 
 /// A problem report's title and text for GitHub (in English, for NDM's developers): what to fill in, NDM's
-/// version, the system, the language, and the start of a crash report with the user's folder as "~". The
-/// text stays short enough for an address (GitHub takes about 8 KB).
-fn issue_text(version: &str, lang: &str, log: Option<&str>, home: &str) -> (String, String) {
+/// version, the system, and the language.
+fn issue_text(version: &str, lang: &str) -> (String, String) {
     let lang = if lang.is_empty() { "en (English)".to_string() } else { lang.to_string() };
-    let mut text = format!(
+    let text = format!(
         "### What happened?\n\n\n### What did you expect?\n\n\n### Steps to reproduce\n1. \n\n### System\n- NDM {version}\n- {} {}\n- Language: {lang}\n",
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    if let Some(log) = log {
-        let log = if home.len() > 1 { log.replace(home, "~") } else { log.to_string() };
-        let cut: String = log.chars().take(2500).collect();
-        let more = if cut.len() < log.len() { "\n..." } else { "" };
-        text += &format!("\n### Crash report\n```\n{}{more}\n```\n", cut.trim_end());
-    }
     (format!("[{version}] "), text)
+}
+
+const CRASH_MODULES: &[&str] = &[
+    "checksum", "core", "dlu", "engine", "grabber", "i18n", "linux", "mac", "mac_capture",
+    "main", "media", "net", "posix", "remux", "stream", "transport", "win", "ytdlp",
+];
+
+fn crash_location(file: &str, line: u32) -> String {
+    let module = file.strip_prefix("src/").or_else(|| file.strip_prefix("src\\"))
+        .and_then(|name| name.strip_suffix(".rs"));
+    match module.filter(|name| CRASH_MODULES.contains(name)) {
+        Some(name) => format!("{name}:{line}"),
+        None => "unavailable".into(),
+    }
+}
+
+fn crash_diagnostics(store: &Path) -> String {
+    use std::io::Read;
+    let mut report = String::new();
+    for (file, label) in [("crash.log", "Application crash"), ("renderer-crash.log", "Renderer crash")] {
+        let path = store.with_file_name(file);
+        if !path.is_file() { continue; }
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        let mut prefix = Vec::new();
+        if file.take(128).read_to_end(&mut prefix).is_err() { continue; }
+        let header = prefix.split(|byte| *byte == b'\n').next()
+            .and_then(|line| std::str::from_utf8(line).ok())
+            .and_then(|line| line.strip_prefix("NDM crash location "))
+            .and_then(|line| line.split_once(':'))
+            .and_then(|(module, line)| {
+                CRASH_MODULES.contains(&module).then_some(())?;
+                Some((module, line.parse::<u32>().ok()?))
+            });
+        if report.is_empty() {
+            report.push_str("\n### Local diagnostics\n");
+        }
+        if let Some((module, line)) = header {
+            report.push_str(&format!("- {label} recorded (module {module}, line {line}).\n"));
+        } else {
+            report.push_str(&format!("- {label} recorded.\n"));
+        }
+    }
+    report
+}
+
+#[test]
+fn problem_report_excludes_raw_crash_data() {
+    let dir = std::env::temp_dir().join(format!("ndm-crash-report-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("state.json");
+    assert!(crash_diagnostics(&store).is_empty());
+    assert_eq!(crash_location("src/engine.rs", 42), "engine:42");
+    assert_eq!(crash_location(r"C:\private\engine.rs", 42), "unavailable");
+    std::fs::write(dir.join("crash.log"),
+        "NDM crash location engine:42\nhttps://user:secret@example.com/private?token=123\nCookie: session=private\n/home/user/file").unwrap();
+    std::fs::write(dir.join("renderer-crash.log"), "NDM crash location private:15\nAuthorization: Bearer secret").unwrap();
+    assert_eq!(crash_diagnostics(&store),
+        "\n### Local diagnostics\n- Application crash recorded (module engine, line 42).\n- Renderer crash recorded.\n");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// Started by the browser extension (`/tray`, `win::native_host`): only the tray icon.
@@ -336,7 +389,8 @@ fn main() -> eframe::Result {
     // no console: a panic would vanish without a trace, so it goes to crash.log next to state.json
     std::panic::set_hook(Box::new(|p| {
         let bt = std::backtrace::Backtrace::force_capture();
-        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("{p}\n{bt}"));
+        let location = p.location().map_or_else(|| "unavailable".into(), |loc| crash_location(loc.file(), loc.line()));
+        let _ = std::fs::write(core::store_path().with_file_name("crash.log"), format!("NDM crash location {location}\n{p}\n{bt}"));
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     if win::is_host_launch(&args) {
@@ -697,7 +751,31 @@ fn integration(b: &core::Browser) -> &'static str {
     if extension_page(b).is_some() { "Extension" } else { "Not supported" }
 }
 
-/// Stop a download that was started early from "Download File Info" and delete its data.
+/// RichText keeps the filename's already-shaped text out of the translation and bidi pass in D::label.
+fn file_info_name(name: &str) -> RichText {
+    RichText::new(i18n::shown(name)).strong()
+}
+
+#[test]
+fn file_info_renders_both_logical_hebrew_names() {
+    let ctx = egui::Context::default();
+    let output = ctx.run(egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 200.0))),
+        ..Default::default()
+    }, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let mut d = dlu::D::new(ui);
+            d.label(7.0, 7.0, 200.0, 12.0, file_info_name("שלום"));
+            d.label(7.0, 24.0, 200.0, 12.0, file_info_name("םולש"));
+        });
+    });
+    let rendered: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) => Some(text.galley.text()),
+        _ => None,
+    }).collect();
+    assert_eq!(rendered, ["םולש", "שלום"]);
+}
+
 /// The rows File Info adds: the name as it reads (`i18n::shown`) when the edit box can't show it so
 /// (right-to-left letters), and a video page's Quality, Subtitles and Thumbnail.
 fn file_info_rows(info: &Info, path: &str) -> (f32, f32) {
@@ -720,6 +798,7 @@ const QUALITIES: [(&str, &str); 9] = [
     ("Audio only (MP3)", "mp3"),
 ];
 
+/// Stop an early download and delete its partial data.
 fn discard(j: &engine::Job) {
     j.stop();
     while j.running() {
@@ -1666,6 +1745,34 @@ impl Row {
 
 type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 
+#[derive(Default)]
+struct PlaylistPicker {
+    url: String,
+    browser: String,
+    pending: Option<PlaylistLookup>,
+    list: Option<ytdlp::Playlist>,
+    selected: Vec<bool>,
+    error: String,
+}
+
+struct PlaylistLookup {
+    job: Arc<engine::Job>,
+    results: Receiver<Result<ytdlp::Playlist, String>>,
+}
+
+impl Drop for PlaylistLookup {
+    fn drop(&mut self) {
+        self.job.stop();
+    }
+}
+
+#[derive(Default)]
+struct ChecksumSource {
+    url: String,
+    pending: Option<Receiver<Result<String, String>>>,
+    preview: Option<Result<String, String>>,
+}
+
 // a handful of dialogs is open at a time: their size doesn't matter, boxing each would only add noise
 #[allow(clippy::large_enum_variant)]
 enum Dialog {
@@ -1677,8 +1784,6 @@ enum Dialog {
     /// running while the dialog is open.
     /// `dir`: folder given on the command line (/p), used instead of the category's.
     FileInfo { info: Info, path: String, probe: ProbeSlot, applied: bool, error: String, hint: String, remember: bool, replace: Option<u64>, auto: bool, early: Option<Arc<engine::Job>>, dir: String },
-    /// "Choose videos" of a playlist (File Info's button): each checked one becomes a download like `info`.
-    Playlist { info: Info, entries: Vec<(ytdlp::Entry, bool)> },
     /// "Cancelling an automatically started download" (template 302, 0x5037a0).
     Cancelled { site: String, url: String, by_site: bool, by_addr: bool, dont_show: bool },
     /// "The list of address exceptions" (template 303) and its "Add" box (304).
@@ -1718,7 +1823,17 @@ enum Dialog {
     /// File Properties (template 135) for a finished download.
     FileProps { id: u64, url: String, desc: String, referer: String, login: String, pass: String },
     /// File Properties -> Checksum...: the file's SHA-256, SHA-1 and MD5, and a checksum to compare them with.
-    Checksum { name: String, run: Arc<checksum::Run>, expect: String },
+    Checksum { name: String, run: Arc<checksum::Run>, expect: String, source: ChecksumSource },
+    Playlist(Box<PlaylistPicker>),
+    ProblemReport { text: String },
+    Http1Hosts { hosts: String },
+    #[cfg(target_os = "macos")]
+    MacCapture {
+        services: Vec<(String, String)>,
+        selected: Option<usize>,
+        pending: Option<Receiver<Result<(), String>>>,
+        message: String,
+    },
     /// Downloads -> Set yt-dlp: downloading it (bytes so far, of, the version installed or the error).
     YtDlp { got: Arc<std::sync::atomic::AtomicU64>, total: Arc<std::sync::atomic::AtomicU64>, done: Arc<Mutex<Option<Result<String, String>>>> },
     /// NDM categories (template 204). `orig` = name of the edited category, None when adding.
@@ -1826,9 +1941,6 @@ struct App {
     updating: bool,
     /// "Refresh download address": the download waiting for a fresh link from the browser.
     refreshing: Option<u64>,
-    /// Downloads whose file was checked against the SHA-256 their site publishes, and whether it has it
-    /// (`check_sum`): saved, and a warning for each that doesn't.
-    sums: Arc<Mutex<Vec<(u64, bool)>>>,
     /// Login typed in "Connecting to the site" for the grabber to explore again with.
     grab_auth: Option<(String, String)>,
     /// Manual login page done: the browser's cookies for the grabber to explore with.
@@ -2165,8 +2277,11 @@ impl Res {
 impl App {
     fn new(ctx: &egui::Context) -> App {
         let core = Core::load();
-        let on = core.settings().adv_integration;
-        core.apply_integration(on);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let on = core.settings().adv_integration;
+            core.apply_integration(on);
+        }
         let dark =core.settings().dark_support && win::system_dark();
         *LIST_FONT.lock().unwrap() = core.settings().list_font.clone();
         i18n::load(&core.settings().language.clone());
@@ -2195,7 +2310,6 @@ impl App {
             cat: Cat::Files(Which::All, None),
             expanded,
             refreshing: None,
-            sums: Arc::default(),
             grab_auth: None,
             grab_cookies: None,
             grab_load: None,
@@ -2238,6 +2352,10 @@ impl App {
             theme_check: 0,
             langs: i18n::list(),
         };
+        #[cfg(target_os = "macos")]
+        if let Err(error) = mac_capture::restore() {
+            app.open(Dialog::Info { title: "Restore macOS web proxy".into(), text: error });
+        }
         if app.core.settings().tips_startup && !tray_start() {
             let text = app.next_tip();
             app.open(Dialog::Tip { text });
@@ -2422,12 +2540,9 @@ impl App {
     }
 
     /// Help -> "Report a problem...": a new GitHub issue on NDM's page, filled in with NDM's version, the
-    /// system and the last crash report (crash.log, renderer-crash.log), the user's folder left out.
+    /// operating system, architecture and language.
     fn report_problem() {
-        let dir = core::store_path();
-        let log = ["crash.log", "renderer-crash.log"].iter().find_map(|n| std::fs::read_to_string(dir.with_file_name(n)).ok().filter(|t| !t.trim().is_empty()));
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
-        let (title, body) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current(), log.as_deref(), &home);
+        let (title, body) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current());
         let enc = |t: &str| percent_encoding::utf8_percent_encode(t, percent_encoding::NON_ALPHANUMERIC).to_string();
         open_url(&format!("https://github.com/{UPDATE_REPO}/issues/new?title={}&body={}", enc(&title), enc(&body)));
     }
@@ -2640,7 +2755,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             i.name = inc.filename.clone();
             // Options -> Downloads "Do not start downloading, only add files to the queue": a download
             // handed over without questions goes to the main queue instead of starting
-            let later = inc.later || self.core.settings().only_queue;
+            let later = inc.later || (!inc.cli && self.core.settings().only_queue);
             i.queued = later;
             let id = i.id;
             let job = self.core.add(i);
@@ -2777,7 +2892,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             info.folder = inc.folder.clone();
         }
         let path = Path::new(&info.folder).join(&name).display().to_string();
-        let at_once = self.core.settings().start_at_once;
+        let at_once = {
+            let settings = self.core.settings();
+            settings.start_at_once && !settings.only_queue && !video_page
+        };
         let early = at_once.then(|| {
             // downloads into the category's folder under a free name until the dialog is answered
             let mut i = info.clone();
@@ -2805,24 +2923,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
         }
         self.open(Dialog::FileInfo { info, path, probe: slot, applied: false, error: String::new(), hint, remember: false, replace: None, auto: !inc.force, early, dir: inc.folder });
-    }
-
-    /// Options -> Downloads "Check a downloaded file against the SHA-256 its site publishes": on a thread,
-    /// the sum beside the file on its site (a plain file NDM fetched itself), then the file's.
-    fn check_sum(&self, ctx: &egui::Context, j: &Arc<engine::Job>) {
-        let i = j.info().clone();
-        if !self.core.settings().check_sums || i.ytdlp || i.stream || i.fed || !i.media_output.is_empty() {
-            return;
-        }
-        let (j, agent, sums, ctx) = (j.clone(), self.core.agent(&i.url), self.sums.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let Some(want) = checksum::published_sha256(&agent, &i.url, &i.referrer, &i.cookies, &i.name) else { return };
-            let Ok(have) = checksum::sha256_of(&i.path()) else { return };
-            let ok = have == want;
-            j.info().sha256 = Some((want, ok));
-            sums.lock().unwrap().push((i.id, ok));
-            ctx.request_repaint();
-        });
     }
 
     fn resume(&mut self, ids: &[u64]) {
@@ -3169,6 +3269,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 });
                 ui.separator();
+                if ui.button(tr("Download video playlist...")).clicked() {
+                    self.open(Dialog::Playlist(Box::new(PlaylistPicker {
+                        url: links(&clipboard()).into_iter().next().unwrap_or_default(),
+                        ..Default::default()
+                    })));
+                    ui.close_menu();
+                }
                 if ui.button(tr("Set yt-dlp")).on_hover_text(tr("Downloads yt-dlp and ffmpeg for YouTube and other video sites, adds them to PATH and keeps yt-dlp up to date")).clicked() {
                     self.set_ytdlp(ctx);
                     ui.close_menu();
@@ -3320,7 +3427,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 }
                 if ui.button(tr("Report a problem...")).clicked() {
-                    App::report_problem();
+                    let (_, mut text) = issue_text(env!("CARGO_PKG_VERSION"), &i18n::current());
+                    text.push_str(&crash_diagnostics(&core::store_path()));
+                    self.open(Dialog::ProblemReport { text });
                     ui.close_menu();
                 }
                 ui.separator();
@@ -4424,7 +4533,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let (name, video) = file_info_rows(info, path);
                 ("Download File Info".into(), tpl(380.0, 128.0 + name + video))
             }
-            Dialog::Playlist { .. } => ("Choose videos".into(), tpl(380.0, 230.0)),
             Dialog::Progress { id, details, .. } => {
                 // NDM (0x4a6d80) retitles when the whole percent changes: "N% name", the name alone at 0 and 100
                 let t = self.core.find(*id).map(|j| {
@@ -4468,7 +4576,12 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::CatDelete { .. } => ("Deleting a category from New Download Manager categories list".into(), tpl(260.0, 60.0)),
             Dialog::Duplicate { .. } => ("Duplicate download link".into(), tpl(286.0, 154.0)),
             Dialog::FileProps { .. } => ("File Properties".into(), tpl(318.0, 246.0)),
-            Dialog::Checksum { .. } => ("Checksum".into(), tpl(300.0, 134.0)),
+            Dialog::Checksum { .. } => ("Verify checksum".into(), tpl(300.0, 220.0)),
+            Dialog::Playlist(_) => ("Download video playlist".into(), None),
+            Dialog::ProblemReport { .. } => ("Report a problem".into(), None),
+            Dialog::Http1Hosts { .. } => ("HTTP/1.1 hosts".into(), tpl(270.0, 75.0)),
+            #[cfg(target_os = "macos")]
+            Dialog::MacCapture { .. } => ("macOS HTTP capture".into(), None),
             Dialog::YtDlp { .. } => ("Set yt-dlp".into(), tpl(186.0, 44.0)),
             Dialog::About => ("About New Download Manager".into(), tpl(260.0, 234.0)),
             Dialog::Scale { .. } => ("Custom scale".into(), tpl(232.0, 100.0)),
@@ -4486,7 +4599,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             Dialog::GrabSettings { .. } => ("Settings of NDM Grabber".into(), tpl(292.0, 139.0)),
             Dialog::GrabManual { .. } => ("Manual login page".into(), tpl(260.0, 70.0)),
         };
-        let size = fixed.unwrap_or(if matches!(d, Dialog::Help { .. }) { Vec2::new(980.0, 660.0) } else { Vec2::new(380.0, 170.0) });
+        let size = fixed.unwrap_or(match d {
+            Dialog::Help { .. } => Vec2::new(980.0, 660.0),
+            Dialog::Playlist(_) | Dialog::ProblemReport { .. } => Vec2::new(550.0, 430.0),
+            #[cfg(target_os = "macos")]
+            Dialog::MacCapture { .. } => Vec2::new(500.0, 250.0),
+            _ => Vec2::new(380.0, 170.0),
+        });
         let id = ViewportId::from_hash_of(("dlg", key));
         // centred on the main window when it is first shown; kept there so the user can move it
         if !self.dlg_pos.contains_key(&key) {
@@ -4591,6 +4710,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                                 info.category = self.core.settings().category_for(&name, &info.url);
                                 info.folder = if dir.is_empty() { self.core.settings().folder_for(&info.category) } else { dir.clone() };
                                 if replace.is_none() {
+                                    let name = ytdlp::named(&name, &info.yt.quality);
                                     let name = self.core.unique_name(&info.folder, &name);
                                     *path = Path::new(&info.folder).join(name).display().to_string();
                                 }
@@ -4629,7 +4749,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if pv > 0.0 {
                     // the name as it reads; the edit box below shows it in the order it is typed
                     let name = Path::new(path.as_str()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    d.label(66.0, 39.0, 240.0, 10.0, RichText::new(i18n::shown(&name)).strong());
+                    d.label(66.0, 39.0, 240.0, 10.0, file_info_name(&name));
                 }
                 d.label_r(5.0, 41.0 + pv, 54.0, 10.0, "Save As");
                 d.edit(64.0, 39.0 + pv, 223.0, 14.0, path, true);
@@ -4652,7 +4772,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.readonly(69.0, 69.0 + pv, 232.0, 14.0, &folder);
                 d.label_r(5.0, 93.0 + pv, 54.0, 10.0, "Description");
                 d.edit(64.0, 91.0 + pv, 244.0, 14.0, &mut info.description, true);
-                let mut choose = false;
                 if vq > 0.0 {
                     let y = 108.0 + pv;
                     d.label_r(5.0, y + 2.0, 54.0, 10.0, "Quality");
@@ -4667,11 +4786,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                     d.check(162.0, y + 1.0, 66.0, 12.0, &mut info.yt.subs, "Subtitles");
                     d.check(230.0, y + 1.0, 70.0, 12.0, &mut info.yt.thumb, "Thumbnail");
-                    let list = ytdlp::playlist(&info.url).filter(|l| !l.is_empty());
-                    if ytdlp::listing(&info.url) {
-                        ctx.request_repaint_after(Duration::from_millis(300));
-                    }
-                    choose = d.button(311.0, y, 64.0, 14.0, "Choose videos...", list.is_some());
                 }
                 if let Some(t) = icon {
                     let r = d.rect(333.0, 28.0, 20.0, 20.0);
@@ -4688,17 +4802,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let later = d.button(64.0, by, 74.0, 14.0, "Download Later", true);
                 let now = d.button(149.0, by, 74.0, 14.0, "Start Download", true);
                 let cancel = d.button(234.0, by, 74.0, 14.0, "Cancel", true);
-                if let Some(list) = ytdlp::playlist(&info.url).filter(|_| choose) {
-                    // the playlist's videos instead of this one: they go to this folder, with these choices
-                    let mut i = info.clone();
-                    i.folder = Path::new(path.as_str()).parent().map(|f| f.display().to_string()).filter(|f| !f.is_empty()).unwrap_or_else(|| info.folder.clone());
-                    i.ytdlp = true;
-                    if let Some(j) = early.take() {
-                        discard(&j);
-                    }
-                    self.open(Dialog::Playlist { info: i, entries: list.into_iter().map(|e| (e, true)).collect() });
-                    return false;
-                }
                 if later || now {
                     let p = PathBuf::from(path.trim());
                     let mut i = info.clone();
@@ -4758,7 +4861,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                     }
                 }
-                if let Some(j) = early.take().filter(|_| cancel) {
+                if let Some(j) = if cancel { early.take() } else { None } {
                     discard(&j);
                 }
                 if cancel && *auto {
@@ -4768,63 +4871,6 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         self.cancels.remove(&info.url);
                         let site = url::Url::parse(&info.url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
                         self.open(Dialog::Cancelled { site, url: info.url.clone(), by_site: false, by_addr: true, dont_show: false });
-                    }
-                }
-                !(later || now || cancel)
-            }
-            Dialog::Playlist { info, entries } => {
-                let mut d = dlu::D::new(ui);
-                let n = entries.iter().filter(|e| e.1).count();
-                d.label(7.0, 5.0, 366.0, 10.0, i18n::trf_os("%d of %d videos chosen", &[&n.to_string(), &entries.len().to_string()]));
-                let r = d.rect(7.0, 17.0, 366.0, 186.0);
-                let edge = d.ui.visuals().widgets.noninteractive.bg_stroke;
-                d.ui.painter().rect_stroke(r, 0.0, edge, egui::StrokeKind::Inside);
-                d.ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink(3.0)), |ui| {
-                    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                        for (k, (e, on)) in entries.iter_mut().enumerate() {
-                            ui.checkbox(on, RichText::new(format!("{}. {}", k + 1, i18n::shown(&e.title))));
-                        }
-                    });
-                });
-                let y = 210.0;
-                if d.button(7.0, y, 60.0, 14.0, "Select all", true) {
-                    entries.iter_mut().for_each(|e| e.1 = true);
-                }
-                if d.button(72.0, y, 60.0, 14.0, "Select none", true) {
-                    entries.iter_mut().for_each(|e| e.1 = false);
-                }
-                let later = d.button(145.0, y, 74.0, 14.0, "Download Later", n > 0);
-                let now = d.button(224.0, y, 74.0, 14.0, "Start Download", n > 0);
-                let cancel = d.button(303.0, y, 70.0, 14.0, "Cancel", true);
-                if later || now {
-                    let mut ids = Vec::new();
-                    for (e, _) in entries.iter().filter(|e| e.1) {
-                        let fresh = self.core.new_info(&e.url);
-                        let name = ytdlp::named(&engine::sanitize(&format!("{}.mp4", e.title)), &info.yt.quality);
-                        let name = self.core.unique_name(&info.folder, &name);
-                        let i = Info {
-                            folder: info.folder.clone(),
-                            category: info.category.clone(),
-                            description: info.description.clone(),
-                            referrer: info.referrer.clone(),
-                            cookies: info.cookies.clone(),
-                            parent: info.parent.clone(),
-                            browser_proxy: info.browser_proxy.clone(),
-                            yt: info.yt.clone(),
-                            ytdlp: true,
-                            name,
-                            queued: later,
-                            queue: core::MAIN_QUEUE,
-                            ..fresh
-                        };
-                        let job = self.core.add(i);
-                        if now {
-                            self.core.start(&job);
-                        }
-                        ids.push(job.info().id);
-                    }
-                    if later {
-                        self.pick_queue(ids, true);
                     }
                 }
                 !(later || now || cancel)
@@ -4931,11 +4977,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         let edited = d.edit(ox + 7.0, oy + 43.0, 51.0, 14.0, &mut kb, on).changed();
                         d.label(ox + 64.0, oy + 45.0, 65.0, 9.0, "KBytes/sec");
                         if toggled || edited {
-                            job.set_limit_kb(if on { kb.trim().parse().unwrap_or(100).max(1) } else { 0 });
+                            self.core.set_job_limit(&job, if on { kb.trim().parse().unwrap_or(100).clamp(1, 1_000_000) } else { 0 });
                         }
                     }
                     _ => {
-                        d.label(ox + 7.0, oy + 3.0, 316.0, 9.0, i18n::line(&format!("{} {}", tr_os("Save To:"), i18n::ltr(&i.path().display().to_string()))));
+                        d.label(ox + 7.0, oy + 3.0, 316.0, 9.0, format!("{} {}", tr_os("Save To:"), i18n::ltr(&i.path().display().to_string())));
                         let mut show = self.core.settings().show_complete;
                         if d.check(ox + 7.0, oy + 15.0, 169.0, 10.0, &mut show, "Show download complete dialog").changed() {
                             self.core.settings().show_complete = show;
@@ -5035,12 +5081,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     d.ui.put(r, egui::Image::new((t, Vec2::splat(32.0))));
                 }
                 d.text(34.0, 7.0, 262.0, 32.0, format!("{}\n{}", tr_os("Download complete"), i18n::trf_os("Downloaded %s (%I64d Bytes)", &[&human_os(i.done()), &i.done()])));
-                d.label(7.0, 38.0, 120.0, 9.0, "Address");
-                if let Some((_, ok)) = &i.sha256 {
-                    let th = dlu::theme(d.ui.visuals().dark_mode);
-                    let (text, ink) = if *ok { ("SHA-256 checked: the file is the one the site publishes", th.success) } else { ("SHA-256 doesn't match the one the site publishes!", th.danger) };
-                    d.label(100.0, 38.0, 196.0, 9.0, RichText::new(tr(text)).color(ink));
-                }
+                d.label(7.0, 38.0, 289.0, 9.0, "Address");
                 d.readonly(7.0, 48.0, 289.0, 14.0, &i.url);
                 d.label(7.0, 66.0, 289.0, 9.0, "The file saved as");
                 d.readonly(7.0, 76.0, 289.0, 14.0, &path.display().to_string());
@@ -5114,7 +5155,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.page_header(res.0, 48.0, "Browser/System Integration");
                         d2.check(13.0, 25.0, 240.0, 10.0, &mut s.autostart, "Launch New Download Manager on startup");
                         d2.check(13.0, 39.0, 241.0, 10.0, &mut s.clip_watch, "Automatically start downloading of URLs placed to clipboard");
+                        #[cfg(not(target_os = "macos"))]
                         d2.check(13.0, 53.0, 240.0, 10.0, &mut s.adv_integration, "Use advanced browser integration");
+                        #[cfg(target_os = "macos")]
+                        if d2.button(13.0, 52.0, 128.0, 14.0, "macOS HTTP capture...", true) {
+                            let (services, message) = match mac_capture::services() {
+                                Ok(services) => (services, String::new()),
+                                Err(error) => (vec![], error),
+                            };
+                            open = Some(Dialog::MacCapture { services, selected: None, pending: None, message });
+                        }
                         d2.group(4.0, 73.0, 261.0, 144.0, "Capture downloads from the following browsers:");
                         let list = d2.listview(13.0, 84.0, 241.0, 84.0, &[("Browser", 120.0), ("Type of integration", 119.0)]);
                         let sel_id = egui::Id::new("browser_sel");
@@ -5255,27 +5305,26 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         d2.label(14.0, 82.0, 237.0, 10.0, "Note: These settings don't relate to queue processing");
                         d2.hline(7.0, 93.0, 254.0);
                         d2.check(9.0, 96.0, 251.0, 19.0, &mut s.start_at_once, "Start downloading immediately while displaying \"Download File Info\" dialog");
-                        d2.check(9.0, 117.0, 251.0, 10.0, &mut s.ask_queue_later, "Show queue selection panel on pressing \"Download Later\"");
-                        d2.check(9.0, 130.0, 252.0, 10.0, &mut s.ask_queue_batch, "Show queue selection panel on adding batch downloads");
-                        d2.check(9.0, 143.0, 251.0, 10.0, &mut s.ignore_date, "Ignore file modification time changes when resuming a download");
-                        d2.check(9.0, 156.0, 251.0, 10.0, &mut s.check_sums, "Check a downloaded file against the SHA-256 its site publishes");
-                        d2.hline(7.0, 168.0, 254.0);
-                        d2.label(7.0, 174.0, 246.0, 10.0, "If a duplicate download link is added:");
+                        d2.check(9.0, 119.0, 251.0, 10.0, &mut s.ask_queue_later, "Show queue selection panel on pressing \"Download Later\"");
+                        d2.check(9.0, 134.0, 252.0, 10.0, &mut s.ask_queue_batch, "Show queue selection panel on adding batch downloads");
+                        d2.check(9.0, 149.0, 251.0, 10.0, &mut s.ignore_date, "Ignore file modification time changes when resuming a download");
+                        d2.hline(7.0, 164.0, 254.0);
+                        d2.label(7.0, 170.0, 246.0, 10.0, "If a duplicate download link is added:");
                         let k = if s.dupl_ask { 0 } else { [3, 1, 2][s.dupl_action.min(2) as usize] };
                         let mut dup = DUPL[k].to_string();
-                        if d2.combo(7.0, 184.0, 253.0, 14.0, "dup", &mut dup, &DUPL, true) {
+                        if d2.combo(7.0, 180.0, 253.0, 14.0, "dup", &mut dup, &DUPL, true) {
                             match DUPL.iter().position(|x| *x == dup) {
                                 Some(0) => s.dupl_ask = true,
                                 Some(k) => (s.dupl_ask, s.dupl_action) = (false, [0, 1, 2, 0][k]),
                                 None => {}
                             }
                         }
-                        d2.hline(7.0, 201.0, 254.0);
-                        d2.label(7.0, 206.0, 254.0, 9.0, "User-Agent for manually added downloads:");
-                        d2.edit(7.0, 218.0, 254.0, 14.0, &mut s.user_agent, true);
-                        d2.hline(7.0, 235.0, 254.0);
-                        d2.label(7.0, 244.0, 188.0, 8.0, "Virus checking settings");
-                        if d2.button(205.0, 241.0, 50.0, 14.0, "Edit...", true) {
+                        d2.hline(7.0, 197.0, 254.0);
+                        d2.label(7.0, 203.0, 254.0, 9.0, "User-Agent for manually added downloads:");
+                        d2.edit(7.0, 216.0, 254.0, 14.0, &mut s.user_agent, true);
+                        d2.hline(7.0, 233.0, 254.0);
+                        d2.label(7.0, 242.0, 188.0, 8.0, "Virus checking settings");
+                        if d2.button(205.0, 239.0, 50.0, 14.0, "Edit...", true) {
                             open = Some(Dialog::Virus { exe: s.virus_exe.clone(), args: s.virus_args.clone() });
                         }
                     }
@@ -5319,6 +5368,9 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                         if d2.button(205.0, 113.0, 50.0, 14.0, "Edit", sel.is_some()) {
                             edit = sel;
+                        }
+                        if d2.button(205.0, 132.0, 50.0, 14.0, "HTTP/1.1...", true) {
+                            open = Some(Dialog::Http1Hosts { hosts: s.http1_hosts.clone() });
                         }
                         if let Some(k) = edit {
                             let (server, n) = s.server_conns[k].clone();
@@ -5556,6 +5608,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     let dark_changed = self.core.settings().dark_support != s.dark_support;
                     *self.core.settings() = (**s).clone();
                     self.core.apply_settings();
+                    #[cfg(not(target_os = "macos"))]
                     self.core.apply_integration(s.adv_integration);
                     self.core.save();
                     if autostart_changed {
@@ -5835,11 +5888,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.label(7.0, 48.0, 43.0, 9.0, "Status:");
                 d.label(58.0, 48.0, 253.0, 9.0, "Complete");
                 d.label(7.0, 60.0, 43.0, 9.0, "Size:");
-                d.label(58.0, 60.0, 196.0, 9.0, i.size.map(|s| i18n::line(&format!("{} ({s} {})", human_os(s), tr_os("Bytes")))).unwrap_or_default());
+                d.label(58.0, 60.0, 172.0, 9.0, i.size.map(|s| i18n::line(&format!("{} ({s} {})", human_os(s), tr_os("Bytes")))).unwrap_or_default());
                 // the file's checksums, to compare with the one the site publishes
                 let file = i.path();
-                if d.button(261.0, 57.0, 50.0, 14.0, "Checksum...", file.is_file()) {
-                    self.open(Dialog::Checksum { name: i.name.clone(), run: checksum::start(file), expect: String::new() });
+                if d.button(234.0, 57.0, 77.0, 14.0, "Verify checksum...", file.is_file()) {
+                    self.open(Dialog::Checksum { name: i.name.clone(), run: checksum::start(file), expect: String::new(), source: ChecksumSource::default() });
                 }
                 d.label(7.0, 77.0, 45.0, 9.0, "Save To:");
                 d.readonly(58.0, 74.0, 197.0, 14.0, &i.path().display().to_string());
@@ -5871,7 +5924,195 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 !ok
             }
-            Dialog::Checksum { name, run, expect } => {
+            Dialog::Playlist(pick) => {
+                if let Some(lookup) = &pick.pending {
+                    match lookup.results.try_recv() {
+                        Ok(Ok(list)) => {
+                            pick.selected = vec![false; list.entries.len()];
+                            pick.list = Some(list);
+                            pick.pending = None;
+                        }
+                        Ok(Err(error)) => {
+                            pick.error = error;
+                            pick.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            pick.error = tr_os("Playlist lookup stopped unexpectedly.");
+                            pick.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                    }
+                }
+                ui.label(tr("Playlist address"));
+                let busy = pick.pending.is_some();
+                let edited = ui.add_enabled(!busy, egui::TextEdit::singleline(&mut pick.url).desired_width(f32::INFINITY)).changed();
+                let old_browser = pick.browser.clone();
+                let (mut load, mut stop) = (false, false);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!busy, |ui| {
+                        let label = ytdlp::PLAYLIST_BROWSERS.iter().find(|(_, b)| *b == pick.browser)
+                            .map_or("Public access", |(label, _)| *label);
+                        egui::ComboBox::from_id_salt("playlist-browser").selected_text(tr(label)).show_ui(ui, |ui| {
+                            for &(label, browser) in ytdlp::PLAYLIST_BROWSERS {
+                                ui.selectable_value(&mut pick.browser, browser.to_string(), tr(label));
+                            }
+                        });
+                    });
+                    load = ui.add_enabled(!busy && !pick.url.trim().is_empty(), egui::Button::new(tr("List videos"))).clicked();
+                    if busy {
+                        ui.spinner();
+                        stop = ui.button(tr("Stop")).clicked();
+                    }
+                });
+                ui.label(tr("Selecting a browser lets yt-dlp use its default profile for this playlist and each queued video."));
+                if edited || old_browser != pick.browser {
+                    pick.list = None;
+                    pick.error.clear();
+                }
+                if stop {
+                    pick.pending = None;
+                }
+                if load {
+                    pick.list = None;
+                    pick.error.clear();
+                    if let Some(url) = ytdlp::playlist_url(&pick.url) {
+                        let core = self.core.clone();
+                        let browser = pick.browser.clone();
+                        let (tx, rx) = channel();
+                        let job = engine::Job::new(Info::default());
+                        let worker = job.clone();
+                        std::thread::spawn(move || {
+                            let result = ytdlp::list_playlist(&worker, &core.agent(&url), &url, &browser);
+                            let _ = tx.send(result);
+                        });
+                        pick.pending = Some(PlaylistLookup { job, results: rx });
+                    } else {
+                        pick.error = tr_os("Enter an HTTP or HTTPS playlist address without embedded credentials.");
+                    }
+                }
+                if !pick.error.is_empty() {
+                    ui.label(tr(&pick.error));
+                }
+                if let Some(list) = &pick.list {
+                    if list.limited {
+                        ui.label(i18n::trf("Showing entries from the first %d playlist positions.", &[&ytdlp::PLAYLIST_LIMIT]));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("Select all")).clicked() { pick.selected.fill(true); }
+                        if ui.button(tr("Clear selection")).clicked() { pick.selected.fill(false); }
+                    });
+                    egui::ScrollArea::vertical().max_height((ui.available_height() - 42.0).max(70.0)).show(ui, |ui| {
+                        for (entry, selected) in list.entries.iter().zip(&mut pick.selected) {
+                            ui.checkbox(selected, i18n::shown(&entry.title));
+                        }
+                    });
+                }
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(pick.list.is_some() && pick.selected.contains(&true),
+                        egui::Button::new(tr("Queue selected videos"))).clicked()
+                    {
+                        let mut ids = Vec::new();
+                        if let Some(list) = &pick.list {
+                            for (entry, &selected) in list.entries.iter().zip(&pick.selected) {
+                                if !selected { continue; }
+                                let mut info = self.core.new_info(&entry.url);
+                                info.url.clone_from(&entry.url);
+                                info.ytdlp = true;
+                                info.yt.playlist_entry = true;
+                                info.yt.browser.clone_from(&pick.browser);
+                                info.queued = true;
+                                ids.push(info.id);
+                                self.core.add(info);
+                            }
+                        }
+                        self.core.save();
+                        self.pick_queue(ids, true);
+                        close = true;
+                    }
+                    close |= ui.button(tr("Close")).clicked();
+                });
+                !close
+            }
+            #[cfg(target_os = "macos")]
+            Dialog::MacCapture { services, selected, pending, message } => {
+                if let Some(rx) = pending {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            *message = result.err().unwrap_or_else(|| {
+                                tr_os(if mac_capture::has_journal() { "HTTP capture is enabled for this session." } else { "Web proxy settings restored." })
+                            });
+                            *pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            *message = tr_os("The network preferences operation stopped unexpectedly.");
+                            *pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                    }
+                }
+                ui.label(tr("Capture plain HTTP on one network service until NDM quits. The browser extension still handles HTTPS."));
+                ui.label(tr("macOS may require an administrator to enable or restore this setting."));
+                let recovery = mac_capture::has_journal();
+                let busy = pending.is_some();
+                let label = selected.and_then(|index| services.get(index)).map(|(_, name)| i18n::shown(name))
+                    .unwrap_or_else(|| tr("Choose a network service"));
+                ui.add_enabled_ui(!busy && !recovery, |ui| {
+                    egui::ComboBox::from_id_salt("mac-capture-service").selected_text(label).show_ui(ui, |ui| {
+                        for (index, (_, name)) in services.iter().enumerate() {
+                            ui.selectable_value(selected, Some(index), i18n::shown(name));
+                        }
+                    });
+                });
+                let enable = ui.add_enabled(!busy && !recovery && selected.is_some(),
+                    egui::Button::new(tr("Enable for this session"))).clicked();
+                let restore = ui.add_enabled(!busy && recovery, egui::Button::new(tr("Restore web proxy"))).clicked();
+                if enable || restore {
+                    let id = selected.and_then(|index| services.get(index)).map(|(id, _)| id.clone());
+                    let core = self.core.clone();
+                    let (tx, rx) = channel();
+                    std::thread::spawn(move || {
+                        let result = if enable {
+                            id.ok_or_else(|| "Choose a network service.".to_string())
+                                .and_then(|id| mac_capture::enable(&id, &core.proxy_ready))
+                        } else {
+                            mac_capture::restore()
+                        };
+                        let _ = tx.send(result);
+                    });
+                    message.clear();
+                    *pending = Some(rx);
+                }
+                if busy { ui.spinner(); }
+                if !message.is_empty() { ui.label(tr(message)); }
+                !ui.button(tr("Close")).clicked()
+            }
+            Dialog::Http1Hosts { hosts } => {
+                let mut d = dlu::D::new(ui);
+                d.text(7.0, 7.0, 256.0, 23.0, "Use HTTP/1.1 for direct HTTPS downloads from these exact hosts. Separate hosts with spaces.");
+                d.edit(7.0, 32.0, 256.0, 14.0, hosts, true);
+                let valid = hosts.split_whitespace().all(|host| url::Host::parse(host).is_ok());
+                if d.button(155.0, 53.0, 50.0, 14.0, "OK", valid) {
+                    let hosts = hosts.split_whitespace().collect::<Vec<_>>().join(" ");
+                    self.opt_patch.push(Box::new(move |settings| settings.http1_hosts.clone_from(&hosts)));
+                    return false;
+                }
+                !d.button(213.0, 53.0, 50.0, 14.0, "Cancel", true)
+            }
+            Dialog::ProblemReport { text } => {
+                ui.label(tr("Review and edit the report before copying it. Paste it into the issue form when you are ready."));
+                egui::ScrollArea::vertical().max_height((ui.available_height() - 44.0).max(80.0)).show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(text).desired_rows(13).desired_width(f32::INFINITY));
+                });
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Copy report")).clicked() { ui.ctx().copy_text(text.clone()); }
+                    if ui.button(tr("Open issue form")).clicked() { App::report_problem(); }
+                    close = ui.button(tr("Close")).clicked();
+                });
+                !close
+            }
+            Dialog::Checksum { name, run, expect, source } => {
                 let mut d = dlu::D::new(ui);
                 d.label(7.0, 7.0, 286.0, 9.0, name.as_str());
                 let done = run.result.lock().unwrap().as_ref().map(|r| r.as_ref().map(|s| (s.sha256.clone(), s.sha1.clone(), s.md5.clone())).map_err(Clone::clone));
@@ -5904,7 +6145,57 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 if done.is_none() {
                     d.ui.ctx().request_repaint_after(Duration::from_millis(150));
                 }
-                !d.button(243.0, 116.0, 50.0, 14.0, "Close", true)
+                if let Some(rx) = &source.pending {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            source.preview = Some(result);
+                            source.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            source.preview = Some(Err("Checksum lookup stopped unexpectedly.".into()));
+                            source.pending = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                    }
+                }
+                d.label(7.0, 115.0, 286.0, 9.0, "Publisher checksum list (HTTPS)");
+                if d.edit(7.0, 127.0, 286.0, 14.0, &mut source.url, source.pending.is_none()).changed() {
+                    source.preview = None;
+                }
+                let idle = source.pending.is_none();
+                if d.button(7.0, 147.0, 86.0, 14.0, "Choose checksum file...", idle) {
+                    if let Some(path) = rfd::FileDialog::new().set_title(tr_os("Choose checksum file...")).pick_file() {
+                        source.preview = Some(checksum::from_file(&path, name));
+                    }
+                }
+                if d.button(99.0, 147.0, 69.0, 14.0, "Fetch checksum", idle && !source.url.trim().is_empty()) {
+                    if let Some(url) = checksum::publisher_url(&source.url) {
+                        let core = self.core.clone();
+                        let name = name.clone();
+                        let (tx, rx) = channel();
+                        std::thread::spawn(move || {
+                            let result = checksum::from_publisher(&core.agent(url.as_str()), url.as_str(), &name);
+                            let _ = tx.send(result);
+                        });
+                        source.preview = None;
+                        source.pending = Some(rx);
+                    } else {
+                        source.preview = Some(Err("Enter the publisher's HTTPS checksum-list address.".into()));
+                    }
+                }
+                match &source.preview {
+                    Some(Ok(hash)) => {
+                        d.label(7.0, 168.0, 286.0, 9.0, RichText::new(i18n::trf("Matched SHA-256 for %s", &[name])));
+                        d.readonly(7.0, 180.0, 286.0, 14.0, hash);
+                        if d.button(7.0, 200.0, 87.0, 14.0, "Verify matched hash", sums.is_some()) {
+                            expect.clone_from(hash);
+                        }
+                    }
+                    Some(Err(error)) => d.text(7.0, 167.0, 286.0, 27.0, error),
+                    None if !idle => d.text(7.0, 167.0, 286.0, 19.0, "Looking up checksum..."),
+                    None => {}
+                }
+                !d.button(243.0, 200.0, 50.0, 14.0, "Close", true)
             }
             Dialog::Category { orig, cat, folder, error } => {
                 let mut d = dlu::D::new(ui);
@@ -7550,11 +7841,11 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 d.check(7.0, 8.0, 120.0, 10.0, on, "Limit the speed of this download to");
                 d.edit(130.0, 6.0, 40.0, 14.0, kb, *on);
                 d.label(174.0, 8.0, 50.0, 9.0, "KBytes/sec");
-                let v = kb.trim().parse::<u64>().ok().filter(|v| *v > 0);
+                let v = kb.trim().parse::<u64>().ok().filter(|v| (1..=1_000_000).contains(v));
                 let ok = d.button(118.0, 27.0, 50.0, 14.0, "OK", !*on || v.is_some());
                 if ok {
                     for j in ids.iter().filter_map(|id| self.core.find(*id)) {
-                        j.set_limit_kb(if *on { v.unwrap_or(0) } else { 0 });
+                        self.core.set_job_limit(&j, if *on { v.unwrap_or(0) } else { 0 });
                     }
                     self.core.save();
                 }
@@ -8371,16 +8662,6 @@ impl eframe::App for App {
             self.core.settings().drop_target = false;
             self.drop_shown = false;
         }
-        let checked: Vec<(u64, bool)> = std::mem::take(&mut *self.sums.lock().unwrap());
-        if !checked.is_empty() {
-            self.core.save();
-        }
-        for (id, _) in checked.into_iter().filter(|c| !c.1) {
-            if let Some(j) = self.core.find(id) {
-                let name = j.info().name.clone();
-                self.open(Dialog::Info { title: "Checksum".into(), text: i18n::trf_os("%s doesn't have the SHA-256 checksum its site publishes: the file is damaged or isn't the one published. Download it again, or ask the site.", &[&name]) });
-            }
-        }
         for j in self.core.jobs() {
             if j.just_completed.swap(false, Relaxed) {
                 // a file whose name didn't say what it is: named and filed by its contents
@@ -8397,7 +8678,6 @@ impl eframe::App for App {
                         self.open(Dialog::Info { title: "Virus checking".into(), text: i18n::trf_os("Can not start virus checking program.\n%s", &[&e]) });
                     }
                 }
-                self.check_sum(ctx, &j);
                 if self.core.settings().show_complete {
                     self.open(Dialog::Complete { id, dont_show: false });
                 }
@@ -8726,15 +9006,10 @@ fn batch_ranges() {
     assert!(batch_range(false, 5, 1, 1, "", "").is_empty());
 }
 
-/// Help -> "Report a problem...": the issue names NDM's version and system and carries the start of the
-/// crash report, the user's folder left out.
 #[test]
 fn problem_report() {
-    let (title, text) = issue_text("2.9.0", "ndm_ar", Some("panicked at /home/sam/src/x.rs\nbacktrace"), "/home/sam");
+    let (title, text) = issue_text("2.9.0", "ndm_ar");
     assert_eq!(title, "[2.9.0] ");
     assert!(text.contains("- NDM 2.9.0\n") && text.contains("Language: ndm_ar") && text.contains(std::env::consts::OS));
-    assert!(text.contains("panicked at ~/src/x.rs") && !text.contains("/home/sam"));
-    let (_, text) = issue_text("2.9.0", "", Some(&"x".repeat(9000)), "");
-    assert!(text.contains("Language: en (English)") && text.contains("\n...\n") && text.len() < 3500);
-    assert!(!issue_text("2.9.0", "", None, "").1.contains("Crash report"));
+    assert!(issue_text("2.9.0", "").1.contains("Language: en (English)"));
 }

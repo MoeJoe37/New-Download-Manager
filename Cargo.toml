@@ -11,9 +11,8 @@ ab_glyph = "0.2"
 ureq = { version = "2", default-features = false, features = ["tls", "socks-proxy"] }
 # File Properties -> Checksum: SHA-256, SHA-1 and MD5 of a downloaded file (also MD5 for digest login off Windows)
 sha2 = "0.10"
-# HTTPS trusts the certificates the system trusts (antivirus HTTPS scanning, company networks) as well as
-# the bundled list: the TLS setup ureq is given (engine.rs, `tls`)
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "rustls-tls", "rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 webpki-roots = "0.26"
 sha1 = "0.10"
@@ -75,5 +74,9 @@ opt-level = 3
 strip = true
 
 [dev-dependencies]
-# A local TLS server with an ephemeral certificate for transport regressions.
+# A local TLS HTTP/2 server with an ephemeral certificate for transport regressions.
+h2 = "0.4"
+http = "1"
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

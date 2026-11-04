@@ -148,9 +148,6 @@ pub struct Info {
     pub browser_proxy: String,
     /// What yt-dlp gets for a video page (File Info's Quality, Subtitles and Thumbnail).
     pub yt: YtOpts,
-    /// The SHA-256 the site publishes for the file and whether the downloaded file has it
-    /// (`Settings::check_sums`).
-    pub sha256: Option<(String, bool)>,
 }
 
 /// A video download's choices: the quality ("" best, "1080"... at most that many lines, "m4a" / "mp3"
@@ -161,6 +158,9 @@ pub struct YtOpts {
     pub quality: String,
     pub subs: bool,
     pub thumb: bool,
+    pub playlist_entry: bool,
+    /// A browser's cookie jar, loaded by yt-dlp for this entry alone.
+    pub browser: String,
 }
 
 impl Info {
@@ -1004,7 +1004,7 @@ fn md5_hex(s: &str) -> String {
 
 fn err(e: ureq::Error) -> String {
     match e {
-        ureq::Error::Status(code, r) => crate::transport::http_error(code, r.status_text()),
+        ureq::Error::Status(code, _) => crate::transport::http_error(code),
         ureq::Error::Transport(error) => {
             use ureq::ErrorKind::*;
             match error.kind() {
@@ -1333,7 +1333,7 @@ pub fn unique_name(folder: &str, name: &str, taken: &dyn Fn(&str) -> bool) -> St
 impl Job {
     pub fn new(info: Info) -> Arc<Job> {
         let limiter = Limiter::default();
-        limiter.rate.store(info.limit_kb * 1024, Relaxed);
+        limiter.rate.store(info.limit_kb.saturating_mul(1024), Relaxed);
         let done = info.done();
         Arc::new(Job {
             info: Mutex::new(info),
@@ -1365,11 +1365,6 @@ impl Job {
 
     pub fn stopping(&self) -> bool {
         self.stop.load(Relaxed)
-    }
-
-    pub fn set_limit_kb(&self, kb: u64) {
-        self.info().limit_kb = kb;
-        self.limiter.rate.store(kb * 1024, Relaxed);
     }
 
     /// Bytes/s, re-sampled at most once a second.
@@ -1485,7 +1480,6 @@ impl Job {
         i.etag.clear();
         i.modified.clear();
         i.probed = false;
-        i.sha256 = None;
         i.status = Status::Stopped;
     }
 

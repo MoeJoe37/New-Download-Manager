@@ -6,7 +6,7 @@
 <ol>
 <li>Download <kbd>NDM-&lt;version&gt;-macOS.dmg</kbd> from the release page and open it.</li>
 <li>Drag <b>NDM</b> onto <b>Applications</b>.</li>
-<li>The first time, right-click (or Control-click) NDM in Applications and choose <b>Open</b>, then <b>Open</b> again. A copy built without an Apple Developer ID isn't notarized by Apple, so a plain double-click is refused once. After that it starts normally. (In Terminal, <kbd>xattr -dr com.apple.quarantine /Applications/NDM.app</kbd> does the same.)</li>
+<li>The first time, right-click (or Control-click) NDM in Applications and choose <b>Open</b>, then <b>Open</b> again. NDM isn't notarized by Apple, so a plain double-click is refused once. After that it starts normally. (In Terminal, <kbd>xattr -dr com.apple.quarantine /Applications/NDM.app</kbd> does the same.)</li>
 </ol>
 <p><b>Check for updates</b> downloads the new disk image and replaces the app in place, then starts it again.</p>
 
