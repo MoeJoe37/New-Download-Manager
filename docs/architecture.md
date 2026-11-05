@@ -9,6 +9,10 @@ module's dependencies are visible at the top of its file.
 | `startup` | Arguments, single instance, renderer fallback and process startup | `main` |
 | `app` | Desktop state, events, windows and user actions | `startup` |
 | `app::dialogs` | Dialog routing, lifetime, layout and feature-specific forms | `app` |
+| `app::dialogs::download`, `progress`, `recovery` | Add/refresh forms, transfer status and error recovery | Dialog router |
+| `app::dialogs::grabber`, `grabber_projects`, `grabber_schedule`, `grabber_session` | Grabber wizard, saved projects, schedules and session tools | Dialog router |
+| `app::dialogs::options::pages`, `options::network`, `customize` | General preferences, network preferences and desktop customization | Dialog router |
+| `dlu`, `dlu::widgets` | Dialog metrics/theme and reusable controls | Desktop views |
 | `app::resources`, `app::display` | Fonts, icons, themes and display formatting | Desktop views |
 | `core` | Shared application coordination and background work | Desktop and browser bridge |
 | `core::settings`, `core::state` | Preferences, saved-data compatibility and persistence | `core` and desktop preferences |

@@ -1,5 +1,10 @@
+mod customize;
 mod download;
+mod grabber_projects;
+mod grabber_schedule;
+mod grabber_session;
 mod options;
+mod progress;
 mod recovery;
 pub(super) mod scheduler;
 

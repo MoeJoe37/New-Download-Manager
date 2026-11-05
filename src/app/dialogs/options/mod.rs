@@ -1,3 +1,4 @@
+mod network;
 mod pages;
 
 use crate::app::dialogs::Dialog;
