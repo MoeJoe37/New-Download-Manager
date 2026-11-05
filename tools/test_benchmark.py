@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from benchmark import startup
 
@@ -15,8 +16,14 @@ from benchmark import startup
 @unittest.skipUnless(sys.platform == "linux", "startup measurement uses Linux process groups")
 class StartupTests(unittest.TestCase):
     def fixture(self, root, mode):
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        desktop = root / "extension/background/desktop.js"
+        desktop.parent.mkdir(parents=True)
+        desktop.write_text(f"const PORTS = [{port}];\n")
         app = root / "fixture-app"
-        app.write_text("#!/usr/bin/env python3\n" + f"MODE = {mode!r}\nLOG = {str(root / 'starts.jsonl')!r}\n" + '''
+        app.write_text("#!/usr/bin/env python3\n" + f"MODE = {mode!r}\nPORT = {port}\nLOG = {str(root / 'starts.jsonl')!r}\n" + '''
 import http.server
 import json
 import os
@@ -42,17 +49,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-server = http.server.HTTPServer(("127.0.0.1", 9614), Handler)
+server = http.server.HTTPServer(("127.0.0.1", PORT), Handler)
 server.serve_forever()
 ''')
         app.chmod(0o755)
-        return app
+        return app, port
 
-    def assert_bridge_released(self):
+    def assert_bridge_released(self, port):
         deadline = time.monotonic() + 2
         while True:
             with socket.socket() as probe:
-                if probe.connect_ex(("127.0.0.1", 9614)) != 0:
+                if probe.connect_ex(("127.0.0.1", port)) != 0:
                     return
             self.assertLess(time.monotonic(), deadline, "startup measurement left its app running")
             time.sleep(0.01)
@@ -60,9 +67,11 @@ server.serve_forever()
     def exercise_startup(self, mode):
         with tempfile.TemporaryDirectory(prefix="ndm-startup-test-") as directory:
             root = Path(directory)
-            result = startup(self.fixture(root, mode))
+            app, port = self.fixture(root, mode)
+            with patch("benchmark.ROOT", root):
+                result = startup(app)
             self.assertEqual(len(result["trials_seconds"]), 3)
-            self.assert_bridge_released()
+            self.assert_bridge_released(port)
             starts = [json.loads(line) for line in (root / "starts.jsonl").read_text().splitlines()]
             profiles = {entry["appdata"] for entry in starts}
             self.assertEqual(len(profiles), 3)
@@ -78,9 +87,12 @@ server.serve_forever()
 
     def test_failed_startup_reports_its_output(self):
         with tempfile.TemporaryDirectory(prefix="ndm-startup-test-") as directory:
-            with self.assertRaisesRegex(RuntimeError, "intentional fixture failure"):
-                startup(self.fixture(Path(directory), "failure"))
-            self.assert_bridge_released()
+            root = Path(directory)
+            app, port = self.fixture(root, "failure")
+            with patch("benchmark.ROOT", root):
+                with self.assertRaisesRegex(RuntimeError, "intentional fixture failure"):
+                    startup(app)
+            self.assert_bridge_released(port)
 
 
 if __name__ == "__main__":
