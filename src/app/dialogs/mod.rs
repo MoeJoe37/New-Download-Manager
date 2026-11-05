@@ -203,6 +203,9 @@ fn dialog_panel_frame(ctx: &egui::Context, d: &Dialog, fixed: Option<Vec2>) -> e
 #[cfg(target_os = "linux")]
 mod dialog_snapshots;
 
+#[cfg(all(test, target_os = "linux"))]
+mod interaction_tests;
+
 impl App {
     fn dialog_frame(&self, d: &Dialog) -> (String, Option<Vec2>, Vec2) {
         let tpl = |w: f32, h: f32| Some(dlu::size(w, h));

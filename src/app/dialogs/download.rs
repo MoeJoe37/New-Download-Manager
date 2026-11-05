@@ -13,7 +13,10 @@ impl App {
     ) -> bool {
         let mut d = dlu::D::new(ui);
         d.label(8.0, 9.0, 35.0, 9.0, "Address");
-        d.edit(45.0, 7.0, 264.0, 14.0, url, true).request_focus();
+        let address = d.edit(45.0, 7.0, 264.0, 14.0, url, true);
+        if d.ui.memory(|m| m.focused().is_none()) {
+            address.request_focus();
+        }
         d.group(7.0, 24.0, 302.0, 29.0, "");
         d.check(13.0, 22.0, 80.0, 12.0, auth, "Use authorization");
         d.label_r(13.0, 36.0, 60.0, 9.0, "Login");

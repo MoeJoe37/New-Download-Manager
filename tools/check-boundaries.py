@@ -7,7 +7,7 @@ import sys
 from ndm_lng import without_tests
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_FILES = {"tests.rs", "test_support.rs", "transport_bench.rs", "dialog_snapshots.rs"}
+TEST_FILES = {"tests.rs", "test_support.rs", "transport_bench.rs", "dialog_snapshots.rs", "interaction_tests.rs"}
 errors = []
 for path in sorted((ROOT / "src").rglob("*.rs")):
     if path.name in TEST_FILES:

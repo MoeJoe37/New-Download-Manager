@@ -43,6 +43,13 @@ jobs:
           npm install --no-save --package-lock=false playwright@1.62.1
           npx playwright install --with-deps chromium
           sudo apt-get install -y ffmpeg
+      - name: Install Firefox
+        run: |
+          mkdir -p "$RUNNER_TEMP/ndm-firefox"
+          curl --fail --location --retry 3 'https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US' -o "$RUNNER_TEMP/ndm-firefox.tar.xz"
+          tar -xJf "$RUNNER_TEMP/ndm-firefox.tar.xz" -C "$RUNNER_TEMP/ndm-firefox"
+      - name: Installed Firefox integration
+        run: python3 tools/test-firefox.py --firefox "$RUNNER_TEMP/ndm-firefox/firefox/firefox"
       - name: Extension video handoff
         run: node tools/test-extension.mjs
       - name: Packaged browser extension
@@ -132,6 +139,12 @@ jobs:
           TZ: UTC
           LC_ALL: C
         run: cargo test --release --locked dialog_snapshots -- --ignored --test-threads=1
+      - name: Desktop interactions
+        if: matrix.runner == 'ubuntu-latest'
+        env:
+          TZ: UTC
+          LC_ALL: C
+        run: cargo test --release --locked desktop_interactions -- --ignored --test-threads=1
       - name: Clippy (no warnings)
         run: cargo clippy --release --locked --all-targets -- -D warnings
       - name: Real yt-dlp (DASH/HLS, parallel video/audio, no ffmpeg)

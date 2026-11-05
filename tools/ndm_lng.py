@@ -22,7 +22,7 @@ CALLS = (r'(?:trf\(|tr_os\(|tr\(&?|d2?\.(?:label|label_r|text|button|check|check
                    # message windows: Dialog::Info { title: "...", text: "..." }; texts picked in if / match arms
                    r'|\b(?:title|text): |\{\s*(?="[^"\n]*"\s*\})|=>\s*)' + LIT)
 DLU_LOCALS = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:dlu::)?D::new(?:_offset)?\(")
-TEST_ONLY_SOURCES = {"tests.rs", "dialog_snapshots.rs", "test_support.rs", "transport_bench.rs"}
+TEST_ONLY_SOURCES = {"tests.rs", "dialog_snapshots.rs", "interaction_tests.rs", "test_support.rs", "transport_bench.rs"}
 
 # literals that pass the pattern but are not UI text (headers, file names, formats, examples)
 NOT_UI = re.compile(
