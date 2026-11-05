@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{Align2, App, Arc, BAR, COLS, Cat, Color32, Duration, FontId, GENERAL, Mutex, Relaxed, Release, RichText, Sense, Settings, TB_BUTTONS, TB_ICONS, TITLE, Vec2, ViewportCommand, ViewportId, Which, app_icon, core, dlu, egui, help, help_logo, human, i18n, install_update, open_url, texture, tr, tr_os, win};
+use crate::app::dialogs::{Dialog};
 
 impl App {
     pub(super) fn dialog_category(

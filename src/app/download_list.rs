@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{App, Info, links, tr_os};
 
 /// One entry of an NDM export file.
 #[derive(Debug, PartialEq)]

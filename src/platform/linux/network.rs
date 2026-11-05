@@ -1,4 +1,4 @@
-use super::*;
+use super::{Mutex, Stdio, cmd, config_dir};
 
 pub(super) fn gsettings(args: &[&str]) -> Option<String> {
     let o = cmd("gsettings").args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;

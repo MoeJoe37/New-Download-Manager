@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{App, GUIDES, RichText, Settings, Vec2, core, dlu, egui, explore, extension_dir, extension_page, i18n, integration, tr, tr_os, win};
+use crate::app::dialogs::{Dialog};
 
 impl App {
     pub(super) fn dialog_cancelled(

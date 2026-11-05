@@ -1,4 +1,4 @@
-use super::*;
+use crate::ytdlp::{Path, host_of, last_error, on_site, sanitize};
 
 pub(super) fn selection_error(err: &str, quality: &str) -> String {
     let message = last_error(err);

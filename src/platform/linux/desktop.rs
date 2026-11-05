@@ -1,4 +1,4 @@
-use super::*;
+use super::{Path, PathBuf, clean_env};
 
 /// Browsers found on PATH: (name, executable).
 pub fn installed_browsers() -> Vec<(String, String)> {

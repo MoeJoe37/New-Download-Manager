@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{i18n, tr_os, win};
 
 pub(in crate::app) fn human(n: u64) -> String {
     i18n::line(&human_os(n))

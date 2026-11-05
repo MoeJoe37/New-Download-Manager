@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{Align2, App, Arc, BAR, Color32, DUPL, Duration, Incoming, Info, Key, PROG_DX, Path, PathBuf, Rect, Relaxed, RichText, Sense, Settings, Status, Vec2, core, date, discard, dlu, egui, engine, explore, human, human_os, i18n, join_login, open_folder_of, open_with, pct2, size3, size3_os, time_left, tr, tr_os, win, with_login, ytdlp};
+use crate::app::dialogs::{ChecksumSource, Dialog, ProbeSlot};
 
 impl App {
     pub(super) fn dialog_add_url(

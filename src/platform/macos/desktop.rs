@@ -1,4 +1,4 @@
-use super::*;
+use super::{Path, PathBuf, clean_env, home};
 
 /// ~/Library/Application Support, where the browsers keep their settings.
 fn support() -> PathBuf {

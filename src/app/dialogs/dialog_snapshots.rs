@@ -1,3 +1,4 @@
+use crate::app::{Core, Path, Rect, Status, channel, extension_dir};
 use super::*;
 use crate::app::resources::apply_style;
 use std::fmt::Write;

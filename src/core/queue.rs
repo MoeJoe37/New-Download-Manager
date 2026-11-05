@@ -1,4 +1,4 @@
-use super::*;
+use crate::core::{Arc, Core, Deserialize, Duration, Instant, Job, Local, Relaxed, Serialize, Settings, Status, engine, thread};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]

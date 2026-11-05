@@ -1,4 +1,4 @@
-use super::*;
+use crate::engine::{Arc, Body, BufRead, BufReader, Duration, Mutex, Read, TcpStream, Write, b64, pct_decode, strip_ci};
 use crate::transport::client::UA;
 
 pub(super) fn is_ftp(url: &str) -> bool {

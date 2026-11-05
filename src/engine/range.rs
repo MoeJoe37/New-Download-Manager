@@ -1,4 +1,4 @@
-use super::*;
+use crate::engine::{CHANGED, Duration, Response, Seg};
 
 /// An inclusive, concrete byte interval. Unsatisfied and unknown-size ranges cannot be split.
 pub(crate) fn content_range(value: &str) -> Option<(u64, u64, u64)> {

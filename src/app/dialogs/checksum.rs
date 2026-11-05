@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{App, Arc, Duration, Relaxed, RichText, channel, dlu, egui, i18n, tr, tr_os};
+use crate::app::dialogs::{ChecksumSource};
 
 impl App {
     pub(super) fn dialog_checksum(

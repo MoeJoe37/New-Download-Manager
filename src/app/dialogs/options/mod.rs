@@ -1,6 +1,7 @@
 mod pages;
 
-use super::*;
+use crate::app::{App, Settings, core, dlu, egui, extension_dir, help, win};
+use crate::app::dialogs::{Dialog};
 
 impl App {
     pub(super) fn dialog_options(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, tab: &mut u8, s: &mut Box<Settings>) -> bool {

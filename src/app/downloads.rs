@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{App, Arc, Dialog, Duration, GENERAL, Incoming, Path, ProbeSlot, Status, core, egui, engine, grabber, stream, win, ytdlp};
 
 /// "http://u:p@host/x" -> ("http://host/x", "u", "p"); the File Properties Login/Password fields.
 /// `url` with login:password put in (Add URL / Batch "Use authorization").

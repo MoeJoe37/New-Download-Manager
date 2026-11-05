@@ -14,7 +14,7 @@ mod browser;
 mod grabber;
 mod misc;
 
-use super::*;
+use crate::app::{App, Arc, GRAB_MENU, GRAB_STEPS, GRAB_TB, Incoming, Info, Mutex, PROG_DX, Probe, Receiver, Relaxed, Release, Settings, TITLE, Vec2, ViewportBuilder, ViewportCommand, ViewportId, core, discard, dlu, egui, engine, help_body, i18n, net, tr_os, win, ytdlp};
 
 pub(super) type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 

@@ -1,4 +1,4 @@
-use super::*;
+use crate::ytdlp::{AtomicU64, Path, PathBuf, Read, Relaxed, command, exe_file, ffmpeg, runs};
 
 /// The newest releases' files: GitHub sends ".../releases/latest/download/<file>" on to the newest one.
 const YTDLP_LATEST: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";

@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{App, Settings, dlu, egui, net, sched_time};
 
 impl App {
     pub(super) fn dialog_http1_hosts(&mut self, ui: &mut egui::Ui, hosts: &mut String) -> bool {

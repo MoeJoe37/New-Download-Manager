@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{App, Arc, Cat, Color32, FontId, HashMap, Mutex, Path, PathBuf, Relaxed, Vec2, Which, core, dlu, egui, i18n, win};
 
 pub(super) const DARK_DLG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
 

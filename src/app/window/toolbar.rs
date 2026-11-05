@@ -1,4 +1,4 @@
-use crate::app::*;
+use crate::app::{Align, Align2, App, BAR, Color32, Dialog, FontId, Layout, Relaxed, Row, Sense, Status, TB_BUILTIN, TB_BUTTONS, Toolbar, Vec2, core, dlu, egui, explore, i18n, segoe, style, toolbar_sets, toolbars_dir, tr};
 
 /// (strip index, fallback glyph, label, tooltip, enabled, drop-down)
 type TbButton = (usize, &'static str, String, String, bool, bool);

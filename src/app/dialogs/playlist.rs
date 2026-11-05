@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{App, Duration, Info, channel, egui, engine, i18n, tr, tr_os, ytdlp};
+use crate::app::dialogs::{PlaylistLookup, PlaylistPicker};
 
 impl App {
     pub(super) fn dialog_playlist(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, pick: &mut Box<PlaylistPicker>) -> bool {

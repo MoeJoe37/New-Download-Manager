@@ -1,4 +1,4 @@
-use super::*;
+use super::{size_of, wide, zeroed};
 
 /// Start with Windows (HKCU Run key), like NDM's "Launch... on startup".
 /// Windows' (Internet Options) proxy: (ProxyEnable, ProxyServer, ProxyOverride).

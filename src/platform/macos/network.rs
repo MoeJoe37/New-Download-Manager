@@ -1,4 +1,4 @@
-use super::*;
+use super::{output};
 
 /// The system's proxy (System Settings -> Network -> Proxies, as `scutil --proxy` shows it) in Windows'
 /// Internet Settings shape: (on, "http=host:port;https=host:port", bypass list).

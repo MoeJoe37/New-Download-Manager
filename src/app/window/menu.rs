@@ -1,4 +1,6 @@
-use crate::app::*;
+use crate::app::{ALL_CJK, Align, App, Col, Color32, Dialog, FontId, LIST_FONT, Layout, PlaylistPicker, Relaxed, RichText, Row, Sense, UPDATE_REPO, Vec2, ViewportCommand, clipboard, core, crash_diagnostics, dlu, egui, explore, help, i18n, issue_text, links, open_url, rate, segoe, style, tr, tray_picture, win};
+#[cfg(target_os = "linux")]
+use crate::app::{LIMIT_ITEM};
 
 /// A menu bar's layout: its menus start at the right edge in right-to-left languages (`menu::bar` rows
 /// follow their parent's direction).

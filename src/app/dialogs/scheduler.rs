@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{App, Color32, PAGE_DX, Rect, RichText, Status, Vec2, core, dlu, egui, help, human, i18n, tr, tr_os, with_login};
+use crate::app::dialogs::{Dialog};
 
 impl App {
     pub(super) fn dialog_scheduler(&mut self, ui: &mut egui::Ui, tab: &mut u8, queue: &mut core::queue::Queue, qsel: &mut Option<u64>, error: &mut String) -> bool {

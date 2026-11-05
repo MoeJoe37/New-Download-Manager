@@ -1,4 +1,4 @@
-use super::*;
+use crate::core::{Arc, Browser, BufRead, BufReader, Core, Deserialize, Duration, HashMap, Local, PROXY_PORT, Read, Relaxed, Sender, Status, TcpListener, Write, browser_kind, engine, ext, thread};
 
 /// The browser endpoint's ports: the first one free. Windows can reserve a port range for Hyper-V, WSL or
 /// Docker (`netsh int ipv4 show excludedportrange`), so 9614 may not be NDM's to take; the extension tries

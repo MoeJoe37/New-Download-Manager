@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{Path, win};
 
 /// Virus scanner arguments: `[File]` replaced by the downloaded file, or the file appended (template 494's note).
 pub(in crate::app) fn virus_args(args: &str, file: &Path) -> Vec<String> {

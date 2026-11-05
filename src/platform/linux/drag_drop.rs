@@ -1,4 +1,5 @@
-use super::*;
+use gtk::prelude::{GdkContextExt, GtkWindowExt, MonitorExt, WidgetExt, WidgetExtManual};
+use super::{AtomicBool, Mutex, OnceLock, Relaxed, Rgba, gdk, glib, gtk_spawn};
 
 /// Links dropped on the drop target, for the UI to take (`take_drops`).
 static DROPS: Mutex<Vec<String>> = Mutex::new(Vec::new());

@@ -1,4 +1,7 @@
-use super::*;
+use crate::app::{App, DUPL, GENERAL, PAGE_DX, Path, RichText, Settings, Vec2, core, dlu, egui, extension_page, i18n, integration, net, tr, tr_os, win};
+use crate::app::dialogs::{Dialog};
+#[cfg(target_os = "macos")]
+use crate::app::{mac_capture};
 
 impl App {
     pub(super) fn options_general(

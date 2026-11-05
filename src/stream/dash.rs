@@ -1,4 +1,4 @@
-use super::*;
+use crate::stream::{HashSet, MAX_PARTS, PROTECTED, Part, Track, join};
 
 type Node<'a, 'i> = roxmltree::Node<'a, 'i>;
 

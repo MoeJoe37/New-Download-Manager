@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Module boundaries
+        run: python3 tools/check-boundaries.py
       - name: Check move commits
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

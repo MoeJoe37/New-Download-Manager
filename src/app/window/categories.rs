@@ -1,4 +1,4 @@
-use crate::app::*;
+use crate::app::{Align2, App, Color32, DARK_TREE, Dialog, FontId, GENERAL, HashSet, Path, Sense, Settings, Vec2, cat_icon_files, cat_icon_sets, core, dlu, egui, explore, i18n, tb_picture, texture, tr};
 use crate::app::resources::{cached_texture, cat_icons_dir, glyph_strip};
 
 #[derive(Clone, Copy, PartialEq)]

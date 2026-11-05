@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{App, Dialog, Path, PathBuf, copy_dir, core, explore, i18n, tr_os};
 
 /// The browser's own extensions page, for the browsers the extension (Chromium MV3) runs in.
 pub(in crate::app) fn extension_page(b: &core::settings::Browser) -> Option<String> {

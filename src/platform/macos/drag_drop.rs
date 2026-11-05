@@ -1,4 +1,6 @@
-use super::*;
+use super::{AnyClass, AnyObject, AtomicBool, Bool, DefinedClass, Imp, MainThreadMarker, MainThreadOnly, Mutex, NSArray, NSBackingStoreType, NSColor, NSCompositingOperation, NSDragOperation, NSEvent, NSFloatingWindowLevel, NSImage, NSObject, NSPanel, NSPasteboard, NSPasteboardTypeString, NSPasteboardTypeURL, NSPoint, NSRect, NSResponder, NSScreen, NSSize, NSString, NSUInteger, NSView, NSWindowCollectionBehavior, NSWindowStyleMask, OnceLock, Relaxed, Retained, Rgba, Sel, define_class, image_of, msg_send, sel};
+#[allow(deprecated)]
+use super::NSFilenamesPboardType;
 
 /// Links dropped on the main window or the drop target, for the UI to take (`take_drops`).
 static DROPS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -69,7 +71,7 @@ fn drag_pasteboard(sender: *mut AnyObject) -> Option<Retained<NSPasteboard>> {
 
 #[allow(deprecated)]
 fn drag_types() -> Retained<NSArray<NSString>> {
-    unsafe { NSArray::from_slice(&[NSFilenamesPboardType, NSPasteboardTypeURL, NSPasteboardTypeString]) }
+    unsafe { NSArray::from_slice(&[NSPasteboardTypeURL, NSPasteboardTypeString]) }
 }
 
 /// winit's own drag handlers on the main window's delegate (files), which links go around.

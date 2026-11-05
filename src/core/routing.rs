@@ -1,5 +1,5 @@
 use crate::transport;
-use super::*;
+use crate::core::{Core, Deserialize, Login, Relaxed, Serialize, Settings, engine};
 
 /// "Use advanced browser integration": Windows' proxy for http points here (see `apply_integration`).
 pub const PROXY_PORT: u16 = 9615;

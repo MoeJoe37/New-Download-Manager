@@ -1,4 +1,4 @@
-use super::*;
+use crate::app::{App, egui, tr};
 
 impl App {
     pub(super) fn dialog_problem_report(ui: &mut egui::Ui, text: &mut String) -> bool {

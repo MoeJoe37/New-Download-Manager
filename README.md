@@ -366,6 +366,8 @@ opens this guide.
 
 ## Building from source
 
+The [architecture guide](docs/architecture.md) maps features to their owning modules and explains dependency and visibility rules.
+
 Requirements: Windows 10/11 (x64 or ARM64), [Rust](https://rustup.rs) (stable, MSVC toolchain), the Windows
 SDK (for the exe icon).
 

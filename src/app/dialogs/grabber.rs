@@ -1,4 +1,5 @@
-use super::*;
+use crate::app::{App, Arc, Color32, GRAB_MENU, GrabCmd, HashSet, Rect, Relaxed, RichText, Sense, Status, Vec2, core, dlu, egui, help, i18n, menu_layout, open_url, sched_time, tr, tr_os};
+use crate::app::dialogs::{Dialog};
 
 impl App {
     pub(super) fn dialog_grab_save(

@@ -1,4 +1,10 @@
-use super::*;
+use crate::app::{Align, App, Arc, AtomicIsize, CheckMenuItem, Color32, Core, DARK_DLG, DARK_MENU_HOT, DARK_TREE, Dialog, Duration, FontId, HashSet, Incoming, Key, LINUX_TRAY, Layout, Menu, MenuEvent, MenuItem, PAINTED, PredefinedMenuItem, Relaxed, TITLE, TrayIcon, TrayIconBuilder, ViewportCommand, app_icon, core, dlu, egui, explore, i18n, menu_layout, rate, style, take_help_request, tr, tray_picture, tray_start, virus_args, win};
+#[cfg(target_os = "linux")]
+use crate::app::{LIMIT_ITEM};
+#[cfg(not(windows))]
+use crate::app::{MAIN_XID};
+#[cfg(windows)]
+use crate::app::{MouseButton, MouseButtonState, TrayIconEvent};
 
 /// What the window's close button does.
 #[derive(Debug, PartialEq)]

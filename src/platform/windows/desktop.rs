@@ -1,4 +1,4 @@
-use super::*;
+use super::{Path, running, wide};
 
 /// A REG_SZ value ("" = the key's default value); empty if missing.
 fn reg_text(root: windows_sys::Win32::System::Registry::HKEY, key: &str, name: &str) -> String {
