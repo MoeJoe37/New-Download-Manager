@@ -324,7 +324,7 @@ impl WebProxy {
         Self {
             enabled: Some(1),
             host: Some("127.0.0.1".into()),
-            port: Some(crate::core::PROXY_PORT.into()),
+            port: Some(crate::core::routing::PROXY_PORT.into()),
         }
     }
 
@@ -376,7 +376,7 @@ struct Journal {
 }
 
 fn journal_path() -> PathBuf {
-    crate::core::store_path().with_file_name("mac-http-capture.json")
+    crate::core::state::store_path().with_file_name("mac-http-capture.json")
 }
 
 pub fn has_journal() -> bool {

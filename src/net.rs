@@ -20,44 +20,89 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 pub fn connect(route: &str, host: &str, port: u16) -> io::Result<TcpStream> {
     let route = route.trim();
     if route.is_empty() {
-        return connect_any(lookup(host, port)?, |a| TcpStream::connect_timeout(&a, CONNECT_TIMEOUT));
+        return connect_any(lookup(host, port)?, |a| {
+            TcpStream::connect_timeout(&a, CONNECT_TIMEOUT)
+        });
     }
-    let dec = |s: &str| percent_encoding::percent_decode_str(s).decode_utf8_lossy().into_owned();
+    let dec = |s: &str| {
+        percent_encoding::percent_decode_str(s)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
     if let Some(name) = route.strip_prefix("nic://") {
         let name = dec(name);
-        let nic = crate::win::nics().into_iter().find(|n| n.name == name).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("network {name} is gone")))?;
-        let addrs: Vec<SocketAddr> = lookup(host, port)?.into_iter().filter(|a| nic.ips.iter().any(|ip| ip.is_ipv4() == a.is_ipv4())).collect();
+        let nic = crate::win::nics()
+            .into_iter()
+            .find(|n| n.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, format!("network {name} is gone"))
+            })?;
+        let addrs: Vec<SocketAddr> = lookup(host, port)?
+            .into_iter()
+            .filter(|a| nic.ips.iter().any(|ip| ip.is_ipv4() == a.is_ipv4()))
+            .collect();
         return connect_any(addrs, |a| connect_on(&nic, a));
     }
     let bad = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
     let u = url::Url::parse(route).map_err(|e| bad(format!("bad route {route}: {e}")))?;
-    let proxy = (u.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string(), u.port().unwrap_or(1080));
+    let proxy = (
+        u.host_str()
+            .unwrap_or_default()
+            .trim_matches(['[', ']'])
+            .to_string(),
+        u.port().unwrap_or(1080),
+    );
     let (user, pass) = (dec(u.username()), dec(u.password().unwrap_or_default()));
     let five = |target: socks::TargetAddr| {
         let proxy = (proxy.0.as_str(), proxy.1);
-        if user.is_empty() { socks::Socks5Stream::connect(proxy, target) } else { socks::Socks5Stream::connect_with_password(proxy, target, &user, &pass) }.map(|s| s.into_inner())
+        if user.is_empty() {
+            socks::Socks5Stream::connect(proxy, target)
+        } else {
+            socks::Socks5Stream::connect_with_password(proxy, target, &user, &pass)
+        }
+        .map(|s| s.into_inner())
     };
     match u.scheme() {
-        "socks5h" => five(socks::TargetAddr::Domain(host.trim_matches(['[', ']']).to_string(), port)),
+        "socks5h" => five(socks::TargetAddr::Domain(
+            host.trim_matches(['[', ']']).to_string(),
+            port,
+        )),
         "socks5" => five(socks::TargetAddr::Ip(lookup(host, port)?[0])),
         "socks4" => {
-            let v4 = lookup(host, port)?.into_iter().find(|a| a.is_ipv4()).ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "SOCKS 4 needs an IPv4 address"))?;
-            socks::Socks4Stream::connect((proxy.0.as_str(), proxy.1), v4, "").map(|s| s.into_inner())
+            let v4 = lookup(host, port)?
+                .into_iter()
+                .find(|a| a.is_ipv4())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AddrNotAvailable,
+                        "SOCKS 4 needs an IPv4 address",
+                    )
+                })?;
+            socks::Socks4Stream::connect((proxy.0.as_str(), proxy.1), v4, "")
+                .map(|s| s.into_inner())
         }
         s => Err(bad(format!("unknown route {s}"))),
     }
 }
 
 fn lookup(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
-    let addrs: Vec<_> = (host.trim_matches(['[', ']']), port).to_socket_addrs()?.collect();
+    let addrs: Vec<_> = (host.trim_matches(['[', ']']), port)
+        .to_socket_addrs()?
+        .collect();
     if addrs.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("{host} has no address")));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{host} has no address"),
+        ));
     }
     Ok(addrs)
 }
 
 /// Tries each address in turn; the last error if none answers.
-fn connect_any(addrs: Vec<SocketAddr>, f: impl Fn(SocketAddr) -> io::Result<TcpStream>) -> io::Result<TcpStream> {
+fn connect_any(
+    addrs: Vec<SocketAddr>,
+    f: impl Fn(SocketAddr) -> io::Result<TcpStream>,
+) -> io::Result<TcpStream> {
     let mut err = io::Error::new(io::ErrorKind::AddrNotAvailable, "no address to connect to");
     for a in addrs {
         match f(a) {
@@ -79,17 +124,31 @@ pub struct Nic {
 /// the device, since they route by destination, not by source address).
 pub fn connect_on(nic: &Nic, addr: SocketAddr) -> io::Result<TcpStream> {
     use socket2::{Domain, SockAddr, Socket, Type};
-    let ip = nic.ips.iter().find(|ip| ip.is_ipv4() == addr.is_ipv4()).ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, format!("{} has no address for {addr}", nic.name)))?;
+    let ip = nic
+        .ips
+        .iter()
+        .find(|ip| ip.is_ipv4() == addr.is_ipv4())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!("{} has no address for {addr}", nic.name),
+            )
+        })?;
     let s = Socket::new(Domain::for_address(addr), Type::STREAM, None)?;
     #[cfg(target_os = "linux")]
     s.bind_device(Some(nic.name.as_bytes()))?;
     // macOS routes by destination too: IP_BOUND_IF / IPV6_BOUND_IF keep the connection on the interface
     #[cfg(target_os = "macos")]
     {
-        let name = std::ffi::CString::new(nic.name.as_str()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let name = std::ffi::CString::new(nic.name.as_str())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         // SAFETY: a valid C string; if_nametoindex only reads it
         let index = std::num::NonZeroU32::new(unsafe { libc::if_nametoindex(name.as_ptr()) });
-        if addr.is_ipv4() { s.bind_device_by_index_v4(index)? } else { s.bind_device_by_index_v6(index)? }
+        if addr.is_ipv4() {
+            s.bind_device_by_index_v4(index)?
+        } else {
+            s.bind_device_by_index_v6(index)?
+        }
     }
     s.bind(&SockAddr::from(SocketAddr::new(*ip, 0)))?;
     s.connect_timeout(&SockAddr::from(addr), CONNECT_TIMEOUT)?;
@@ -102,7 +161,11 @@ pub fn nic_supported() -> bool {
     #[cfg(target_os = "linux")]
     {
         static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *OK.get_or_init(|| socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).and_then(|s| s.bind_device(Some(b"lo"))).is_ok())
+        *OK.get_or_init(|| {
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                .and_then(|s| s.bind_device(Some(b"lo")))
+                .is_ok()
+        })
     }
     #[cfg(not(target_os = "linux"))]
     true
@@ -118,10 +181,19 @@ pub fn local_proxy(route: &str) -> String {
     }
     let token = {
         use std::hash::BuildHasher;
-        format!("{:016x}", std::collections::hash_map::RandomState::new().hash_one((route, std::time::SystemTime::now())))
+        format!(
+            "{:016x}",
+            std::collections::hash_map::RandomState::new()
+                .hash_one((route, std::time::SystemTime::now()))
+        )
     };
-    let Ok(l) = TcpListener::bind("127.0.0.1:0") else { return "invalid-proxy://".into() };
-    let url = format!("socks5://{token}:{token}@127.0.0.1:{}", l.local_addr().map(|a| a.port()).unwrap_or(0));
+    let Ok(l) = TcpListener::bind("127.0.0.1:0") else {
+        return "invalid-proxy://".into();
+    };
+    let url = format!(
+        "socks5://{token}:{token}@127.0.0.1:{}",
+        l.local_addr().map(|a| a.port()).unwrap_or(0)
+    );
     let route = route.to_string();
     servers.push((route.clone(), url.clone()));
     thread::spawn(move || {
@@ -131,7 +203,10 @@ pub fn local_proxy(route: &str) -> String {
                 let mut c = c;
                 if let Ok((_, host, port)) = socks_accept(&mut c, Some((&token, &token))) {
                     // a network that vanishes without closing its connections mustn't hold a thread for good
-                    let out = connect(&route, &host, port).and_then(|o| o.set_read_timeout(Some(Duration::from_secs(120))).map(|_| o));
+                    let out = connect(&route, &host, port).and_then(|o| {
+                        o.set_read_timeout(Some(Duration::from_secs(120)))
+                            .map(|_| o)
+                    });
                     if socks_reply(&mut c, out.as_ref().err()).is_ok() {
                         if let Ok(out) = out {
                             relay(c, out);
@@ -144,7 +219,7 @@ pub fn local_proxy(route: &str) -> String {
     url
 }
 
-/// The proxy string to hand `engine::agent` for `route` (`Settings::proxy_for`'s answer).
+/// The proxy string to hand `transport::client::agent` for `route` (`Settings::proxy_for`'s answer).
 pub fn agent_proxy(route: &str) -> String {
     let route = route.trim();
     if let Some(rest) = route.strip_prefix("socks5h://") {
@@ -240,7 +315,9 @@ fn socks_reply(c: &mut TcpStream, err: Option<&io::Error>) -> io::Result<()> {
 
 /// Copies both ways until each side ends; an end on one side is passed on as a half close.
 fn relay(a: TcpStream, b: TcpStream) {
-    let (Ok(a2), Ok(b2)) = (a.try_clone(), b.try_clone()) else { return };
+    let (Ok(a2), Ok(b2)) = (a.try_clone(), b.try_clone()) else {
+        return;
+    };
     let one = |mut from: TcpStream, mut to: TcpStream| {
         let _ = io::copy(&mut from, &mut to);
         let _ = to.shutdown(Shutdown::Write);
@@ -263,7 +340,9 @@ mod tests {
             for mut c in l.incoming().flatten() {
                 let mut b = [0u8; 4096];
                 let _ = c.read(&mut b);
-                let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+                let _ = c.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                );
             }
         });
         port
@@ -303,8 +382,15 @@ mod tests {
     fn agent_proxy_maps() {
         assert_eq!(agent_proxy("socks5h://u:p@sx:1080"), "socks5://u:p@sx:1080");
         let local = agent_proxy("socks5://sx:1080");
-        assert!(local.starts_with("socks5://") && local.contains("@127.0.0.1:"), "{local}");
-        assert_eq!(agent_proxy("socks5://sx:1080"), local, "one server per route");
+        assert!(
+            local.starts_with("socks5://") && local.contains("@127.0.0.1:"),
+            "{local}"
+        );
+        assert_eq!(
+            agent_proxy("socks5://sx:1080"),
+            local,
+            "one server per route"
+        );
         assert_eq!(agent_proxy("ftp://fx:21"), "");
         assert_eq!(agent_proxy("http://px:3128"), "http://px:3128");
         assert_eq!(agent_proxy(""), "");
@@ -313,7 +399,15 @@ mod tests {
     #[test]
     fn local_proxy_relays_http() {
         let url = format!("http://127.0.0.1:{}/", hello());
-        assert_eq!(crate::engine::agent(&local_proxy(""), "").get(&url).call().unwrap().into_string().unwrap(), "hello");
+        assert_eq!(
+            crate::transport::client::agent(&local_proxy(""), "")
+                .get(&url)
+                .call()
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            "hello"
+        );
     }
 
     #[test]
@@ -323,7 +417,14 @@ mod tests {
         let target = ("127.0.0.1", hello());
         assert!(socks::Socks5Stream::connect_with_password(addr, target, "x", "y").is_err());
         assert!(socks::Socks5Stream::connect(addr, target).is_err());
-        let mut s = socks::Socks5Stream::connect_with_password(addr, target, u.username(), u.password().unwrap()).unwrap().into_inner();
+        let mut s = socks::Socks5Stream::connect_with_password(
+            addr,
+            target,
+            u.username(),
+            u.password().unwrap(),
+        )
+        .unwrap()
+        .into_inner();
         assert!(get(&mut s).ends_with("hello"));
     }
 
@@ -331,8 +432,14 @@ mod tests {
     fn socks5_name_lookup_side() {
         let port = hello();
         let (f, atyp) = fake_socks(None);
-        assert!(get(&mut connect(&format!("socks5h://127.0.0.1:{f}"), "127.0.0.1", port).unwrap()).ends_with("hello"));
-        assert!(get(&mut connect(&format!("socks5://127.0.0.1:{f}"), "127.0.0.1", port).unwrap()).ends_with("hello"));
+        assert!(
+            get(&mut connect(&format!("socks5h://127.0.0.1:{f}"), "127.0.0.1", port).unwrap())
+                .ends_with("hello")
+        );
+        assert!(
+            get(&mut connect(&format!("socks5://127.0.0.1:{f}"), "127.0.0.1", port).unwrap())
+                .ends_with("hello")
+        );
         let a = atyp.lock().unwrap().clone();
         assert_eq!(a[0], 3); // the name went to the proxy (as text, even for an address)
         assert!(a[1] == 1 || a[1] == 4); // an address went to the proxy
@@ -350,8 +457,17 @@ mod tests {
     #[test]
     fn connect_on_binds() {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let name = if cfg!(windows) { "Loopback" } else if cfg!(target_os = "macos") { "lo0" } else { "lo" };
-        let lo = Nic { name: name.into(), ips: vec![std::net::Ipv4Addr::LOCALHOST.into()] };
+        let name = if cfg!(windows) {
+            "Loopback"
+        } else if cfg!(target_os = "macos") {
+            "lo0"
+        } else {
+            "lo"
+        };
+        let lo = Nic {
+            name: name.into(),
+            ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+        };
         if !nic_supported() {
             return; // Linux before 5.7
         }
@@ -362,7 +478,10 @@ mod tests {
     #[test]
     fn nics_are_sane() {
         for n in crate::win::nics() {
-            assert!(!n.name.is_empty() && !n.ips.is_empty() && n.ips.iter().all(|ip| !ip.is_loopback()), "{n:?}");
+            assert!(
+                !n.name.is_empty() && !n.ips.is_empty() && n.ips.iter().all(|ip| !ip.is_loopback()),
+                "{n:?}"
+            );
         }
     }
 }

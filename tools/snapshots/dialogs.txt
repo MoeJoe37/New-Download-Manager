@@ -1,0 +1,1460 @@
+AddUrl "Enter new address to download" 520.3x91.2
+  rect 0.0,0.0 520.5,91.0
+  text 11.0,17.0 46.0,26.0 "Address"
+  rect 63.0,11.0 431.0,33.5
+  text 66.0,14.0 188.0,24.0 "https://example.test/file.zip"
+  rect 10.0,44.5 431.0,85.0
+  rect 18.0,38.0 32.0,52.0
+  text 36.0,40.5 113.0,49.5 "Use authorization"
+  text 77.0,60.5 101.0,70.5 "Login"
+  rect 107.5,54.5 216.0,77.0
+  text inf,inf NaN,NaN ""
+  text 269.5,60.5 311.5,69.5 "Password"
+  rect 318.0,54.5 422.5,77.0
+  text inf,inf NaN,NaN ""
+  rect 441.0,11.0 510.5,32.0
+  text 469.0,18.0 483.0,26.0 "OK"
+  rect 441.0,38.5 510.5,61.0
+  text 461.0,45.0 491.0,54.0 "Cancel"
+
+FileInfo "Download File Info" 530.1x204.8
+  rect 0.0,0.0 530.0,205.0
+  text 64.5,12.5 82.5,20.5 "URL"
+  rect 89.5,5.0 429.5,27.0
+  text 93.5,11.5 215.5,21.5 "https://example.test/file.zip"
+  text 41.5,39.5 82.5,48.5 "Category"
+  rect 89.5,37.5 247.0,57.5
+  path 225.0,44.5 235.0,50.5
+  text inf,inf NaN,NaN ""
+  rect 255.5,33.5 277.5,56.0
+  text 263.5,42.5 268.5,48.5 "+"
+  text 50.5,70.0 82.5,78.0 "Save As"
+  rect 89.5,62.5 400.5,85.0
+  text 91.5,65.5 201.5,75.5 "/downloads/stopped.zip"
+  rect 407.5,62.5 429.5,85.0
+  text 415.5,76.0 421.5,78.0 "..."
+  rect 89.5,95.5 429.5,141.0
+  rect 96.5,88.0 110.5,102.0
+  text 114.5,90.5 270.5,100.5 "Remember this path for \"\" category"
+  rect 96.5,110.5 420.0,133.0
+  text 99.5,117.0 154.5,127.0 "/downloads"
+  text 31.5,152.5 81.5,162.5 "Description"
+  rect 89.5,145.5 429.5,168.0
+  text inf,inf NaN,NaN ""
+  text inf,inf NaN,NaN ""
+  path 484.0,123.5 487.0,126.5
+  rect 89.5,176.0 192.5,198.5
+  text 105.0,182.5 177.0,191.5 "Download Later"
+  rect 208.0,176.0 311.0,198.5
+  text 224.0,182.5 294.0,191.5 "Start Download"
+  rect 326.5,176.0 429.5,198.5
+  text 363.5,182.5 393.5,191.5 "Cancel"
+
+Cancelled "Cancelling an automatically started download" 394.8x254.4
+  rect 0.0,0.0 395.0,254.5
+  text 8.5,9.0 378.5,52.0 "You have cancelled this download twice.\n\nIf New Download Manager always takes over this download by mistake, you may add this address or this site to New Download Manager list of exceptions:"
+  rect 21.0,75.5 35.0,89.5
+  text 39.0,78.0 273.0,88.0 "Don't start downloading automatically from this site:"
+  text 37.5,96.5 93.5,106.5 "example.test"
+  rect 21.0,122.0 35.0,136.0
+  text 39.0,124.5 292.0,134.5 "Don't start downloading automatically from this address:"
+  text 37.5,144.5 159.5,154.5 "https://example.test/file.zip"
+  text 10.0,167.5 374.0,177.5 "Also you may edit exception lists on \"Options->File Types\" tab of the options dialog"
+  rect 114.5,198.5 184.0,221.0
+  text 142.5,206.0 156.5,214.0 "OK"
+  rect 210.5,198.5 280.5,221.0
+  text 231.0,205.0 261.0,214.0 "Cancel"
+  rect 21.0,229.0 35.0,243.0
+  text 39.0,231.5 163.0,241.5 "Don't show this dialog again"
+
+Exceptions "The list of address exceptions" 392.0x291.2
+  rect 0.0,0.0 392.0,291.0
+  rect 10.0,16.0 24.0,30.0
+  text 28.0,13.0 309.0,33.0 "Show the dialog to add an address to the list of exceptions for a twice-cancelled download"
+  text 10.0,44.5 317.0,54.5 "Don't start downloading automatically from the following addresses:"
+  rect 10.0,59.0 382.0,230.5
+  text 10.0,236.5 265.0,246.5 "You may use the asterisk wildcard for the address pattern."
+  rect 22.5,257.5 92.0,280.0
+  text 48.5,264.5 65.5,273.5 "Add"
+  rect 110.0,257.5 180.0,280.0
+  text 130.5,264.5 159.5,273.5 "Delete"
+  rect 300.0,257.5 369.5,280.0
+  text 328.0,265.5 342.0,273.5 "OK"
+
+ExcAdd "Add an address to exceptions list" 428.3x73.6
+  rect 0.0,0.0 428.5,73.5
+  text 10.0,18.5 45.0,27.5 "Address"
+  rect 63.0,11.0 415.5,33.5
+  text inf,inf NaN,NaN ""
+  rect 266.5,40.0 336.0,62.5
+  text 294.5,47.5 308.5,55.5 "OK"
+  rect 346.0,40.0 415.5,62.5
+  text 366.0,46.5 396.0,55.5 "Cancel"
+
+BrowserDetails "Browser details" 599.8x150.4
+  rect 0.0,0.0 600.0,150.5
+  rect 10.0,11.0 590.0,105.5
+  line 162.5,14.5 163.5,29.5
+  text 17.0,18.5 54.0,26.5 "Browser"
+  line 483.5,14.5 484.5,29.5
+  text 170.0,17.5 190.0,26.5 "Path"
+  line 587.0,14.5 588.0,29.5
+  text 491.0,17.5 575.0,27.5 "Type of integration"
+  line 10.5,30.5 589.5,31.5
+  rect 188.5,117.0 282.0,139.0
+  text 206.0,123.5 264.0,132.5 "Add version..."
+  rect 316.5,117.0 410.0,139.0
+  text 351.0,123.5 375.0,132.5 "Close"
+
+Integrate "Browsers integration" 676.6x320.0
+  rect 0.0,0.0 676.5,320.0
+  text 11.0,10.0 42.0,19.0 "Firefox"
+  rect 8.5,35.0 668.0,249.5
+  text 19.5,46.0 655.5,67.0 "To capture downloads from Firefox, open its extensions page (about:debugging), click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in this folder. Firefox removes the add-on when it closes, so load it again after a restart:"
+  rect 19.5,147.0 658.5,169.5
+  text 22.5,154.0 "<extension directory>"
+  rect 19.5,259.0 145.0,281.5
+  text 33.0,266.0 131.0,276.0 "Open extensions page"
+  rect 153.5,259.0 251.0,281.5
+  text 175.0,266.0 230.0,276.0 "Open folder"
+  rect 597.0,288.0 667.0,310.5
+  text 620.0,294.5 644.0,303.5 "Close"
+
+Keys "Using special keys" 443.6x374.4
+  rect 0.0,0.0 575.5,374.5
+  line 8.0,9.0 435.5,10.0
+  line 8.0,10.0 435.5,11.0
+  rect 10.0,23.0 24.0,37.0
+  path 12.5,25.5 21.5,34.5
+  text 28.0,26.5 385.0,35.5 "Use the following key(s) to prevent downloading with New Download Manager for any links:"
+  rect 124.0,43.5 138.0,57.5
+  text 142.0,46.0 155.0,55.0 "Alt"
+  rect 177.0,43.5 191.0,57.5
+  text 195.0,46.0 216.0,55.0 "Shift"
+  rect 230.0,43.5 244.0,57.5
+  text 248.0,46.0 265.0,55.0 "Ctrl"
+  rect 283.0,42.0 297.0,56.0
+  path 285.5,44.5 294.5,53.5
+  text 301.0,44.5 316.0,53.5 "Del"
+  line 8.0,65.0 435.5,66.0
+  line 8.0,66.0 435.5,67.0
+  rect 10.0,82.0 24.0,96.0
+  text 28.0,84.5 426.0,94.5 "Use the following key(s) to force downloading with New Download Manager for any links:"
+  rect 124.0,104.5 138.0,118.5
+  text 142.0,107.0 155.0,116.0 "Alt"
+  rect 177.0,104.5 191.0,118.5
+  text 195.0,107.0 216.0,116.0 "Shift"
+  rect 230.0,104.5 244.0,118.5
+  text 248.0,107.0 265.0,116.0 "Ctrl"
+  rect 283.0,104.5 297.0,118.5
+  path 285.5,107.0 294.5,116.0
+  text 301.0,108.0 313.0,116.0 "Ins"
+  text 10.0,122.5 410.0,154.5 "Note: Sometimes after you click on a download link, a web page will load telling that the download starts in X seconds. In this case you will need to uncheck the following option to force downloading."
+  rect 63.0,173.0 77.0,187.0
+  text 81.0,175.5 576.0,185.5 "Check for left mouse button clicked on a link along with the special key(s) pressed to force downloading the link"
+  text 10.0,209.0 430.0,274.0 "Note 2: Sometimes when you click on a link, your browser requests other files AT THE SAME TIME like Java scripts, web pages, pictures, etc. When you press and hold down a special key, New Download Manager intercepts these files, and the browser may not request the necessary file because it will not run a Javascript, which has been intercepted by New Download Manager erroneously. If you want to intercept and download only the necessary files with New Download Manager, please turn on the option below:"
+  rect 63.0,299.5 77.0,313.5
+  path 65.5,302.0 74.5,311.0
+  text 81.0,296.5 423.0,317.5 "While holding down a special key DO NOT take over the downloads which are web-pages, pictures, scripts and etc."
+  line 8.0,327.5 435.5,328.5
+  line 8.0,328.5 435.5,329.5
+  rect 124.0,341.0 194.0,363.0
+  text 152.0,348.5 166.0,356.5 "OK"
+  rect 248.5,341.0 318.0,363.0
+  text 268.5,347.5 298.5,356.5 "Cancel"
+
+MenuItems "Customize menu items in context menu of browsers" 383.6x112.0
+  rect 0.0,0.0 383.5,112.0
+  text 10.0,20.5 266.0,30.5 "Selected menu items will appear in browser context menu:"
+  rect 10.0,45.0 24.0,59.0
+  text 28.0,47.5 209.0,57.5 "Download with New Download Manager"
+  rect 10.0,69.0 24.0,83.0
+  text 28.0,71.5 244.0,81.5 "Download all links with New Download Manager"
+  rect 212.0,86.5 282.0,109.0
+  text 240.0,94.0 254.0,102.0 "OK"
+  rect 293.0,86.5 362.5,109.0
+  text 313.0,93.0 343.0,102.0 "Cancel"
+
+Panel "Customize New Download Manager Download panels in browsers" 468.7x480.0
+  rect 0.0,0.0 468.5,480.0
+  rect 12.0,11.0 97.0,33.0
+  rect 12.0,11.0 97.0,33.0
+  text 19.0,16.0 90.0,26.0 "For web-players"
+  rect 96.0,13.0 184.0,32.0
+  rect 96.0,13.0 184.0,32.0
+  text 103.0,18.0 177.0,27.0 "For selected files"
+  rect 10.0,32.0 459.0,430.5
+  rect 10.0,32.0 459.0,430.5
+  line 12.5,31.5 96.5,32.5
+  text 22.5,41.0 442.5,62.0 "New Download Manager can show its Download panel on a web-player in a browser when New Download Manager detects a multimedia request from the web-player"
+  line 22.0,74.5 452.5,75.5
+  line 22.0,75.5 452.5,76.5
+  text 22.5,84.5 71.5,93.5 "Panel view:"
+  circle 43.0,104.0 58.0,119.0
+  circle 47.5,108.5 53.0,114.0
+  text 61.5,107.0 105.5,116.0 "Full mode"
+  circle 43.0,129.5 58.0,144.5
+  text 61.5,132.5 106.5,141.5 "Mini mode"
+  line 22.0,153.0 452.5,154.0
+  line 22.0,154.0 452.5,155.0
+  text 22.5,164.5 245.5,174.5 "Show download panel for the following file types:"
+  rect 51.5,181.0 258.0,321.5
+  rect 55.5,187.0 69.5,201.0
+  path 58.0,189.5 67.0,198.5
+  text 89.5,190.5 109.5,197.5 "MP4"
+  rect 277.5,182.5 415.5,205.0
+  text 338.0,189.0 355.0,198.0 "Add"
+  rect 277.5,211.0 415.5,233.5
+  text 318.0,218.0 375.0,227.0 "Minimum size"
+  rect 277.5,240.0 415.5,262.5
+  text 326.5,246.5 367.5,255.5 "Check All"
+  rect 277.5,269.0 415.5,291.0
+  text 328.5,275.5 365.5,284.5 "Clear All"
+  rect 277.5,297.5 415.5,320.0
+  text 322.5,304.5 370.5,314.5 "Exceptions"
+  rect 82.5,389.0 96.5,403.0
+  text 100.5,391.5 357.5,401.5 "Don't capture downloads from web-players automatically"
+  line 22.0,407.5 452.5,408.5
+  line 22.0,408.5 452.5,409.5
+  rect 43.5,420.0 57.5,434.0
+  text 61.5,423.0 410.5,432.0 "Show download panel for protected content which New Download Manager may not download"
+  rect 304.0,448.0 374.0,470.5
+  text 332.0,455.5 346.0,463.5 "OK"
+  rect 385.0,448.0 455.0,470.5
+  text 405.0,454.5 435.0,463.5 "Cancel"
+
+PanelSite "Enter site name" 259.5x83.2
+  rect 0.0,0.0 259.5,83.0
+  rect 10.0,11.0 249.5,33.5
+  text inf,inf NaN,NaN ""
+  rect 83.5,49.5 153.5,72.0
+  text 111.5,57.5 125.5,65.5 "OK"
+  rect 167.5,49.5 237.0,72.0
+  text 187.5,56.5 217.5,65.5 "Cancel"
+
+PanelType "Add file type" 175.8x78.4
+  rect 0.0,0.0 176.0,78.5
+  rect 10.0,11.0 166.0,33.5
+  text inf,inf NaN,NaN ""
+  rect 12.5,45.0 82.5,67.0
+  text 40.5,52.5 54.5,60.5 "OK"
+  rect 92.0,45.0 162.0,67.0
+  text 112.0,51.5 142.0,60.5 "Cancel"
+
+PanelMin "Minimum size" 333.4x219.2
+  rect 0.0,0.0 333.5,219.0
+  text 10.0,12.0 319.0,33.0 "Do not show \"Download this video\" panel if media file size is below the following minimum size in kilobytes"
+  text 116.5,76.5 136.5,83.5 "MP4"
+  rect 143.5,70.5 210.5,93.0
+  text 147.5,74.5 163.5,82.5 "100"
+  text 216.0,76.5 228.0,84.5 "KB"
+  rect 82.5,185.5 152.0,208.0
+  text 110.5,193.5 124.5,201.5 "OK"
+  rect 181.5,185.5 251.0,208.0
+  text 201.5,192.5 231.5,201.5 "Cancel"
+
+PanelExc "Download panel exceptions" 354.3x196.8
+  rect 0.0,0.0 354.5,197.0
+  text 10.0,10.5 238.0,20.5 "Don't show download panel for the following sites:"
+  rect 10.0,43.0 344.5,125.0
+  text inf,inf NaN,NaN ""
+  text 10.0,130.5 311.0,140.5 "Separate names by spaces. You may use asterisk as a wildcard pattern"
+  rect 93.5,163.0 163.0,185.5
+  text 121.5,171.0 135.5,179.0 "OK"
+  rect 189.5,163.0 259.5,185.5
+  text 210.0,170.0 240.0,179.0 "Cancel"
+
+Progress "stopped.zip" 578.4x400.0
+  rect 0.0,0.0 578.5,400.0
+  rect 13.5,8.0 103.5,30.0
+  rect 13.5,8.0 103.5,30.0
+  text 20.5,13.0 96.5,22.0 "Download status"
+  rect 102.5,10.0 175.5,29.0
+  rect 102.5,10.0 175.5,29.0
+  text 109.5,15.0 168.5,25.0 "Speed Limiter"
+  rect 174.5,10.0 291.0,29.0
+  rect 174.5,10.0 291.0,29.0
+  text 181.5,15.0 283.5,25.0 "Options on completion"
+  rect 11.5,29.0 565.5,169.5
+  rect 11.5,29.0 565.5,169.5
+  line 14.0,28.5 103.0,29.5
+  text 18.0,38.0 140.0,48.0 "https://example.test/file.zip"
+  text 18.0,56.5 46.0,64.5 "Status"
+  text 93.5,55.5 130.5,65.5 "Stopped"
+  text 18.0,76.5 50.0,85.5 "File size"
+  text 130.5,77.5 171.5,85.5 "1.000  KB"
+  text 18.0,92.5 75.0,101.5 "Downloaded"
+  text 129.5,92.5 207.5,102.5 "0  Bytes  ( 0.00 % )"
+  text 18.0,108.5 75.0,117.5 "Transfer rate"
+  text inf,inf NaN,NaN ""
+  text 18.0,124.5 56.0,133.5 "Time left"
+  text inf,inf NaN,NaN ""
+  text 18.0,140.5 97.0,150.5 "Resume capability"
+  text 214.5,140.5 263.5,150.5 "(unknown)"
+  rect 11.5,177.5 565.5,193.5
+  rect 11.5,177.5 565.5,193.5
+  rect 12.5,178.5 12.5,192.5
+  rect 24.5,201.5 177.0,225.5
+  text 68.0,209.0 133.0,218.0 "<< Hide details"
+  rect 332.5,201.5 424.5,225.5
+  text 361.5,210.0 395.5,218.0 "Resume"
+  rect 454.0,201.5 536.0,225.5
+  text 480.0,209.0 510.0,218.0 "Cancel"
+  text 164.0,231.5 406.0,241.5 "Start positions and download progress by connections"
+  rect 11.5,245.0 565.5,261.0
+  rect 11.5,245.0 565.5,261.0
+  rect 11.5,269.0 565.5,395.0
+  line 41.5,272.5 42.5,287.5
+  text 18.5,276.5 27.5,284.5 "N."
+  line 143.5,272.5 144.5,287.5
+  text 49.0,275.5 106.0,284.5 "Downloaded"
+  line 466.5,272.5 467.5,287.5
+  text 151.0,275.5 169.0,284.5 "Info"
+  line 561.5,272.5 562.5,287.5
+  text inf,inf NaN,NaN ""
+  line 12.0,288.5 565.0,289.5
+  text 21.5,294.5 24.5,301.5 " 1"
+  text inf,inf NaN,NaN ""
+  text inf,inf NaN,NaN ""
+
+ProgCustom "Customize download progress dialog" 373.9x232.0
+  rect 0.0,0.0 374.0,232.0
+  text 10.0,13.0 56.0,22.0 "Start view:"
+  rect 10.0,31.0 137.5,51.0
+  path 115.5,38.0 125.5,44.0
+  text 20.0,36.5 109.0,46.5 "Show normally sized"
+  text 10.0,55.5 337.0,87.5 "Note: \"Start view\" option doesn't relate to queue processing. When NDM is processing queues,  \"Download progress\" dialog always starts minimized in system tray"
+  line 9.5,105.0 364.5,106.0
+  line 9.5,106.0 364.5,107.0
+  rect 10.0,120.5 24.0,134.5
+  text 28.0,123.0 139.0,133.0 "Show \"Speed Limiter\" tab"
+  rect 10.0,143.0 24.0,157.0
+  text 28.0,145.5 183.0,155.5 "Show \"Options on completion\" tab"
+  rect 10.0,163.5 24.0,177.5
+  text 28.0,166.0 138.0,175.0 "Show \"Hide tab\" buttons"
+  rect 107.5,198.5 177.0,221.0
+  text 135.5,206.0 149.5,214.0 "OK"
+  rect 194.0,198.5 263.5,221.0
+  text 214.0,205.0 244.0,214.0 "Cancel"
+
+Complete "Download complete" 422.7x211.2
+  rect 0.0,0.0 422.5,211.0
+  text 47.5,12.0 199.5,33.0 "Download complete\nDownloaded 1.00 KB (1024 Bytes)"
+  text 10.0,63.5 45.0,72.5 "Address"
+  rect 10.0,77.0 413.0,99.0
+  text 14.0,83.5 136.0,93.5 "https://example.test/file.zip"
+  text 10.0,108.5 80.0,117.5 "The file saved as"
+  rect 10.0,121.5 413.0,144.0
+  text 13.0,128.5 128.0,138.5 "/downloads/complete.zip"
+  rect 10.0,153.5 95.0,176.0
+  text 40.0,161.5 64.0,170.5 "Open"
+  rect 106.0,153.5 191.0,176.0
+  text 122.0,160.5 175.0,170.5 "Open with..."
+  rect 202.5,153.5 287.5,176.0
+  text 217.5,160.5 272.5,170.5 "Open folder"
+  rect 328.0,153.5 413.0,176.0
+  text 358.0,160.5 382.0,169.5 "Close"
+  rect 22.5,189.0 36.5,203.0
+  text 40.5,191.5 164.5,201.5 "Don't show this dialog again"
+
+Delete "Confirm deletion of downloads" 387.8x137.6
+  rect 0.0,0.0 388.0,137.5
+  text 10.0,10.5 336.0,31.5 "Are you sure you want to delete selected downloads from New Download Manager list of downloads?"
+  rect 17.0,49.0 31.0,63.0
+  text 35.0,51.5 369.0,61.5 "Delete completely downloaded files from your hard disk as well. Be careful !"
+  rect 17.0,77.0 31.0,91.0
+  text 35.0,79.5 159.0,89.5 "Don't show this dialog again"
+  rect 106.0,104.0 176.0,126.5
+  text 133.5,111.5 148.5,119.5 "Yes"
+  rect 210.5,104.0 280.5,126.5
+  text 239.0,111.5 252.0,119.5 "No"
+
+Options "New Download Manager Configuration" 456.2x494.4
+  rect 0.0,0.0 456.0,494.5
+  rect 8.5,11.0 133.5,29.5
+  rect 8.5,11.0 133.5,29.5
+  text 41.5,15.5 100.5,25.5 "Proxy / Socks"
+  rect 132.5,11.0 243.5,29.5
+  rect 132.5,11.0 243.5,29.5
+  text 162.5,15.5 213.5,25.5 "Sites Logins"
+  rect 242.5,11.0 367.0,29.5
+  rect 242.5,11.0 367.0,29.5
+  text 275.0,15.5 334.0,25.5 "Dial Up / VPN"
+  rect 366.0,11.0 446.0,29.5
+  rect 366.0,11.0 446.0,29.5
+  text 389.5,15.5 422.5,24.5 "Sounds"
+  rect 8.5,29.5 83.5,51.5
+  rect 8.5,29.5 83.5,51.5
+  text 29.0,34.5 63.0,43.5 "General"
+  rect 82.5,31.5 170.0,50.5
+  rect 82.5,31.5 170.0,50.5
+  text 105.5,36.5 146.5,46.5 "File types"
+  rect 169.0,31.5 241.0,50.5
+  rect 169.0,31.5 241.0,50.5
+  text 189.0,37.5 221.0,45.5 "Save to"
+  rect 240.0,31.5 343.5,50.5
+  rect 240.0,31.5 343.5,50.5
+  text 266.0,36.5 317.0,45.5 "Downloads"
+  rect 342.5,31.5 446.0,50.5
+  rect 342.5,31.5 446.0,50.5
+  text 368.5,36.5 419.5,45.5 "Connection"
+  rect 6.5,50.5 447.0,457.5
+  rect 6.5,50.5 447.0,457.5
+  line 9.0,50.0 83.0,51.0
+  rect 20.0,53.5 52.0,85.5
+  text 293.0,64.5 416.0,74.5 "Browser/System Integration"
+  line 62.5,78.5 430.0,79.5
+  line 62.5,79.5 430.0,80.5
+  rect 29.5,91.0 43.5,105.0
+  text 47.5,93.5 241.5,103.5 "Launch New Download Manager on startup"
+  rect 29.5,113.0 43.5,127.0
+  text 47.5,115.5 318.5,125.5 "Automatically start downloading of URLs placed to clipboard"
+  rect 29.5,135.5 43.5,149.5
+  text 47.5,138.0 198.5,148.0 "Use advanced browser integration"
+  rect 15.0,171.5 433.0,396.0
+  rect 23.0,165.5 247.5,176.5
+  text 25.0,166.5 245.0,176.5 "Capture downloads from the following browsers:"
+  rect 29.5,183.0 415.0,317.5
+  line 221.0,186.5 222.0,201.5
+  text 36.5,190.5 73.5,198.5 "Browser"
+  line 411.5,186.5 412.5,201.5
+  text 228.5,189.5 312.5,199.5 "Type of integration"
+  line 30.0,202.5 414.5,203.5
+  rect 29.5,325.5 145.0,348.0
+  text 54.5,332.5 120.5,342.5 "Reintegrate All"
+  rect 164.0,325.5 279.0,348.0
+  text 190.0,332.5 253.0,341.5 "Add browser..."
+  rect 300.0,325.5 415.0,348.0
+  text 342.5,332.5 372.5,341.5 "Details"
+  line 34.0,355.5 415.5,356.5
+  line 34.0,356.5 415.5,357.5
+  text 25.0,375.0 312.0,384.0 "Customize keys to prevent or force downloading with New Download Manager"
+  rect 335.0,365.5 415.0,388.0
+  text 362.0,373.5 388.0,382.5 "Keys..."
+  text 25.0,410.0 251.0,419.0 "Customize menu items in context menu of browsers"
+  rect 335.0,402.5 415.0,425.0
+  text 363.5,409.0 386.5,418.0 "Edit..."
+  text 28.0,440.5 205.0,450.5 "Customize download panels in browsers"
+  rect 335.0,433.0 415.0,455.0
+  text 372.0,446.5 378.0,448.5 "..."
+  rect 283.0,466.5 361.5,487.0
+  text 315.5,473.5 329.5,481.5 "OK"
+  rect 369.5,466.5 448.0,487.0
+  text 398.5,472.5 419.5,482.5 "Help"
+
+Scheduler "Scheduler" 666.8x457.6
+  rect 0.0,0.0 667.0,457.5
+  rect 10.0,6.5 42.0,38.5
+  text 70.0,27.5 104.0,36.5 "Queues"
+  rect 10.0,43.0 170.0,416.0
+  rect 14.0,49.5 30.0,62.5
+  rect 36.0,47.0 155.0,65.0
+  text 46.0,51.5 145.0,61.5 "Main download queue"
+  rect 14.0,68.5 30.0,81.5
+  text 46.0,70.5 148.0,80.5 "Synchronization queue"
+  rect 14.0,87.5 30.0,100.5
+  text 46.0,89.5 118.0,98.5 "Download limits"
+  line 183.5,10.5 184.5,447.0
+  line 184.5,10.5 185.5,447.0
+  text 376.0,7.5 475.0,17.5 "Main download queue"
+  rect 200.0,25.0 255.5,46.5
+  rect 200.0,25.0 255.5,46.5
+  text 207.0,29.5 248.0,38.5 "Schedule"
+  rect 254.5,27.0 345.0,45.5
+  rect 254.5,27.0 345.0,45.5
+  text 261.5,31.5 337.5,41.5 "Files in the queue"
+  rect 198.0,45.5 654.5,418.5
+  rect 198.0,45.5 654.5,418.5
+  line 200.5,45.0 255.0,46.0
+  circle 214.0,49.5 229.0,64.5
+  circle 218.5,54.5 224.0,59.5
+  text 232.5,52.5 334.5,62.5 "One-time downloading"
+  circle 428.0,49.5 443.0,64.5
+  text 446.5,52.5 554.5,62.5 "Periodic synchronization"
+  line 214.0,68.5 640.5,69.5
+  line 214.0,69.5 640.5,70.5
+  rect 214.5,77.0 228.5,91.0
+  text 232.5,79.5 463.5,89.5 "Start download on New Download Manager startup"
+  line 214.0,95.5 640.5,96.5
+  line 214.0,96.5 640.5,97.5
+  rect 214.5,112.5 228.5,126.5
+  text 232.5,115.0 313.5,124.0 "Start download at"
+  rect 379.0,105.5 473.5,129.5
+  text 383.0,109.5 438.0,117.5 "11:00:00 PM"
+  circle 222.0,140.5 237.0,155.5
+  text 240.5,144.5 275.5,152.5 "Once at"
+  circle 222.0,169.5 237.0,184.5
+  text 240.5,172.5 262.5,182.5 "Daily"
+  rect 302.5,170.0 316.5,184.0
+  path 305.0,172.5 314.0,181.5
+  text 320.5,172.5 353.5,182.5 "Sunday"
+  rect 302.5,186.0 316.5,200.0
+  path 305.0,188.5 314.0,197.5
+  text 320.5,188.5 356.5,198.5 "Monday"
+  rect 302.5,202.0 316.5,216.0
+  path 305.0,204.5 314.0,213.5
+  text 320.5,204.5 356.5,214.5 "Tuesday"
+  rect 419.0,170.0 433.0,184.0
+  path 421.5,172.5 430.5,181.5
+  text 437.0,172.5 488.0,182.5 "Wednesday"
+  rect 419.0,186.0 433.0,200.0
+  path 421.5,188.5 430.5,197.5
+  text 437.0,188.5 478.0,198.5 "Thursday"
+  rect 419.0,202.0 433.0,216.0
+  path 421.5,204.5 430.5,213.5
+  text 437.0,204.5 464.0,214.5 "Friday"
+  rect 537.5,170.0 551.5,184.0
+  path 540.0,172.5 549.0,181.5
+  text 555.5,172.5 595.5,182.5 "Saturday"
+  line 215.5,222.0 640.5,223.0
+  line 215.5,223.0 640.5,224.0
+  rect 216.0,239.0 230.0,253.0
+  text 234.0,241.5 314.0,251.5 "Stop download at"
+  rect 380.5,233.5 475.0,256.0
+  text 383.5,237.5 433.5,245.5 "7:30:00 AM"
+  rect 216.0,263.0 230.0,277.0
+  text 234.0,265.5 468.0,275.5 "Number of retries for each file if downloading failed :"
+  rect 548.5,254.5 600.0,277.0
+  text 569.5,262.0 579.5,270.0 "10"
+  line 215.5,284.5 640.5,285.5
+  line 215.5,285.5 640.5,286.5
+  rect 214.5,295.0 228.5,309.0
+  text 232.5,297.5 390.5,307.5 "Open the following file when done:"
+  rect 214.5,312.0 593.5,334.5
+  text inf,inf NaN,NaN ""
+  rect 601.5,312.0 625.5,334.5
+  text 610.5,325.5 616.5,327.5 "..."
+  rect 214.5,343.0 228.5,357.0
+  text 232.5,345.5 357.5,355.5 "Hang up modem when done"
+  rect 214.5,360.5 228.5,374.5
+  text 232.5,363.0 412.5,373.0 "Exit New Download Manager when done"
+  rect 214.5,378.0 228.5,392.0
+  text 232.5,380.5 367.5,390.5 "Turn off computer when done"
+  rect 513.5,378.0 636.0,398.0
+  path 614.0,385.0 624.0,391.5
+  text 523.5,383.5 571.5,392.5 "Shut down"
+  rect 233.5,395.5 247.5,409.5
+  text 251.5,398.0 378.5,408.0 "Force processes to terminate"
+  rect 20.0,426.5 87.0,446.5
+  text 28.5,433.0 78.5,442.0 "New queue"
+  rect 94.5,426.5 162.0,446.5
+  text 113.5,432.0 142.5,441.0 "Delete"
+  rect 201.0,426.5 277.5,446.5
+  text 217.5,433.0 261.5,441.0 "Start now"
+  rect 277.5,426.5 344.5,446.5
+  text 300.5,433.0 321.5,442.0 "Stop"
+  rect 364.0,426.5 431.0,446.5
+  text 387.0,432.0 408.0,442.0 "Help"
+  rect 452.5,426.5 519.5,446.5
+  text 473.5,432.0 499.5,442.0 "Apply"
+  rect 527.5,426.5 595.0,446.5
+  text 549.0,432.0 573.0,441.0 "Close"
+
+Duplicate "Duplicate download link" 399.0x246.4
+  rect 0.0,0.0 399.0,246.5
+  rect 7.0,11.0 389.0,33.5
+  text 11.0,18.0 133.0,28.0 "https://example.test/file.zip"
+  text 10.0,42.5 366.0,52.5 "This file already exists in your download list. Would you like to add the duplicate?"
+  circle 9.5,91.0 24.5,106.0
+  text 28.0,94.0 226.0,104.0 "Add the duplicate with a numbered file name"
+  circle 9.5,118.5 24.5,133.5
+  text 28.0,121.5 240.0,131.5 "Add the duplicate and overwrite the existing file"
+  circle 9.5,144.5 24.5,159.5
+  circle 14.0,149.5 19.5,154.5
+  text 28.0,147.5 380.0,157.5 "If existing file is complete, show download complete dialog; otherwise resume it."
+  rect 117.0,179.0 187.0,201.5
+  text 145.0,187.0 159.0,195.0 "OK"
+  rect 212.0,179.0 282.0,201.5
+  text 232.0,186.0 262.0,195.0 "Cancel"
+  rect 15.5,218.5 29.5,232.5
+  text 33.5,216.5 360.5,235.5 "Remember my selection and don't show this dialog again.\n You may change it in New Download Manager Options->Downloads at a later time."
+
+FileProps "File Properties" 443.6x393.6
+  rect 0.0,0.0 443.5,393.5
+  text 81.0,23.5 137.0,33.5 "complete.zip"
+  line 9.5,49.0 434.5,50.0
+  line 9.5,50.0 434.5,51.0
+  text 10.0,61.5 33.0,70.5 "Type:"
+  text 81.0,60.5 "<system file type>"
+  text 10.0,80.5 40.0,88.5 "Status:"
+  text 81.0,79.5 124.0,89.5 "Complete"
+  text 10.0,98.5 28.0,107.5 "Size:"
+  text 82.0,98.5 173.0,108.5 "1.00 KB (1024 Bytes)"
+  rect 326.5,91.0 434.0,113.5
+  text 341.0,98.0 419.0,108.0 "Verify checksum..."
+  text 10.0,127.0 45.0,135.0 "Save To:"
+  rect 81.0,118.5 355.5,141.0
+  text 84.0,125.0 199.0,135.0 "/downloads/complete.zip"
+  rect 364.0,118.5 434.0,141.0
+  text 379.5,126.0 418.5,134.0 "Browse..."
+  text 10.0,156.5 47.0,165.5 "Address:"
+  rect 81.0,149.0 434.0,171.0
+  text 84.0,152.0 206.0,162.0 "https://example.test/file.zip"
+  text 10.0,186.5 63.0,196.5 "Description:"
+  rect 81.0,179.0 434.0,201.5
+  text inf,inf NaN,NaN ""
+  line 9.5,209.0 434.5,210.0
+  line 9.5,210.0 434.5,211.0
+  text 10.0,220.5 221.0,230.5 "The web page which this file was obtained from:"
+  text 10.0,241.0 53.0,250.0 "Unknown"
+  line 9.5,257.0 434.5,258.0
+  line 9.5,258.0 434.5,259.0
+  text 10.0,276.5 45.0,285.5 "Referer:"
+  rect 81.0,267.0 434.0,289.5
+  text inf,inf NaN,NaN ""
+  text 77.0,303.5 101.0,313.5 "Login"
+  rect 111.5,296.0 287.5,317.0
+  text inf,inf NaN,NaN ""
+  text 59.0,330.5 101.0,339.5 "Password"
+  rect 111.5,325.0 287.5,345.5
+  text inf,inf NaN,NaN ""
+  line 9.5,351.5 434.5,352.5
+  line 9.5,352.5 434.5,353.5
+  text 10.0,362.5 168.0,372.5 "Last try date: Nov 14 22:15:00 2023"
+  text 10.0,381.0 85.0,391.0 "Result: Complete"
+  rect 240.0,363.0 309.5,385.5
+  text 262.5,371.0 286.5,380.0 "Open"
+  rect 364.0,363.0 434.0,385.5
+  text 392.0,371.0 406.0,379.0 "OK"
+
+Checksum "Verify checksum" 418.5x352.0
+  rect 0.0,0.0 418.5,352.0
+  text 10.0,14.0 66.0,24.0 "complete.zip"
+  text 10.0,42.0 51.0,50.0 "SHA-256:"
+  rect 70.0,33.5 409.0,56.0
+  text 73.0,36.5 151.0,46.5 "Computing... 50%"
+  text 10.0,67.5 39.0,75.5 "SHA-1:"
+  rect 70.0,59.0 409.0,81.5
+  text 73.0,62.0 151.0,72.0 "Computing... 50%"
+  text 10.0,93.5 33.0,101.5 "MD5:"
+  rect 70.0,85.0 409.0,107.0
+  text 73.0,88.0 151.0,98.0 "Computing... 50%"
+  text 10.0,119.5 263.0,129.5 "Checksum from the download page (paste it to compare):"
+  rect 10.0,134.5 409.0,157.0
+  text inf,inf NaN,NaN ""
+  text 10.0,186.5 149.0,196.5 "Publisher checksum list (HTTPS)"
+  rect 10.0,203.0 409.0,225.5
+  text inf,inf NaN,NaN ""
+  rect 10.0,235.0 130.0,257.5
+  text 19.0,242.0 120.0,251.0 "Choose checksum file..."
+  rect 138.0,235.0 234.5,257.5
+  text 150.5,242.0 221.5,251.0 "Fetch checksum"
+  rect 339.0,320.0 409.0,342.5
+  text 361.5,326.5 385.5,335.5 "Close"
+
+Playlist "Download video playlist" 550.0x430.0
+  rect 0.0,0.0 550.0,430.0
+  text 8.0,9.0 76.0,19.0 "Playlist address"
+  rect 8.0,23.0 542.0,38.5
+  text inf,inf NaN,NaN ""
+  rect 8.0,42.5 108.0,62.5
+  path 86.0,49.5 96.0,55.5
+  text 18.0,48.0 76.0,57.0 "Public access"
+  rect 114.0,43.5 179.0,61.5
+  text 124.0,48.0 169.0,57.0 "List videos"
+  text 8.0,67.5 412.0,77.5 "Selecting a browser lets yt-dlp use its default profile for this playlist and each queued video."
+  rect 8.0,81.5 127.0,99.5
+  text 18.0,86.0 117.0,96.0 "Queue selected videos"
+  rect 133.0,81.5 177.5,99.5
+  text 143.0,86.0 167.0,95.0 "Close"
+
+ProblemReport "Report a problem" 550.0x430.0
+  rect 0.0,0.0 550.0,430.0
+  text 8.0,9.0 414.0,19.0 "Review and edit the report before copying it. Paste it into the issue form when you are ready."
+  rect 8.0,23.0 542.0,176.0
+  text 12.0,26.0 81.0,36.0 "Problem report"
+  rect 8.0,180.0 82.0,198.0
+  text 18.0,185.5 72.0,194.5 "Copy report"
+  rect 88.0,180.0 180.5,198.0
+  text 98.0,184.5 170.0,194.5 "Open issue form"
+  rect 186.5,180.0 230.5,198.0
+  text 196.5,184.5 220.5,193.5 "Close"
+
+Http1Hosts "HTTP/1.1 hosts" 376.6x120.0
+  rect 0.0,0.0 376.5,120.0
+  text 10.0,12.0 340.0,33.0 "Use HTTP/1.1 for direct HTTPS downloads from these exact hosts. Separate hosts with spaces."
+  rect 10.0,51.0 367.0,73.5
+  text inf,inf NaN,NaN ""
+  rect 216.0,85.0 286.0,107.0
+  text 244.0,92.5 258.0,100.5 "OK"
+  rect 297.0,85.0 367.0,107.0
+  text 317.5,91.5 347.5,100.5 "Cancel"
+
+YtDlp "Set yt-dlp" 259.5x70.4
+  rect 0.0,0.0 259.5,70.5
+  text 10.0,9.0 153.0,19.0 "Downloading yt-dlp and ffmpeg"
+  text inf,inf NaN,NaN ""
+  rect 10.0,25.5 249.5,43.0
+  rect 10.0,25.5 249.5,43.0
+  rect 11.0,26.5 11.0,42.0
+
+Category "Adding a category to New Download Manager categories list" 449.2x283.2
+  rect 0.0,0.0 449.0,283.0
+  text 12.5,9.5 79.5,18.5 "Category name"
+  rect 12.5,21.0 344.5,43.0
+  text inf,inf NaN,NaN ""
+  text 12.5,56.5 269.5,66.5 "Automatically put in this category the following file types:"
+  rect 12.5,69.0 344.5,91.0
+  text inf,inf NaN,NaN ""
+  text 12.5,96.5 295.5,106.5 "Note: type file extensions separated by space (e.g. avi mpg mpeg)"
+  line 12.0,114.5 434.5,115.5
+  line 12.0,115.5 434.5,116.5
+  rect 12.5,127.0 26.5,141.0
+  text 30.5,129.5 349.5,139.5 "Automatically put in this category the files from the following sites only:"
+  rect 12.5,144.0 434.0,166.5
+  text inf,inf NaN,NaN ""
+  text 12.5,173.0 304.5,183.0 "Separate sites by spaces. You may use asterisk as a wildcard pattern"
+  line 12.0,193.0 434.5,194.0
+  line 12.0,194.0 434.5,195.0
+  text 12.5,206.5 294.5,216.5 "Save future downloads of this category to the following folder:"
+  rect 12.5,221.0 434.0,243.0
+  text inf,inf NaN,NaN ""
+  rect 12.5,250.0 26.5,264.0
+  text 30.5,252.5 138.5,262.5 "Remember last save path"
+  rect 364.0,248.0 434.0,270.5
+  text 379.5,255.5 418.5,263.5 "Browse..."
+  rect 364.0,21.0 434.0,43.0
+  text 392.0,28.5 406.0,36.5 "OK"
+  rect 364.0,54.5 434.0,77.0
+  text 384.0,61.0 414.0,70.0 "Cancel"
+
+CatDelete "Deleting a category from New Download Manager categories list" 362.7x96.0
+  rect 0.0,0.0 362.5,96.0
+  text 10.0,10.5 296.0,20.5 "Do you really want to delete \"\" category from the categories list?"
+  rect 97.5,61.0 167.5,83.0
+  text 125.0,68.5 140.0,76.5 "Yes"
+  rect 195.5,61.0 265.0,83.0
+  text 224.0,68.5 237.0,76.5 "No"
+
+AdvProxy "Advanced proxy settings" 373.9x456.0
+  rect 0.0,0.0 374.0,456.0
+  rect 10.0,11.0 364.0,70.5
+  rect 18.0,2.5 32.0,16.5
+  text 36.0,6.0 105.0,15.0 "Use HTTP Proxy"
+  text 18.0,24.5 44.0,33.5 "Proxy"
+  text 150.5,24.5 170.5,32.5 "Port"
+  text 203.5,24.5 248.5,32.5 "UserName"
+  text 282.0,23.5 324.0,32.5 "Password"
+  rect 18.0,37.0 145.0,59.0
+  text inf,inf NaN,NaN ""
+  rect 150.5,37.0 198.0,59.0
+  text inf,inf NaN,NaN ""
+  rect 203.5,37.0 276.0,59.0
+  text inf,inf NaN,NaN ""
+  rect 282.0,37.0 354.5,59.0
+  text inf,inf NaN,NaN ""
+  rect 10.0,86.0 364.0,145.5
+  rect 18.0,78.0 32.0,92.0
+  text 36.0,81.5 110.0,90.5 "Use HTTPS Proxy"
+  text 18.0,99.5 44.0,108.5 "Proxy"
+  text 150.5,99.5 170.5,107.5 "Port"
+  text 203.5,99.5 248.5,107.5 "UserName"
+  text 282.0,98.5 324.0,107.5 "Password"
+  rect 18.0,112.0 145.0,134.5
+  text inf,inf NaN,NaN ""
+  rect 150.5,112.0 198.0,134.5
+  text inf,inf NaN,NaN ""
+  rect 203.5,112.0 276.0,134.5
+  text inf,inf NaN,NaN ""
+  rect 282.0,112.0 354.5,134.5
+  text inf,inf NaN,NaN ""
+  rect 10.0,164.5 364.0,224.0
+  rect 18.0,156.0 32.0,170.0
+  text 36.0,159.5 98.0,168.5 "Use FTP Proxy"
+  text 18.0,178.0 44.0,187.0 "Proxy"
+  text 150.5,178.0 170.5,186.0 "Port"
+  text 203.5,178.0 248.5,186.0 "UserName"
+  text 282.0,177.0 324.0,186.0 "Password"
+  rect 18.0,190.5 145.0,213.0
+  text inf,inf NaN,NaN ""
+  rect 150.5,190.5 198.0,213.0
+  text inf,inf NaN,NaN ""
+  rect 203.5,190.5 276.0,213.0
+  text inf,inf NaN,NaN ""
+  rect 282.0,190.5 354.5,213.0
+  text inf,inf NaN,NaN ""
+  rect 10.0,243.0 364.0,376.0
+  rect 18.0,234.5 32.0,248.5
+  text 36.0,237.0 79.0,246.0 "Use Socks"
+  text 18.0,256.5 44.0,265.5 "Proxy"
+  text 150.5,256.5 170.5,264.5 "Port"
+  text 203.5,256.5 248.5,264.5 "UserName"
+  text 282.0,255.5 324.0,264.5 "Password"
+  rect 18.0,269.0 145.0,291.0
+  text inf,inf NaN,NaN ""
+  rect 150.5,269.0 198.0,291.0
+  text inf,inf NaN,NaN ""
+  rect 203.5,269.0 276.0,291.0
+  text inf,inf NaN,NaN ""
+  rect 282.0,269.0 354.5,291.0
+  text inf,inf NaN,NaN ""
+  circle 17.5,299.0 32.5,314.0
+  text 36.0,302.0 68.0,311.0 "Socks 5"
+  circle 17.5,320.0 32.5,335.0
+  circle 22.5,324.5 28.0,330.0
+  text 36.0,323.0 69.0,332.0 "Socks 4"
+  rect 96.5,299.5 110.5,313.5
+  path 99.0,302.0 108.0,311.0
+  text 114.5,303.0 161.5,312.0 "Proxy DNS"
+  text 19.5,342.0 338.5,362.0 "Note: New Download Manager will use socks only for the protocols that are NOT checked above"
+  rect 18.0,384.0 106.0,406.5
+  text 38.5,391.5 85.5,400.5 "Get system"
+  line 9.5,414.0 364.5,415.0
+  line 9.5,415.0 364.5,416.0
+  rect 102.0,422.5 171.5,445.0
+  text 130.0,430.0 144.0,438.0 "OK"
+  rect 201.0,422.5 270.5,445.0
+  text 221.0,429.0 251.0,438.0 "Cancel"
+
+Info "Example message" 362.7x112.0
+  rect 0.0,0.0 362.5,112.0
+  text 10.0,12.0 89.0,22.0 "This is an example."
+  rect 146.5,80.0 216.0,102.5
+  text 174.5,87.5 188.5,95.5 "OK"
+
+Networks "Networks" 334.8x124.8
+  rect 0.0,0.0 335.0,125.0
+  text 10.0,9.0 316.0,30.0 "NDM spreads each download's connections over the ticked networks. Two networks on the same router add no speed."
+  text 21.0,58.0 248.0,67.0 "No network with an internet connection was found"
+  rect 89.5,89.5 159.0,112.0
+  text 117.0,97.5 131.0,105.5 "OK"
+  rect 176.0,89.5 245.5,112.0
+  text 196.0,96.5 226.0,105.5 "Cancel"
+
+QuotaHit "Download limits exceeded!" 472.9x148.8
+  rect 0.0,0.0 473.0,149.0
+  text 10.0,12.0 76.0,22.0 "Quota reached"
+  rect 201.0,115.0 270.5,137.5
+  text 229.0,123.0 243.0,131.0 "OK"
+
+QueueName "Enter queue name" 259.5x118.4
+  rect 0.0,0.0 259.5,118.5
+  text 10.0,10.5 203.0,31.5 "Enter a name for the new queue that will be displayed in the list of queues"
+  rect 10.0,45.0 249.5,67.0
+  text inf,inf NaN,NaN ""
+  rect 50.0,85.0 120.0,107.0
+  text 78.0,92.5 92.0,100.5 "OK"
+  rect 136.5,85.0 206.5,107.0
+  text 157.0,91.5 187.0,100.5 "Cancel"
+
+Batch "Batch download" 440.8x380.8
+  rect 0.0,0.0 441.0,381.0
+  text 10.0,7.5 424.0,50.5 "It's possible to add a group of sequential file names like img001.jpg, img002.jpg, etc., img100.jpg to New Download Manager download queue. Use the asterisk wildcard for the file name pattern. \nFor example:   http://www.example.com/pictures/img*.jpg"
+  text 10.0,78.5 45.0,87.5 "Address"
+  rect 54.5,70.5 431.0,93.0
+  text inf,inf NaN,NaN ""
+  rect 10.0,108.5 431.0,190.5
+  rect 18.0,102.5 103.5,113.5
+  text 20.0,103.5 102.0,113.5 "Replace asterisk to"
+  circle 20.5,128.0 35.5,143.0
+  circle 25.5,132.5 30.5,138.0
+  text 39.0,131.0 79.0,140.0 "Numbers"
+  circle 128.0,128.0 143.0,143.0
+  text 146.5,132.0 177.5,140.0 "Letters"
+  text 15.5,164.5 40.5,172.5 "From:"
+  text 149.5,164.5 162.5,172.5 "To:"
+  text 311.5,163.5 368.5,172.5 "Wildcard size"
+  rect 74.0,152.0 127.0,177.5
+  text 97.5,161.5 102.5,169.5 "0"
+  rect 189.5,152.0 242.5,177.5
+  text 213.5,161.5 218.5,169.5 "0"
+  rect 374.0,152.0 421.5,177.5
+  text 396.0,161.5 399.0,168.5 "1"
+  rect 10.0,207.5 431.0,248.0
+  rect 18.0,201.0 32.0,215.0
+  text 36.0,203.5 113.0,212.5 "Use authorization"
+  text 77.0,226.0 101.0,236.0 "Login"
+  rect 107.5,217.5 216.0,240.0
+  text inf,inf NaN,NaN ""
+  text 269.5,226.0 311.5,235.0 "Password"
+  rect 318.0,217.5 422.5,240.0
+  text inf,inf NaN,NaN ""
+  text 10.0,269.0 47.0,278.0 "First file:"
+  rect 95.0,264.0 431.0,281.5
+  text inf,inf NaN,NaN ""
+  text 10.0,290.0 61.0,299.0 "Second file:"
+  rect 95.0,285.0 431.0,302.5
+  text inf,inf NaN,NaN ""
+  text 21.0,311.5 27.0,313.5 "..."
+  text 10.0,325.0 46.0,334.0 "Last file:"
+  rect 95.0,318.5 431.0,336.0
+  text inf,inf NaN,NaN ""
+  rect 254.0,347.0 323.5,369.5
+  text 282.0,355.0 296.0,363.0 "OK"
+  rect 344.5,347.0 414.5,369.5
+  text 364.5,354.0 394.5,363.0 "Cancel"
+
+QueuePick "New Download Manager 1.0" 224.6x142.4
+  rect 0.0,0.0 224.5,142.5
+  text 10.0,14.0 109.0,24.0 "Add files to the queue:"
+  rect 10.0,31.0 181.5,51.0
+  path 159.5,38.0 169.5,44.0
+  text 20.0,36.5 119.0,46.5 "Main download queue"
+  rect 192.5,27.0 215.0,49.5
+  text 201.0,36.0 206.0,42.0 "+"
+  rect 10.0,56.5 24.0,70.5
+  text 28.0,59.0 129.0,69.0 "Start queue processing"
+  rect 10.0,120.5 24.0,134.5
+  text 28.0,123.0 109.0,133.0 "Don't ask me again"
+  rect 76.5,85.0 146.5,107.0
+  text 104.5,92.5 118.5,100.5 "OK"
+
+GrabSave "Saving the project of NDM Grabber" 304.1x120.0
+  rect 0.0,0.0 304.0,120.0
+  text 10.0,12.5 193.0,22.5 "Save this project with the following name"
+  rect 10.0,30.5 294.5,53.0
+  text inf,inf NaN,NaN ""
+  rect 25.0,58.0 39.0,72.0
+  text 43.0,60.5 234.0,70.5 "Don't show this dialog if the name is unique"
+  rect 74.0,86.5 143.5,109.0
+  text 102.0,94.0 116.0,102.0 "OK"
+  rect 157.5,86.5 227.5,109.0
+  text 178.0,93.0 208.0,102.0 "Cancel"
+
+GrabSchedAsk "Schedule the grabber project" 362.7x96.0
+  rect 0.0,0.0 362.5,96.0
+  text 10.0,12.0 348.0,32.0 "To use project scheduler you should save the project at first. Save the project now?"
+  rect 195.5,64.0 265.0,86.5
+  text 222.5,71.5 237.5,79.5 "Yes"
+  rect 283.0,64.0 353.0,86.5
+  text 311.5,71.5 324.5,79.5 "No"
+
+GrabSched "Schedule the grabber project" 613.8x350.4
+  rect 0.0,0.0 614.0,350.5
+  rect 7.5,11.0 39.5,43.0
+  text 57.0,12.5 91.0,22.5 "Project:"
+  text inf,inf NaN,NaN ""
+  rect 10.0,57.0 275.0,120.0
+  rect 18.0,51.0 103.0,62.0
+  text 20.0,52.0 101.0,62.0 "Step 1. Select type"
+  circle 15.0,73.5 30.0,88.5
+  circle 19.5,78.5 25.0,83.5
+  text 33.5,76.5 182.5,86.5 "One-time exploring/downloading"
+  circle 15.0,94.5 30.0,109.5
+  text 33.5,97.5 141.5,107.5 "Periodic synchronization"
+  rect 10.0,137.0 276.0,224.0
+  rect 18.0,131.0 110.5,142.0
+  text 20.0,132.0 108.0,142.0 "Step 2. Select action"
+  circle 15.0,156.5 30.0,171.5
+  circle 19.5,161.5 25.0,167.0
+  text 33.5,159.5 89.5,169.5 "Explore only"
+  circle 15.0,179.0 30.0,194.0
+  text 33.5,182.0 212.5,192.0 "Explore site and download matched files"
+  circle 15.0,198.5 30.0,213.5
+  text 33.5,201.5 139.5,210.5 "Download checked files"
+  rect 289.0,17.0 600.0,224.0
+  rect 297.0,11.0 374.0,22.0
+  text 299.0,12.0 372.0,22.0 "Step 3. Schedule"
+  rect 302.5,32.5 316.5,46.5
+  text 320.5,35.0 401.5,44.0 "Start download at"
+  rect 443.5,27.0 526.0,51.0
+  text 446.5,31.0 471.5,39.0 "23:00"
+  circle 313.5,59.0 328.5,74.0
+  text 332.0,63.0 367.0,71.0 "Once at"
+  circle 313.5,84.5 328.5,99.5
+  circle 318.0,89.5 323.5,95.0
+  text 332.0,87.5 354.0,97.5 "Daily"
+  rect 383.5,85.0 397.5,99.0
+  path 386.0,87.5 395.0,96.5
+  text 401.5,87.5 434.5,97.5 "Sunday"
+  rect 383.5,103.0 397.5,117.0
+  path 386.0,105.5 395.0,114.5
+  text 401.5,105.5 437.5,115.5 "Monday"
+  rect 383.5,119.0 397.5,133.0
+  path 386.0,121.5 395.0,130.5
+  text 401.5,121.5 437.5,131.5 "Tuesday"
+  rect 383.5,135.0 397.5,149.0
+  path 386.0,137.5 395.0,146.5
+  text 401.5,137.5 452.5,147.5 "Wednesday"
+  rect 492.5,85.0 506.5,99.0
+  path 495.0,87.5 504.0,96.5
+  text 510.5,87.5 551.5,97.5 "Thursday"
+  rect 492.5,103.0 506.5,117.0
+  path 495.0,105.5 504.0,114.5
+  text 510.5,105.5 537.5,115.5 "Friday"
+  rect 492.5,119.0 506.5,133.0
+  path 495.0,121.5 504.0,130.5
+  text 510.5,121.5 550.5,131.5 "Saturday"
+  line 302.0,150.0 578.0,151.0
+  line 302.0,151.0 578.0,152.0
+  rect 302.5,162.0 316.5,176.0
+  text 320.5,164.5 400.5,174.5 "Stop download at"
+  rect 443.5,155.0 526.0,177.5
+  text 446.5,159.0 471.5,167.0 "07:30"
+  line 303.5,182.0 579.5,183.0
+  line 303.5,183.0 579.5,184.0
+  text 296.0,190.0 592.0,211.0 "Note: NDM should be running in system tray at the specified time to start a scheduled project"
+  rect 12.5,234.0 26.5,248.0
+  text 30.5,236.5 155.5,246.5 "Hang up modem when done"
+  rect 12.5,255.0 26.5,269.0
+  text 30.5,257.5 210.5,267.5 "Exit New Download Manager when done"
+  rect 12.5,274.0 26.5,288.0
+  text 30.5,276.5 165.5,286.5 "Turn off computer when done"
+  rect 32.0,293.5 173.0,313.5
+  path 151.5,300.5 161.0,306.5
+  text 42.0,299.0 90.0,308.0 "Shut down"
+  rect 32.0,322.0 46.0,336.0
+  text 50.0,324.5 177.0,334.5 "Force processes to terminate"
+  rect 296.0,235.5 310.0,249.5
+  text 314.0,238.0 472.0,248.0 "Open the following file when done:"
+  rect 294.5,253.0 570.5,275.0
+  text inf,inf NaN,NaN ""
+  rect 575.0,253.0 595.5,275.0
+  text 582.0,266.5 588.0,268.5 "..."
+  rect 413.0,317.0 482.5,339.0
+  text 441.0,324.5 455.0,332.5 "OK"
+  rect 498.0,317.0 568.0,339.0
+  text 518.0,323.5 548.0,332.5 "Cancel"
+
+GrabLogin "Connecting to the site" 380.8x220.8
+  rect 0.0,0.0 381.0,221.0
+  rect 12.0,11.0 44.0,43.0
+  text 56.0,18.0 213.0,28.0 "Type your user name and password."
+  text 56.0,48.5 132.0,57.5 "Realm: Test realm"
+  text 56.0,81.5 104.0,89.5 "User name:"
+  rect 163.0,73.5 367.0,96.0
+  text inf,inf NaN,NaN ""
+  text 56.0,114.0 101.0,123.0 "Password:"
+  rect 163.0,105.5 367.0,128.0
+  text inf,inf NaN,NaN ""
+  rect 56.0,151.0 70.0,165.0
+  text 74.0,153.5 251.0,163.5 "Save this password in NDM password list"
+  rect 216.0,187.0 286.0,209.5
+  text 244.0,195.0 258.0,203.0 "OK"
+  rect 296.0,187.0 365.5,209.5
+  text 316.0,194.0 346.0,203.0 "Cancel"
+
+Export "Export download list" 298.5x75.2
+  rect 0.0,0.0 298.5,75.0
+  circle 15.0,11.0 30.0,26.0
+  circle 19.5,16.0 25.0,21.5
+  text 33.5,14.0 141.5,24.0 "Export download queue"
+  circle 15.0,30.5 30.0,45.5
+  text 33.5,33.5 122.5,43.5 "Export selected files"
+  circle 15.0,49.5 30.0,64.5
+  text 33.5,52.5 96.5,62.5 "Export all files"
+  rect 219.0,9.5 289.0,32.0
+  text 247.0,17.5 261.0,25.5 "OK"
+  rect 219.0,38.5 289.0,61.0
+  text 239.0,45.0 269.0,54.0 "Cancel"
+
+Virus "Virus checking" 528.7x376.0
+  rect 0.0,0.0 528.5,376.0
+  text 10.0,19.5 110.0,29.5 "Virus scanner program"
+  rect 10.0,32.0 427.0,54.5
+  text inf,inf NaN,NaN ""
+  rect 449.0,32.0 519.0,54.5
+  text 467.5,39.5 500.5,47.5 "Browse"
+  text 10.0,64.5 125.0,74.5 "Command line parameters"
+  rect 10.0,77.0 427.0,99.0
+  text inf,inf NaN,NaN ""
+  text 10.0,110.0 514.0,263.0 "If you would like to run antiviral software on download completion, you should type or browse the complete path to its executable file. If NDM knows about necessary parameters for a given executable file name, it will set them automatically. Otherwise, you will have to set them manually in \"Command line parameters\" according to antiviral software documentation. The scanned file among different parameters should be written as\r\n[File]\r\n(you should type square brackets as well). If no parameters are set, NDM will execute antiviral software appending the complete path of a downloaded file.\n\nNote that all modern antiviral software have \"real-time protection\" feature that checks all operations with files on your computer, and it includes all files downloaded in NDM. Thus, you need to add antiviral software scanner to NDM settings only when real-time protection is turned off in antiviral software settings.\r\nAlso, in some cases, real time protection may significantly slow down the assembly of files made by NDM. Then you need to add ndm.exe process to exceptions according to antiviral software documentation, and set up antiviral checking on this dialog."
+  rect 153.5,342.5 223.0,365.0
+  text 181.5,350.0 195.5,358.0 "OK"
+  rect 305.5,342.5 375.5,365.0
+  text 325.5,349.0 355.5,358.0 "Cancel"
+
+WaitLink "New Download Manager 1.0" 334.8x73.6
+  rect 0.0,0.0 335.0,73.5
+  text 10.0,9.0 246.0,30.0 "NDM is waiting for the new address to resume the file:\nstopped.zip"
+  rect 92.0,40.0 241.5,62.5
+  text 139.0,46.5 194.0,56.5 "Stop waiting"
+
+Help "New Download Manager Help" 980.0x660.0
+  rect inf,inf -inf,-inf
+  rect 0.0,0.0 228.0,660.0
+  rect 12.0,14.0 216.0,44.0
+  rect 21.0,22.0 35.0,36.0
+  text 45.0,24.5 97.0,34.5 "Search help"
+  text inf,inf NaN,NaN ""
+  text 12.0,64.0 67.0,75.0 "Contents"
+  rect 12.0,85.0 216.0,111.0
+  text 21.0,92.5 56.0,103.5 "Home"
+  text 21.5,92.5 56.5,103.5 "Home"
+  text 32.0,118.0 67.0,131.0 "Topics"
+  text 20.0,147.5 137.0,161.5 "Starting downloads"
+  text 20.0,177.5 126.0,189.5 "The main window"
+  text 21.0,207.5 180.0,219.5 "How NDM downloads a file"
+  text 20.0,237.5 168.0,249.5 "Video and audio streams"
+  text 20.0,267.5 152.0,281.5 "Scheduler and queues"
+  text 20.0,297.5 94.0,309.5 "Site Grabber"
+  text 20.0,328.5 68.0,341.5 "Options"
+  text 20.0,358.5 127.0,371.5 "Customizing NDM"
+  text 21.0,388.5 114.0,399.5 "NDM on macOS"
+  text 21.0,418.5 105.0,429.5 "NDM on Linux"
+  text 21.0,447.5 70.0,461.5 "Updates"
+  text 13.0,484.0 113.0,495.0 "NDM on GitHub ↗"
+  line 227.0,-0.5 228.0,660.5
+  rect 228.0,0.0 980.0,44.0
+  rect 249.0,15.0 263.0,29.0
+  rect 283.0,15.0 297.0,29.0
+  text 319.0,15.5 345.0,29.5 "Help"
+  line 227.5,43.0 980.5,44.0
+  rect 228.0,44.0 980.0,660.0
+  text 306.0,69.0 588.0,95.0 "New Download Manager"
+  text 304.0,110.0 901.0,175.0 "NDM is a free, open-source download manager for Windows, macOS and Linux. It downloads each file over several connections at once, resumes interrupted downloads, takes over downloads from your browser, saves video streams and downloads the files of a web site."
+  rect 304.0,193.0 904.5,529.5
+  rect 303.0,192.0 905.5,530.5
+  text 304.0,538.5 560.0,551.5 "The main window with a download in progress"
+  text 304.0,595.5 353.0,612.5 "Topics"
+  text 314.0,628.5 319.0,632.5 "•"
+  text 332.0,623.5 453.0,638.5 "Starting downloads"
+  text 332.0,623.5 876.0,653.5 " – from the browser, Add URL, the clipboard, drag and drop, batches and the command line."
+  text 314.0,669.5 319.0,673.5 "•"
+  text 314.0,695.5 319.0,699.5 "•"
+  text 314.0,721.5 319.0,725.5 "•"
+  text 314.0,747.5 319.0,751.5 "•"
+  text 314.0,773.5 319.0,777.5 "•"
+  text 314.0,799.5 319.0,803.5 "•"
+  text 314.0,825.5 319.0,829.5 "•"
+  text 314.0,851.5 319.0,855.5 "•"
+  text 314.0,877.5 319.0,881.5 "•"
+  text 314.0,903.5 319.0,907.5 "•"
+  line 303.5,1021.0 905.0,1022.0
+  rect inf,inf -inf,-inf
+  rect inf,inf -inf,-inf
+
+DialUp "Dial up" 259.5x88.0
+  rect 0.0,0.0 259.5,88.0
+
+Grabber "NDM Site Grabber. Step 1 --- Set start page" 566.4x356.0
+  rect 0.0,0.0 566.5,356.0
+  rect inf,inf -inf,-inf
+  text 2.0,4.5 34.0,14.5 "Project"
+  rect inf,inf -inf,-inf
+  text 44.0,4.5 80.0,14.5 "Options"
+  rect inf,inf -inf,-inf
+  text 90.0,4.5 111.0,14.5 "Help"
+  mesh 10.0,31.0 128.5,287.0
+  rect 10.0,31.0 128.5,287.0
+  text 148.0,26.0 245.0,36.0 "Grabber Project Name"
+  rect 148.0,39.0 379.5,61.5
+  text inf,inf NaN,NaN ""
+  text 148.0,69.0 232.0,79.0 "Start page/address"
+  rect 148.0,82.5 551.0,105.0
+  text inf,inf NaN,NaN ""
+  text 148.0,112.5 222.0,122.5 "Project template"
+  rect 148.0,128.0 547.0,148.0
+  path 525.0,134.5 535.0,141.0
+  text 158.0,133.5 229.0,143.5 "Custom settings"
+  text 148.0,149.0 538.0,181.0 "If you select a project template, the wizard will make the required project settings for the selected template on the next steps. Note that you may always change any settings manually."
+  line 147.5,197.0 551.5,198.0
+  line 147.5,198.0 551.5,199.0
+  rect 148.0,206.0 162.0,220.0
+  text 166.0,208.5 243.0,217.5 "Use authorization"
+  text 194.0,232.5 218.0,242.5 "Login"
+  rect 223.0,225.0 326.5,247.0
+  text inf,inf NaN,NaN ""
+  text 377.0,232.5 419.0,241.5 "Password"
+  rect 425.5,225.0 527.5,247.0
+  text inf,inf NaN,NaN ""
+  text 148.0,261.0 379.0,282.0 "Press Advanced button to enable manual login or to disable a logout page"
+  rect 425.5,265.0 527.5,287.0
+  text 447.5,271.5 504.5,280.5 "Advanced >>"
+  line 9.5,312.5 557.0,313.5
+  line 9.5,313.5 557.0,314.5
+  rect 216.0,324.0 300.0,346.5
+  text 243.5,330.5 272.5,339.5 "< Back"
+  rect 308.5,324.0 392.0,346.5
+  text 336.0,331.5 364.0,339.5 "Next >"
+  rect 452.0,324.0 535.5,346.5
+  text 481.5,330.5 505.5,339.5 "Close"
+
+GrabStats "NDM Grabber Statistics" 154.8x164.8
+  rect 0.0,0.0 155.0,165.0
+  text 24.5,8.5 54.5,16.5 "Status:"
+  text 57.0,7.5 117.0,17.5 "Exploring site"
+  line 6.5,22.0 148.5,23.0
+  line 6.5,23.0 148.5,24.0
+  text 10.0,30.0 104.0,40.0 "Web pages processed"
+  text 52.0,47.5 81.0,57.5 "Simple"
+  text 90.5,50.0 95.5,58.0 "0"
+  text 37.0,62.0 80.0,71.0 "Advanced"
+  text 90.5,64.5 95.5,72.5 "0"
+  line 6.5,78.0 148.5,79.0
+  line 6.5,79.0 148.5,80.0
+  text 10.0,86.0 29.0,95.0 "Files"
+  text 62.0,103.5 85.0,112.5 "Total"
+  text 90.5,104.5 95.5,112.5 "0"
+  text 45.0,118.0 84.0,128.0 "Explored"
+  text 90.5,119.0 95.5,127.0 "0"
+  text 46.0,132.5 84.0,141.5 "Matched"
+  text 90.5,133.5 95.5,141.5 "0"
+  text 27.0,146.5 84.0,155.5 "Downloaded"
+  text 90.5,147.5 95.5,155.5 "0"
+
+GrabTpl "Template Name" 259.5x112.0
+  rect 0.0,0.0 259.5,112.0
+  text 10.0,12.0 210.0,22.0 "Please enter a name for the grabber template"
+  rect 8.5,46.5 249.5,69.0
+  text inf,inf NaN,NaN ""
+  rect 47.5,78.5 117.0,101.0
+  text 75.5,86.0 89.5,94.0 "OK"
+  rect 142.5,78.5 212.0,101.0
+  text 162.5,85.0 192.5,94.0 "Cancel"
+
+GrabLoad "Load project" 358.5x220.8
+  rect 0.0,0.0 358.5,221.0
+  rect 10.0,11.0 269.0,209.5
+  rect 279.0,11.0 349.0,33.5
+  text 307.0,19.0 321.0,27.0 "OK"
+  rect 279.0,38.5 349.0,61.0
+  text 299.0,45.0 329.0,54.0 "Cancel"
+
+GrabSettings "Settings of NDM Grabber" 407.3x222.4
+  rect 0.0,0.0 407.5,222.5
+  rect 9.5,9.5 39.5,32.0
+  text inf,inf NaN,NaN ""
+  text 46.0,19.5 225.0,29.5 "files to explore at the same time (1 to 10)"
+  rect 10.0,40.0 40.5,62.5
+  text inf,inf NaN,NaN ""
+  text 46.0,46.5 237.0,56.5 "files to download at the same time (1 to 10)"
+  text 10.0,70.0 381.0,91.0 "Please note that a web server may reject requests if you set a large number of files to explore (download) at the same time."
+  line 9.5,105.0 395.5,106.0
+  line 9.5,106.0 395.5,107.0
+  rect 10.0,122.0 24.0,136.0
+  text 28.0,124.5 224.0,134.5 "Look up files in IE cache before downloading"
+  rect 10.0,144.5 24.0,158.5
+  text 28.0,147.0 355.0,157.0 "Use link texts as download descriptions when adding files to NDM main list"
+  rect 10.0,167.0 24.0,181.0
+  text 28.0,169.5 184.0,179.5 "Use Advanced web page processing"
+  rect 229.0,189.0 298.5,211.0
+  text 256.5,196.5 270.5,204.5 "OK"
+  rect 328.0,189.0 397.5,211.0
+  text 348.0,195.5 378.0,204.5 "Cancel"
+
+GrabManual "Manual login page" 362.7x112.0
+  rect 0.0,0.0 362.5,112.0
+  text 10.0,14.0 287.0,24.0 "Enter login and password manually at the following web page:"
+  text 10.0,34.5 132.0,44.5 "https://example.test/file.zip"
+  rect 195.5,78.5 265.0,101.0
+  text 223.5,86.0 237.5,94.0 "OK"
+  rect 283.0,78.5 353.0,101.0
+  text 303.5,85.0 333.5,94.0 "Cancel"
+
+About "About New Download Manager" 362.7x374.4
+  rect 0.0,0.0 362.5,374.5
+  rect 7.5,9.5 39.5,41.5
+  text 47.0,10.5 201.0,25.5 "New Download Manager"
+  text 44.5,32.5 "Version: <installed version>"
+  rect 104.5,49.5 242.5,72.0
+  text 134.5,56.5 212.5,66.5 "Check for Update"
+  rect 142.5,339.0 219.0,361.5
+  text 168.5,346.0 192.5,355.0 "Close"
+
+Scale "Custom scale" 323.6x160.0
+  rect 0.0,0.0 323.5,160.0
+  text 10.0,10.5 302.0,31.5 "Change the size of the toolbar, the categories pane and the text of the main window. Changes show at once."
+  text 10.0,50.5 45.0,59.5 "Toolbar"
+  rect 106.0,51.0 256.0,59.0
+  rect 106.0,51.0 158.5,59.0
+  circle 150.5,47.5 166.0,63.0
+  rect 262.0,46.0 308.0,64.0
+  text 273.0,51.5 298.0,59.5 "100%"
+  text 10.0,74.5 81.0,84.5 "Categories pane"
+  rect 106.0,75.0 256.0,83.0
+  rect 106.0,75.0 158.5,83.0
+  circle 150.5,71.5 166.0,87.0
+  rect 262.0,70.0 308.0,88.0
+  text 273.0,75.5 298.0,83.5 "100%"
+  text 10.0,98.5 46.0,107.5 "Text size"
+  rect 106.0,99.0 256.0,107.0
+  rect 106.0,99.0 158.5,107.0
+  circle 150.5,95.5 166.0,111.0
+  rect 262.0,94.0 308.0,112.0
+  text 273.0,99.5 298.0,107.5 "100%"
+  line 9.5,121.0 314.5,122.0
+  line 9.5,122.0 314.5,123.0
+  rect 10.0,129.5 79.5,152.0
+  text 32.5,137.5 56.5,145.5 "Reset"
+  rect 167.5,129.5 237.0,152.0
+  text 195.5,137.5 209.5,145.5 "OK"
+  rect 244.0,129.5 314.0,152.0
+  text 264.5,136.5 294.5,145.5 "Cancel"
+
+TbCustomize "Customize Toolbar" 498.0x200.0
+  rect 0.0,0.0 498.0,200.0
+  text 5.5,11.5 121.5,20.5 "Available toolbar buttons:"
+  rect 5.5,27.0 173.0,187.0
+  text 34.5,36.0 85.5,48.0 "Separator"
+  text 34.5,58.0 74.5,70.0 "Stop All"
+  text 35.5,80.0 67.5,90.0 "Delete"
+  text 35.5,102.0 93.5,112.0 "Delete Co..."
+  text 34.5,124.0 76.5,136.0 "Options"
+  text 34.5,146.0 86.5,156.0 "Scheduler"
+  text 34.5,168.0 96.5,180.0 "Start Queue"
+  text 34.5,190.0 96.5,202.0 "Stop Queue"
+  text 34.5,212.0 77.5,222.0 "Grabber"
+  text 34.5,234.0 96.5,244.0 "Tell a Friend"
+  rect inf,inf -inf,-inf
+  rect inf,inf -inf,-inf
+  text 254.0,12.5 347.0,20.5 "Current toolbar buttons:"
+  rect 254.0,27.0 421.5,187.0
+  text 283.0,36.0 328.0,46.0 "Add URL"
+  text 284.0,58.0 324.0,68.0 "Resume"
+  text 283.0,80.0 334.0,92.0 "Separator"
+  text 283.0,102.0 307.0,114.0 "Stop"
+  rect inf,inf -inf,-inf
+  rect inf,inf -inf,-inf
+  rect 183.0,67.0 244.0,89.5
+  text 199.0,74.0 227.0,83.0 "Add ->"
+  rect 183.0,99.0 244.0,121.5
+  text 190.5,107.0 236.5,115.0 "<- Remove"
+  rect 429.5,9.5 491.0,32.0
+  text 448.0,16.5 472.0,25.5 "Close"
+  rect 429.5,37.0 491.0,59.0
+  text 448.5,44.5 472.5,52.5 "Reset"
+  rect 429.5,64.0 491.0,86.5
+  text 450.0,70.5 471.0,80.5 "Help"
+  rect 429.5,118.5 491.0,141.0
+  text 441.0,126.0 480.0,135.0 "Move Up"
+  rect 429.5,145.5 491.0,168.0
+  text 434.0,153.5 486.0,161.5 "Move Down"
+
+Tip "Tip of the Day" 352.9x262.4
+  rect 0.0,0.0 353.0,262.5
+  rect 16.5,17.5 335.0,214.5
+  rect 28.0,27.0 323.5,205.0
+  mesh 28.0,27.0 76.0,75.0
+  text 76.5,51.5 143.5,61.5 "Did you know..."
+  text 39.0,92.0 205.0,102.0 "Use the clipboard to add a download."
+  rect 17.0,235.5 31.0,249.5
+  path 19.5,238.0 28.5,247.0
+  text 35.0,238.0 130.0,248.0 "Show Tips on StartUp"
+  rect 169.0,229.0 244.0,251.0
+  text 188.5,235.5 224.5,245.5 "Next Tip"
+  rect 255.5,229.0 330.5,251.0
+  text 281.0,235.5 305.0,244.5 "Close"
+
+Limiter "Speed Limiter settings" 421.3x171.2
+  rect 0.0,0.0 421.5,171.0
+  text 78.0,14.0 247.0,24.0 "Maximum download speed for one file"
+  rect 255.5,6.5 301.5,29.0
+  text 259.5,10.5 275.5,18.5 "100"
+  text 312.5,14.0 360.5,24.0 "KBytes/sec"
+  text 10.0,38.0 393.0,69.0 "Note: Internet servers may break connection when the speed is too limited! Thus it's not recommended to use Speed Limiter to download from servers that do not support \"resume\" feature."
+  rect 10.0,85.0 24.0,99.0
+  text 28.0,87.5 317.0,97.5 "Always turn on Speed Limiter on New Download Manager startup"
+  rect 10.0,112.5 24.0,126.5
+  text 28.0,115.0 186.0,125.0 "Turn on Speed Limiter only between"
+  rect 252.5,107.0 294.5,129.5
+  text 255.5,111.0 280.5,119.0 "08:00"
+  text 298.5,113.0 314.5,122.0 "and"
+  rect 326.5,107.0 368.5,129.5
+  text 330.5,111.0 354.5,119.0 "18:00"
+  rect 263.5,137.5 333.5,160.0
+  text 291.5,145.5 305.5,153.5 "OK"
+  rect 342.0,137.5 411.5,160.0
+  text 362.0,144.5 392.0,153.5 "Cancel"
+
+SpeedLimit "Speed limit" 320.9x73.6
+  rect 0.0,0.0 321.0,73.5
+  rect 10.0,15.0 24.0,29.0
+  text 28.0,18.5 165.0,27.5 "Limit the speed of this download to"
+  rect 181.5,9.5 237.0,32.0
+  text inf,inf NaN,NaN ""
+  text 242.5,15.5 290.5,25.5 "KBytes/sec"
+  rect 164.5,43.0 234.5,65.5
+  text 192.5,51.0 206.5,59.0 "OK"
+  rect 241.5,43.0 311.0,65.5
+  text 261.5,50.0 291.5,59.0 "Cancel"
+
+Columns "Columns" 329.2x283.2
+  rect 0.0,0.0 329.0,283.0
+  text 10.0,12.0 319.0,33.0 "Check the columns that you would like visible in this list. Use the Move Up and Move Down buttons to reorder the columns however you like."
+  rect 10.0,57.5 203.5,197.0
+  rect 13.0,62.5 27.0,76.5
+  path 15.5,65.0 24.5,74.0
+  rect 37.0,61.5 200.5,79.5
+  text 97.5,66.0 139.5,75.0 "File Name"
+  rect 220.5,57.5 319.5,80.0
+  text 250.5,65.5 289.5,74.5 "Move Up"
+  rect 220.5,86.5 319.5,109.0
+  text 243.5,94.0 295.5,102.0 "Move Down"
+  rect 220.5,115.0 319.5,137.5
+  text 257.5,122.0 282.5,131.0 "Show"
+  rect 220.5,144.0 319.5,166.5
+  text 260.0,150.5 280.0,159.5 "Hide"
+  rect 220.5,173.0 319.5,195.0
+  text 258.0,180.5 282.0,188.5 "Reset"
+  text 44.5,214.5 181.5,223.5 "The selected column should be"
+  rect 188.5,208.0 218.5,230.5
+  text 192.5,212.0 208.5,220.0 "160"
+  text 222.0,214.5 270.0,224.5 "pixels wide"
+  line 9.5,238.0 320.0,239.0
+  line 9.5,239.0 320.0,240.0
+  rect 149.5,248.0 219.0,270.5
+  text 177.0,255.5 191.0,263.5 "OK"
+  rect 249.5,248.0 319.5,270.5
+  text 270.0,254.5 300.0,263.5 "Cancel"
+
+ServerConn "Max. connections number for a server" 308.3x142.4
+  rect 0.0,0.0 308.5,142.5
+  text 70.0,8.5 98.0,16.5 "Server"
+  rect 10.0,25.5 77.5,45.5
+  path 55.5,32.5 65.0,38.5
+  text 20.0,31.0 50.0,41.0 "http://"
+  rect 70.0,24.0 298.5,45.0
+  text inf,inf NaN,NaN ""
+  text 70.0,49.0 254.0,59.0 "You may use asterisk as a wildcard pattern"
+  text 110.5,81.0 224.5,90.0 "Max. connections number"
+  rect 231.5,77.5 294.5,97.5
+  path 272.5,84.5 282.5,90.5
+  text inf,inf NaN,NaN ""
+  rect 74.0,109.0 143.5,131.0
+  text 102.0,116.5 116.0,124.5 "OK"
+  rect 166.0,109.0 236.0,131.0
+  text 186.0,115.5 216.0,124.5 "Cancel"
+
+Update "Quick Update" 259.5x54.4
+  rect 0.0,0.0 259.5,54.5
+  text 10.0,9.0 121.0,19.0 "Checking for new version"
+  rect 10.0,25.5 249.5,43.0
+  rect 10.0,25.5 249.5,43.0
+  rect 11.0,26.5 11.0,42.0
+
+NewVersion "New version of New Download Manager is available" 520.0x420.0
+  rect 0.0,0.0 520.0,420.0
+  rect inf,inf -inf,-inf
+  rect 18.0,18.0 66.0,66.0
+  text 80.0,21.0 290.0,37.0 "A new version is available"
+  text 80.0,46.0 "Version <installed version> → 9.0.0"
+  text 18.0,83.0 88.0,95.0 "What's new"
+  rect 18.0,105.0 502.0,322.0
+  text 31.0,117.0 101.0,127.0 "Example release"
+  rect 392.0,356.0 502.0,386.0
+  text 419.5,366.5 474.5,376.5 "Update now"
+  rect 276.0,356.0 386.0,386.0
+  text 319.5,367.5 342.5,375.5 "Later"
+  text 18.0,366.5 89.0,376.5 "Download page"
+
+Recovery "Recover download" 467.3x228.8
+  rect 0.0,0.0 467.5,229.0
+  text 11.0,46.0 93.0,55.0 "Connection closed"
+  text 11.0,98.5 210.0,108.5 "Retry this download with its current settings."
+  rect 11.0,185.5 222.0,211.0
+  text 104.5,195.0 128.5,204.0 "Retry"
+  rect 342.0,185.5 450.5,211.0
+  text 381.5,194.0 411.5,203.0 "Cancel"
+
+Find "Find file" 320.9x236.8
+  rect 0.0,0.0 321.0,237.0
+  text 10.0,13.0 31.0,22.0 "Find:"
+  rect 10.0,30.5 311.0,53.0
+  text inf,inf NaN,NaN ""
+  rect 10.0,59.5 24.0,73.5
+  text 28.0,62.0 157.0,72.0 "File name or part of the name"
+  rect 10.0,82.0 24.0,96.0
+  text 28.0,84.5 192.0,94.5 "Description or part of the description"
+  rect 10.0,110.5 24.0,124.5
+  text 28.0,113.0 255.0,123.0 "Site name/Download link/Parent web page/Referer"
+  rect 21.0,157.0 35.0,171.0
+  text 39.0,159.5 88.0,168.5 "Match case"
+  rect 21.0,178.0 35.0,192.0
+  text 39.0,180.5 147.0,190.5 "Match whole string only"
+  line 9.5,140.5 311.5,141.5
+  line 9.5,141.5 311.5,142.5
+  rect 67.0,203.0 136.5,225.5
+  text 92.5,210.0 110.5,219.0 "Find"
+  rect 183.0,203.0 252.5,225.5
+  text 203.0,210.0 233.0,219.0 "Cancel"

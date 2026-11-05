@@ -1,4 +1,4 @@
-// The extension's own options: the download panel on or off, and the sites it is hidden on (content.js).
+// The extension's own options: the download panel on or off, and the sites it is hidden on (content/player-panel.js).
 const store = chrome.storage.local;
 const panel = document.getElementById('panel');
 const list = document.getElementById('sites');

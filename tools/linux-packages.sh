@@ -6,7 +6,7 @@
 #   installer/out/ndm-<version>-<x86_64|aarch64>.tar.gz    any distribution: unpack and run ./ndm
 # They use the system's GTK; libxdo (not in RHEL's own repositories) comes with them in lib/.
 # Needs: dpkg-deb and dpkg-shlibdeps (dpkg-dev), rpmbuild (rpm), patchelf. Without a binary given,
-# runs cargo build --release. Releases build on Ubuntu 20.04, so the packages run on glibc 2.31 and later.
+# runs cargo build --release --locked. Releases build on Ubuntu 20.04, so the packages run on glibc 2.31 and later.
 set -euo pipefail
 src="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$src"
@@ -15,7 +15,7 @@ arch="$(uname -m)"                    # x86_64, aarch64: the .rpm's and the .tar
 debarch="$(dpkg --print-architecture)" # amd64, arm64: the .deb's
 bin="${1:-}"
 if [ -z "$bin" ]; then
-    cargo build --release
+    cargo build --release --locked
     bin="$src/target/release/ndm"
 fi
 out="$src/installer/out"

@@ -6,18 +6,44 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return; // the icon resource is a Windows thing
     }
-    println!("cargo:rerun-if-changed=assets/ndm.ico");    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-changed=assets/ndm.ico");
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let kits = PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10\bin");
-    let mut sdks: Vec<PathBuf> = std::fs::read_dir(&kits).into_iter().flatten().flatten().map(|e| e.path().join(r"x64\rc.exe")).filter(|p| p.exists()).collect();
+    let mut sdks: Vec<PathBuf> = std::fs::read_dir(&kits)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join(r"x64\rc.exe"))
+        .filter(|p| p.exists())
+        .collect();
     sdks.sort();
-    let Some(rc) = sdks.pop().or_else(|| Some(kits.join(r"x64\rc.exe")).filter(|p| p.exists())) else {
+    let Some(rc) = sdks
+        .pop()
+        .or_else(|| Some(kits.join(r"x64\rc.exe")).filter(|p| p.exists()))
+    else {
         return println!("cargo:warning=rc.exe not found, ndm.exe gets no file icon");
     };
     let ico = std::fs::canonicalize("assets/ndm.ico").unwrap();
     let script = out.join("ndm.rc");
-    std::fs::write(&script, format!("1 ICON \"{}\"\n", ico.display().to_string().trim_start_matches(r"\\?\").replace('\\', "\\\\"))).unwrap();
+    std::fs::write(
+        &script,
+        format!(
+            "1 ICON \"{}\"\n",
+            ico.display()
+                .to_string()
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
     let res = out.join("ndm.res");
-    let ok = std::process::Command::new(rc).arg("/nologo").arg("/fo").arg(&res).arg(&script).status().is_ok_and(|s| s.success());
+    let ok = std::process::Command::new(rc)
+        .arg("/nologo")
+        .arg("/fo")
+        .arg(&res)
+        .arg(&script)
+        .status()
+        .is_ok_and(|s| s.success());
     if ok {
         println!("cargo:rustc-link-arg-bins={}", res.display());
     } else {

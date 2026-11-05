@@ -13,14 +13,14 @@ mkdir -p "$work"
 rsync -a --delete --exclude target --exclude installer/out --exclude .git "$src/" "$work/src/" 2>/dev/null ||
     { rm -rf "$work/src"; mkdir -p "$work/src"; (cd "$src" && tar --exclude=./target --exclude=./installer/out --exclude=./.git -cf - .) | tar -xf - -C "$work/src"; }
 cd "$work/src"
-cargo build --release
+cargo build --release --locked
 arch="$(uname -m)" # x86_64 or aarch64: linuxdeploy and appimagetool come for both
 
 # AppDir: the program with help, languages and the browser extension next to it (NDM looks beside its exe)
 app="$work/AppDir"
 rm -rf "$app"
 mkdir -p "$app/usr/bin" "$app/usr/share/applications" "$app/usr/share/icons/hicolor/256x256/apps"
-cp target/release/ndm "$app/usr/bin/"
+cp "${CARGO_TARGET_DIR:-target}/release/ndm" "$app/usr/bin/"
 cp -r help Languages extension LICENSE "$app/usr/bin/"
 cp assets/ndm.png "$app/usr/share/icons/hicolor/256x256/apps/ndm.png"
 cat > "$app/usr/share/applications/ndm.desktop" <<'EOF'

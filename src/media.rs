@@ -122,11 +122,21 @@ fn inspect(job: &Job, path: &Path, packets: bool) -> Result<Inspection, String> 
 
 pub(crate) fn validate_audio(job: &Job, output: &Path, ext: &str) -> Result<(), String> {
     let inspected = inspect(job, output, true)?;
-    let (container, codec) = if ext == "mp3" { ("mp3", "mp3") } else { ("m4a", "aac") };
+    let (container, codec) = if ext == "mp3" {
+        ("mp3", "mp3")
+    } else {
+        ("m4a", "aac")
+    };
     let playable = matches!(inspected.streams.as_slice(), [track]
         if track.codec_type == "audio" && track.codec_name == codec
         && track.nb_read_packets.as_deref().and_then(|n| n.parse::<u64>().ok()).is_some_and(|n| n > 0));
-    if !inspected.format.format_name.split(',').any(|name| name == container) || !playable {
+    if !inspected
+        .format
+        .format_name
+        .split(',')
+        .any(|name| name == container)
+        || !playable
+    {
         return Err("The converted audio failed media validation".into());
     }
     Ok(())
@@ -148,17 +158,17 @@ fn mp4_codec(track: &Track) -> bool {
 
 /// Inspect a bounded prefix of the authorized transport stream before offering conversion.
 pub(crate) fn probe_transport(
-    agent: &crate::engine::Agent,
+    agent: &crate::transport::Agent,
     url: &str,
     referrer: &str,
     cookies: &str,
 ) -> Result<(bool, bool), String> {
     use std::io::Read;
     const SAMPLE: u64 = 188 * 2048;
-    let request = crate::engine::request(agent, url, referrer, cookies)
+    let request = crate::transport::request(agent, url, referrer, cookies)
         .set("Range", &format!("bytes=0-{}", SAMPLE - 1));
-    let response = crate::engine::call(request)?;
-    crate::engine::validate_http_response(&response, Some((0, Some(SAMPLE - 1))), None)?;
+    let response = crate::transport::call(request)?;
+    crate::engine::range::validate_http_response(&response, Some((0, Some(SAMPLE - 1))), None)?;
     let stage = Stage::new(&std::env::temp_dir().join("ndm-probe.ts"))?;
     let mut bytes = Vec::new();
     response
@@ -500,7 +510,7 @@ mod tests {
                 }
             }
         });
-        let agent = crate::engine::agent("", "");
+        let agent = crate::transport::client::agent("", "");
         let list =
             serde_json::to_value(crate::stream::formats(&agent, &url, "", "").unwrap()).unwrap();
         assert_eq!(list[0]["resolution"], "160×90");
@@ -517,11 +527,11 @@ mod tests {
                 ..Default::default()
             });
             assert_eq!(
-                crate::stream::run(&job, &agent, &crate::engine::Limiter::default()),
+                crate::stream::download::run(&job, &agent, &crate::engine::Limiter::default()),
                 Ok(true)
             );
             let path = job.info().path();
-            assert_eq!(crate::engine::sniff(&path), Some(ext));
+            assert_eq!(crate::engine::names::sniff(&path), Some(ext));
             let file = inspect(&job, &path, true).unwrap();
             assert_eq!(
                 file.streams[0].height,

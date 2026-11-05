@@ -187,9 +187,12 @@ Select the videos you want and choose **Queue selected videos**. NDM lists up to
 positions and resolves each queued video separately when its download starts. Each output name includes
 its NDM job ID so videos with the same title can run concurrently.
 
-Public access is the default. For a playlist or video that requires sign-in, explicitly choose a browser
-whose default profile can open it. yt-dlp loads that profile separately for each lookup and applies its
-cookie scopes. Browser profile access depends on the browser and operating system. Some browsers must be
+Public access is the default. The browser picker lists only supported browsers whose installed
+executables NDM detects when the dialog opens. For a playlist or video that requires sign-in, choose
+one of those browsers. Zen, Waterfox, LibreWolf and Floorp use their own Firefox-compatible profiles;
+Chrome, Edge, Chromium, Brave, Vivaldi, Opera and Whale use yt-dlp's corresponding cookie source.
+Safari is offered only on macOS. yt-dlp loads the cookies separately for each lookup and queued video,
+with their domain and path scopes. Browser profile access depends on the browser and operating system. Some browsers must be
 closed before yt-dlp can read their profile.
 
 ### Checksum verification and diagnostic reports
@@ -220,6 +223,10 @@ same dialog. Existing web proxies, automatic proxy settings and SOCKS on the sel
 activation. Other proxy fields are preserved.
 
 ## Browser media formats and download recovery
+
+Failed downloads offer **Recover download** in their context menu and **Recover...** in the progress window. The recovery dialog offers actions for expired links, credentials, proxy settings, missing media tools and storage errors. Restarting a changed file is an explicit choice.
+
+NDM serializes concurrent saves and keeps the previous valid download list in `state.json.bak`. It recovers that backup if the main list cannot be read, preserves unreadable files with a `.bad` suffix, and reports save failures in the app.
 
 The browser panel follows the current player as its source changes. When the desktop app can read
 a manifest, the panel lists detected HLS variants or single-period DASH representations with their
@@ -365,6 +372,8 @@ others in [Issues](https://github.com/MoeJoe37/New-Download-Manager/issues). **H
 opens this guide.
 
 ## Building from source
+
+The [architecture guide](docs/architecture.md) maps features to their owning modules and explains dependency and visibility rules. The [contributor guide](CONTRIBUTING.md) covers setup, one-command checks and performance reports.
 
 Requirements: Windows 10/11 (x64 or ARM64), [Rust](https://rustup.rs) (stable, MSVC toolchain), the Windows
 SDK (for the exe icon).
