@@ -1,18 +1,18 @@
 //! App state shared by the UI and a background thread that runs the download queue,
 //! the scheduler, autosave and the localhost endpoint the browser extension talks to.
-pub(crate) mod settings;
-pub(crate) mod state;
 pub(crate) mod browser_bridge;
 pub(crate) mod queue;
 pub(crate) mod routing;
+pub(crate) mod settings;
+pub(crate) mod state;
 #[cfg(test)]
 mod tests;
 
-use crate::transport;
-use self::queue::{MAIN_QUEUE, Queue, Quota, Sched};
-use self::routing::{AdvProxy, PROXY_PORT, pac_route};
-use self::settings::{Browser, GENERAL, GrabProject, Login, Settings, browser_kind};
+use self::queue::{Queue, Quota, Sched, MAIN_QUEUE};
+use self::routing::{pac_route, AdvProxy, PROXY_PORT};
+use self::settings::{browser_kind, Browser, GrabProject, Login, Settings, GENERAL};
 use crate::engine::{self, Info, Job, Limiter, Status};
+use crate::transport;
 use chrono::{Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -26,24 +26,36 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub fn ext(name: &str) -> String {
-    name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default()
+    name.rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 impl Settings {
-
     /// First category whose file types contain the extension (and whose sites match, if restricted).
     pub fn category_for(&self, name: &str, url: &str) -> String {
         let e = ext(name);
-        let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_default();
         self.categories
             .iter()
-            .find(|c| !e.is_empty() && c.exts.split_whitespace().any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(&e)) && (!c.sites_on || crate::grabber::mask_match(&c.sites, &host)))
+            .find(|c| {
+                !e.is_empty()
+                    && c.exts
+                        .split_whitespace()
+                        .any(|x| x.trim_start_matches('.').eq_ignore_ascii_case(&e))
+                    && (!c.sites_on || crate::grabber::mask_match(&c.sites, &host))
+            })
             .map_or(GENERAL.into(), |c| c.name.clone())
     }
 
     /// "General" then the user categories, for combo boxes.
     pub fn category_names(&self) -> Vec<String> {
-        std::iter::once(GENERAL.to_string()).chain(self.categories.iter().map(|c| c.name.clone())).collect()
+        std::iter::once(GENERAL.to_string())
+            .chain(self.categories.iter().map(|c| c.name.clone()))
+            .collect()
     }
 
     pub fn folder_for(&self, category: &str) -> String {
@@ -52,7 +64,10 @@ impl Settings {
         } else if category == GENERAL {
             self.base_dir.clone()
         } else {
-            Path::new(&self.base_dir).join(category).display().to_string()
+            Path::new(&self.base_dir)
+                .join(category)
+                .display()
+                .to_string()
         }
     }
 }
@@ -110,7 +125,6 @@ pub struct Core {
 }
 
 impl Core {
-
     pub fn settings(&self) -> MutexGuard<'_, Settings> {
         self.settings.lock().unwrap()
     }
@@ -126,11 +140,16 @@ impl Core {
     /// Push limiter/proxy settings into the running engine.
     pub fn apply_settings(&self) {
         let s = self.settings().clone();
-        self.limiter.rate.store(if s.limit_on { s.limit_kb * 1024 } else { 0 }, Relaxed);
+        self.limiter
+            .rate
+            .store(if s.limit_on { s.limit_kb * 1024 } else { 0 }, Relaxed);
         self.agents.lock().unwrap().clear();
         let pasv = s.ftp_pasv;
         let routes = s;
-        *engine::ftp::FTP.lock().unwrap() = engine::ftp::FtpCfg { pasv, route: Some(Arc::new(move |u: &str| routes.proxy_for(u))) };
+        *engine::ftp::FTP.lock().unwrap() = engine::ftp::FtpCfg {
+            pasv,
+            route: Some(Arc::new(move |u: &str| routes.proxy_for(u))),
+        };
     }
 
     pub fn new_info(&self, url: &str) -> Info {
@@ -154,23 +173,41 @@ impl Core {
     pub fn classify(&self, job: &engine::Job) -> bool {
         let (path, name, folder, url, category) = {
             let i = job.info();
-            (i.path(), i.name.clone(), i.folder.clone(), i.url.clone(), i.category.clone())
+            (
+                i.path(),
+                i.name.clone(),
+                i.folder.clone(),
+                i.url.clone(),
+                i.category.clone(),
+            )
         };
         let known = self.settings().category_for(&name, &url) != GENERAL;
         if !path.is_file() {
             return false;
         }
-        let Some(ext) = engine::names::sniff(&path) else { return false };
+        let Some(ext) = engine::names::sniff(&path) else {
+            return false;
+        };
         let typed = engine::names::media_name(&name, ext);
-        if known && typed == name { return false; }
+        if known && typed == name {
+            return false;
+        }
         let new_cat = self.settings().category_for(&typed, &url);
         if typed == name && new_cat == category {
             return false;
         }
         let general = self.settings().folder_for(GENERAL);
         let in_general = Path::new(&folder) == Path::new(&general);
-        let dir = if new_cat != GENERAL && in_general { self.settings().folder_for(&new_cat) } else { folder.clone() };
-        let new_name = if typed == name && dir == folder { name.clone() } else { self.unique_name(&dir, &typed) };
+        let dir = if new_cat != GENERAL && in_general {
+            self.settings().folder_for(&new_cat)
+        } else {
+            folder.clone()
+        };
+        let new_name = if typed == name && dir == folder {
+            name.clone()
+        } else {
+            self.unique_name(&dir, &typed)
+        };
         let to = Path::new(&dir).join(&new_name);
         if to != path {
             let moved = std::fs::create_dir_all(&dir).and_then(|_| std::fs::rename(&path, &to));
@@ -181,7 +218,13 @@ impl Core {
                     return false;
                 }
                 let mut i = job.info();
-                (i.name, i.category) = (here.file_name().unwrap_or_default().to_string_lossy().to_string(), new_cat);
+                (i.name, i.category) = (
+                    here.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                    new_cat,
+                );
                 return true;
             }
         }
@@ -192,10 +235,12 @@ impl Core {
 
     pub fn unique_name(&self, folder: &str, name: &str) -> String {
         let jobs = self.jobs();
-        engine::names::unique_name(folder, name, &|n| jobs.iter().any(|j| {
-            let i = j.info();
-            i.folder == folder && i.name == n && i.status != Status::Complete
-        }))
+        engine::names::unique_name(folder, name, &|n| {
+            jobs.iter().any(|j| {
+                let i = j.info();
+                i.folder == folder && i.name == n && i.status != Status::Complete
+            })
+        })
     }
 
     /// Queue-added downloads with an unknown name get one (and a category) from the URL.
@@ -268,7 +313,11 @@ impl Core {
                 if self.dial_cancel.load(Relaxed) || self.dial_now.swap(false, Relaxed) {
                     break;
                 }
-                say(Some(format!("{}\n{}", crate::i18n::tr_msg_os(&e), crate::i18n::trf_os("Redial  %ld", &[&left]))));
+                say(Some(format!(
+                    "{}\n{}",
+                    crate::i18n::tr_msg_os(&e),
+                    crate::i18n::trf_os("Redial  %ld", &[&left])
+                )));
                 thread::sleep(Duration::from_secs(1));
             }
             if self.dial_cancel.load(Relaxed) {
@@ -300,21 +349,35 @@ impl Core {
             let s = self.settings();
             job.set_date.store(s.set_date, Relaxed);
             job.ignore_date.store(s.ignore_date, Relaxed);
-            let host = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
-            if let Some((_, n)) = s.server_conns.iter().find(|(m, _)| crate::grabber::mask_match(m, &host)) {
+            let host = url::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_default();
+            if let Some((_, n)) = s
+                .server_conns
+                .iter()
+                .find(|(m, _)| crate::grabber::mask_match(m, &host))
+            {
                 job.info().conns = *n;
             }
         }
         // a download from the browser that failed before goes through the browser's own proxy
         let bp = job.info().browser_proxy.clone();
-        let (ua, on) = { let s = self.settings(); (s.user_agent.clone(), s.proxy_browser) }; // one lock: a second one in the same statement deadlocks
+        let (ua, on) = {
+            let s = self.settings();
+            (s.user_agent.clone(), s.proxy_browser)
+        }; // one lock: a second one in the same statement deadlocks
         let bp = match bp.strip_prefix("pac:") {
             Some(pac) => pac_route(pac, &url),
             None => bp,
         };
         // ponytail: used from the next start (Resume, queue retries), not by restarting the failed one at once
         let browser = on && !bp.is_empty() && job.fails.load(Relaxed) > 0;
-        let agent = if browser { transport::client::agent(&crate::net::agent_proxy(&bp), &ua) } else { self.agent(&url) };
+        let agent = if browser {
+            transport::client::agent(&crate::net::agent_proxy(&bp), &ua)
+        } else {
+            self.agent(&url)
+        };
         job.multi_ok.store(!browser, Relaxed);
         *job.lanes.lock().unwrap() = if browser { vec![] } else { self.lanes(&url) };
         job.start(agent, self.limiter.clone());
@@ -322,16 +385,32 @@ impl Core {
 
     pub fn grab_tuning(&self) -> crate::grabber::Tuning {
         let s = self.settings();
-        crate::grabber::Tuning { explore: s.grab_explore, adv: s.grab_adv }
+        crate::grabber::Tuning {
+            explore: s.grab_explore,
+            adv: s.grab_adv,
+        }
     }
 
     /// Folder of a grabbed file. Save To: 0 = its category's folder, 1 = `save_cat`'s, 2 = `folder`
     /// (+ the site's own folders with "Use original relative subfolders").
-    pub fn grab_dir(&self, name: &str, url: &str, save_mode: u8, save_cat: &str, folder: &str, subfolders: bool) -> String {
+    pub fn grab_dir(
+        &self,
+        name: &str,
+        url: &str,
+        save_mode: u8,
+        save_cat: &str,
+        folder: &str,
+        subfolders: bool,
+    ) -> String {
         let s = self.settings();
         match save_mode {
             1 => s.folder_for(save_cat),
-            2 if subfolders => url::Url::parse(url).map_or(folder.into(), |u| Path::new(folder).join(crate::grabber::site_dir(&u)).display().to_string()),
+            2 if subfolders => url::Url::parse(url).map_or(folder.into(), |u| {
+                Path::new(folder)
+                    .join(crate::grabber::site_dir(&u))
+                    .display()
+                    .to_string()
+            }),
             2 => folder.into(),
             _ => s.folder_for(&s.category_for(name, url)),
         }
@@ -340,9 +419,20 @@ impl Core {
     /// Add the grabber's checked files to the main list, unticking them: queued in the main queue, or with
     /// `start` downloaded by the grabber itself (Grabber Settings' N at a time, `tick_grabber`).
     /// Existing names get NDM's grabber numbering (index_2.html) unless "Overwrite existing files".
-    pub fn grab_files(&self, files: &mut [crate::grabber::Found], opts: &crate::grabber::Opts, save_mode: u8, save_cat: &str, folder: &str, start: bool) -> Vec<u64> {
+    pub fn grab_files(
+        &self,
+        files: &mut [crate::grabber::Found],
+        opts: &crate::grabber::Opts,
+        save_mode: u8,
+        save_cat: &str,
+        folder: &str,
+        start: bool,
+    ) -> Vec<u64> {
         let mut batch = vec![];
-        let (link_text, ie_cache) = { let s = self.settings(); (s.grab_link_text, s.grab_ie_cache) };
+        let (link_text, ie_cache) = {
+            let s = self.settings();
+            (s.grab_link_text, s.grab_ie_cache)
+        };
         for f in files.iter_mut().filter(|f| f.checked) {
             f.checked = false;
             let mut i = self.new_info(&f.url);
@@ -350,9 +440,20 @@ impl Core {
             if link_text {
                 i.description = f.text.clone();
             }
-            i.folder = self.grab_dir(&f.name, &f.url, save_mode, save_cat, folder, opts.subfolders);
+            i.folder = self.grab_dir(
+                &f.name,
+                &f.url,
+                save_mode,
+                save_cat,
+                folder,
+                opts.subfolders,
+            );
             i.category = self.settings().category_for(&f.name, &f.url);
-            i.name = if opts.overwrite { f.name.clone() } else { crate::grabber::numbered(&f.name, &|n| self.unique_name(&i.folder, n) == n) };
+            i.name = if opts.overwrite {
+                f.name.clone()
+            } else {
+                crate::grabber::numbered(&f.name, &|n| self.unique_name(&i.folder, n) == n)
+            };
             batch.push((i.id, f.url.clone()));
             self.add(i);
         }
@@ -383,7 +484,9 @@ impl Core {
                 let sc = &p.sched;
                 let day_ok = !sc.daily || sc.days[now.weekday().num_days_from_sunday() as usize];
                 let timed = sc.start_on && day_ok && hm == sc.start_at && f.0 != Some(today);
-                let periodic = again.get(&p.opts.name).is_some_and(|t| *t <= Instant::now());
+                let periodic = again
+                    .get(&p.opts.name)
+                    .is_some_and(|t| *t <= Instant::now());
                 if timed || periodic {
                     f.0 = Some(today);
                     p.sched.start_on = p.sched.daily || p.periodic;
@@ -406,7 +509,10 @@ impl Core {
         // when-done options once every file of a scheduled run has finished (or failed)
         let mut watch = self.grab_watch.lock().unwrap();
         watch.retain(|(ids, sc)| {
-            let over = ids.iter().filter_map(|id| self.find(*id)).all(|j| matches!(j.info().status, Status::Complete | Status::Error(_)));
+            let over = ids
+                .iter()
+                .filter_map(|id| self.find(*id))
+                .all(|j| matches!(j.info().status, Status::Complete | Status::Error(_)));
             if over {
                 self.sched_done.lock().unwrap().push(sc.clone());
             }
@@ -418,8 +524,13 @@ impl Core {
         let mut dl = self.grab_dl_ids.lock().unwrap();
         let mut active = 0;
         dl.retain(|id| {
-            let Some(j) = self.find(*id) else { return false };
-            let (st, started) = { let i = j.info(); (i.status.clone(), i.done() > 0 || j.running()) };
+            let Some(j) = self.find(*id) else {
+                return false;
+            };
+            let (st, started) = {
+                let i = j.info();
+                (i.status.clone(), i.done() > 0 || j.running())
+            };
             if j.running() {
                 active += 1;
                 return true;
@@ -437,20 +548,53 @@ impl Core {
         // ponytail: pending conversions live in memory only; a restart before the batch ends skips them
         let mut conv = self.grab_convert.lock().unwrap();
         conv.retain(|batch| {
-            let infos: Vec<(String, Info)> = batch.iter().filter_map(|(id, u)| Some((u.clone(), self.find(*id)?.info().clone()))).collect();
-            if !infos.iter().all(|(_, i)| matches!(i.status, Status::Complete | Status::Error(_))) {
+            let infos: Vec<(String, Info)> = batch
+                .iter()
+                .filter_map(|(id, u)| Some((u.clone(), self.find(*id)?.info().clone())))
+                .collect();
+            if !infos
+                .iter()
+                .all(|(_, i)| matches!(i.status, Status::Complete | Status::Error(_)))
+            {
                 return true;
             }
-            let local: HashMap<String, PathBuf> = infos.iter().filter(|(_, i)| i.status == Status::Complete).map(|(u, i)| (u.clone(), i.path())).collect();
+            let local: HashMap<String, PathBuf> = infos
+                .iter()
+                .filter(|(_, i)| i.status == Status::Complete)
+                .map(|(u, i)| (u.clone(), i.path()))
+                .collect();
             for (u, p) in &local {
-                let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-                let (Ok(base), true) = (url::Url::parse(u), ["htm", "html", "shtml", "xhtml", "php", "asp", "aspx", "jsp"].contains(&ext.as_str())) else { continue };
-                let Ok(bytes) = std::fs::read(p) else { continue };
+                let ext = p
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
+                let (Ok(base), true) = (
+                    url::Url::parse(u),
+                    ["htm", "html", "shtml", "xhtml", "php", "asp", "aspx", "jsp"]
+                        .contains(&ext.as_str()),
+                ) else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(p) else {
+                    continue;
+                };
                 // non-UTF-8 pages go through Latin-1 so every byte comes back unchanged (new links are ASCII)
                 let utf8 = std::str::from_utf8(&bytes).is_ok();
-                let html: String = if utf8 { String::from_utf8_lossy(&bytes).into() } else { bytes.iter().map(|&b| b as char).collect() };
-                let out = crate::grabber::localize(&html, &base, p, &|l| local.get(l.as_str()).cloned());
-                let _ = std::fs::write(p, if utf8 { out.into_bytes() } else { out.chars().map(|c| c as u8).collect() });
+                let html: String = if utf8 {
+                    String::from_utf8_lossy(&bytes).into()
+                } else {
+                    bytes.iter().map(|&b| b as char).collect()
+                };
+                let out =
+                    crate::grabber::localize(&html, &base, p, &|l| local.get(l.as_str()).cloned());
+                let _ = std::fs::write(
+                    p,
+                    if utf8 {
+                        out.into_bytes()
+                    } else {
+                        out.chars().map(|c| c as u8).collect()
+                    },
+                );
             }
             false
         });
@@ -458,7 +602,12 @@ impl Core {
 
     /// One scheduled run of a grabber project, in the background.
     pub fn run_project(self: &Arc<Self>, p: GrabProject) {
-        if !self.grab_running.lock().unwrap().insert(p.opts.name.clone()) {
+        if !self
+            .grab_running
+            .lock()
+            .unwrap()
+            .insert(p.opts.name.clone())
+        {
             return;
         }
         let core = self.clone();
@@ -466,19 +615,50 @@ impl Core {
             let mut files = p.files.clone();
             if p.action != 2 {
                 let c = Arc::new(crate::grabber::Crawl::default());
-                crate::grabber::run(p.opts.clone(), core.agent(&p.opts.start), c.clone(), core.grab_tuning());
+                crate::grabber::run(
+                    p.opts.clone(),
+                    core.agent(&p.opts.start),
+                    c.clone(),
+                    core.grab_tuning(),
+                );
                 let st = c.state.lock().unwrap();
                 // a periodic project only fetches what is new since its last run
                 let old: HashSet<&str> = p.files.iter().map(|f| f.url.as_str()).collect();
-                files = st.files.iter().filter(|f| !p.periodic || !old.contains(f.url.as_str())).cloned().collect();
-                if let Some(x) = core.settings().grab_projects.iter_mut().find(|x| x.opts.name == p.opts.name) {
+                files = st
+                    .files
+                    .iter()
+                    .filter(|f| !p.periodic || !old.contains(f.url.as_str()))
+                    .cloned()
+                    .collect();
+                if let Some(x) = core
+                    .settings()
+                    .grab_projects
+                    .iter_mut()
+                    .find(|x| x.opts.name == p.opts.name)
+                {
                     let mut all = x.files.clone();
-                    all.extend(st.files.iter().filter(|f| !old.contains(f.url.as_str())).cloned().map(|mut f| { f.checked = false; f }));
+                    all.extend(
+                        st.files
+                            .iter()
+                            .filter(|f| !old.contains(f.url.as_str()))
+                            .cloned()
+                            .map(|mut f| {
+                                f.checked = false;
+                                f
+                            }),
+                    );
                     (x.files, x.pages) = (all, st.pages);
                 }
             }
             if p.action != 0 {
-                let ids = core.grab_files(&mut files, &p.opts, p.save_mode, &p.save_cat, &p.folder, true);
+                let ids = core.grab_files(
+                    &mut files,
+                    &p.opts,
+                    p.save_mode,
+                    &p.save_cat,
+                    &p.folder,
+                    true,
+                );
                 let sc = &p.sched;
                 if sc.exit_done || sc.off_done || sc.open_on || sc.hangup {
                     core.grab_watch.lock().unwrap().push((ids, sc.clone()));
@@ -486,7 +666,10 @@ impl Core {
             }
             if p.periodic && p.sched.again_on {
                 let secs = (p.sched.again_h as u64 * 3600 + p.sched.again_m as u64 * 60).max(60);
-                core.grab_again.lock().unwrap().insert(p.opts.name.clone(), Instant::now() + Duration::from_secs(secs));
+                core.grab_again.lock().unwrap().insert(
+                    p.opts.name.clone(),
+                    Instant::now() + Duration::from_secs(secs),
+                );
             }
             core.grab_running.lock().unwrap().remove(&p.opts.name);
             core.save();
@@ -499,7 +682,8 @@ impl Core {
         self.apply_integration(false);
         #[cfg(target_os = "macos")]
         {
-            self.proxy_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+            self.proxy_ready
+                .store(false, std::sync::atomic::Ordering::SeqCst);
             if let Err(error) = crate::mac_capture::restore() {
                 eprintln!("NDM: {error}");
             }
@@ -534,5 +718,4 @@ impl Core {
             }
         });
     }
-
 }

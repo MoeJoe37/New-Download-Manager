@@ -1,8 +1,18 @@
-use super::{Mutex, Stdio, cmd, config_dir};
+use super::{cmd, config_dir, Mutex, Stdio};
 
 pub(super) fn gsettings(args: &[&str]) -> Option<String> {
-    let o = cmd("gsettings").args(args).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
-    Some(String::from_utf8_lossy(&o.stdout).trim().trim_matches('\'').to_string())
+    let o = cmd("gsettings")
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(
+        String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .trim_matches('\'')
+            .to_string(),
+    )
 }
 
 /// The desktop's proxy as Windows' Internet Settings would give it: (on, "http=host:port;https=host:port",
@@ -10,7 +20,9 @@ pub(super) fn gsettings(args: &[&str]) -> Option<String> {
 /// https_proxy, ftp_proxy, no_proxy).
 pub fn system_proxy() -> (bool, String, String) {
     if is_kde() {
-        return kde_proxy(&std::fs::read_to_string(config_dir().join("kioslaverc")).unwrap_or_default());
+        return kde_proxy(
+            &std::fs::read_to_string(config_dir().join("kioslaverc")).unwrap_or_default(),
+        );
     }
     match gsettings(&["get", "org.gnome.system.proxy", "mode"]).as_deref() {
         Some("manual") => {
@@ -20,20 +32,53 @@ pub fn system_proxy() -> (bool, String, String) {
                 let port = gsettings(&["get", &schema, "port"]).unwrap_or_default();
                 (!host.is_empty() && port != "0").then(|| format!("{k}={host}:{port}"))
             };
-            let server = [hp("http"), hp("https"), hp("ftp")].into_iter().flatten().collect::<Vec<_>>().join(";");
+            let server = [hp("http"), hp("https"), hp("ftp")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(";");
             // ['localhost', '127.0.0.0/8']
-            let ignore = gsettings(&["get", "org.gnome.system.proxy", "ignore-hosts"]).unwrap_or_default();
-            let bypass = ignore.split(',').map(|h| h.trim().trim_matches(['[', ']', '\'', ' '])).filter(|h| !h.is_empty()).collect::<Vec<_>>().join(";");
+            let ignore =
+                gsettings(&["get", "org.gnome.system.proxy", "ignore-hosts"]).unwrap_or_default();
+            let bypass = ignore
+                .split(',')
+                .map(|h| h.trim().trim_matches(['[', ']', '\'', ' ']))
+                .filter(|h| !h.is_empty())
+                .collect::<Vec<_>>()
+                .join(";");
             return (!server.is_empty(), server, bypass);
         }
         Some("none") => return (false, String::new(), String::new()),
         _ => {}
     }
-    let var = |k: &str| std::env::var(k).or_else(|_| std::env::var(k.to_uppercase())).unwrap_or_default();
-    let host = |v: String| v.split("://").last().unwrap_or("").trim_end_matches('/').to_string();
-    let (http, https, ftp) = (host(var("http_proxy")), host(var("https_proxy")), host(var("ftp_proxy")));
-    let server = [("http", http), ("https", https), ("ftp", ftp)].into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(";");
-    (!server.is_empty(), server, var("no_proxy").replace(',', ";"))
+    let var = |k: &str| {
+        std::env::var(k)
+            .or_else(|_| std::env::var(k.to_uppercase()))
+            .unwrap_or_default()
+    };
+    let host = |v: String| {
+        v.split("://")
+            .last()
+            .unwrap_or("")
+            .trim_end_matches('/')
+            .to_string()
+    };
+    let (http, https, ftp) = (
+        host(var("http_proxy")),
+        host(var("https_proxy")),
+        host(var("ftp_proxy")),
+    );
+    let server = [("http", http), ("https", https), ("ftp", ftp)]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    (
+        !server.is_empty(),
+        server,
+        var("no_proxy").replace(',', ";"),
+    )
 }
 
 fn is_kde() -> bool {
@@ -50,15 +95,32 @@ fn kde_proxy(text: &str) -> (bool, String, String) {
             in_proxy = l == "[Proxy Settings]";
             continue;
         }
-        let Some((k, v)) = l.split_once('=').filter(|_| in_proxy) else { continue };
+        let Some((k, v)) = l.split_once('=').filter(|_| in_proxy) else {
+            continue;
+        };
         let hp = |v: &str| {
-            let v = v.trim().split("://").last().unwrap_or("").trim_end_matches('/');
-            v.rsplit_once(' ').map_or(v.to_string(), |(h, p)| format!("{}:{p}", h.trim()))
+            let v = v
+                .trim()
+                .split("://")
+                .last()
+                .unwrap_or("")
+                .trim_end_matches('/');
+            v.rsplit_once(' ')
+                .map_or(v.to_string(), |(h, p)| format!("{}:{p}", h.trim()))
         };
         match k.trim() {
             "ProxyType" => on = v.trim() == "1",
-            "httpProxy" | "httpsProxy" | "ftpProxy" if !v.trim().is_empty() => server.push(format!("{}={}", k.trim().trim_end_matches("Proxy"), hp(v))),
-            "NoProxyFor" => bypass = v.split(',').map(str::trim).filter(|h| !h.is_empty()).collect::<Vec<_>>().join(";"),
+            "httpProxy" | "httpsProxy" | "ftpProxy" if !v.trim().is_empty() => {
+                server.push(format!("{}={}", k.trim().trim_end_matches("Proxy"), hp(v)))
+            }
+            "NoProxyFor" => {
+                bypass = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|h| !h.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(";")
+            }
             _ => {}
         }
     }
@@ -68,26 +130,74 @@ fn kde_proxy(text: &str) -> (bool, String, String) {
 #[test]
 fn kde_proxy_reads_kioslaverc() {
     let t = "[General]\nhttpProxy=x\n[Proxy Settings]\nProxyType=1\nhttpProxy=http://10.0.0.1 3128\nhttpsProxy=10.0.0.2:3129\nNoProxyFor=localhost,.corp\n";
-    assert_eq!(kde_proxy(t), (true, "http=10.0.0.1:3128;https=10.0.0.2:3129".into(), "localhost;.corp".into()));
+    assert_eq!(
+        kde_proxy(t),
+        (
+            true,
+            "http=10.0.0.1:3128;https=10.0.0.2:3129".into(),
+            "localhost;.corp".into()
+        )
+    );
     assert!(!kde_proxy(&t.replace("ProxyType=1", "ProxyType=2")).0);
 }
 
 /// Writes KDE's proxy (kioslaverc, through kwriteconfig6 or 5) and tells running KDE programs.
 fn set_kde_proxy(on: bool, server: &str, bypass: &str) {
     let write = |key: &str, v: &str| {
-        let args = ["--file", "kioslaverc", "--group", "Proxy Settings", "--key", key, v];
-        let ok = |p: &str| cmd(p).args(args).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+        let args = [
+            "--file",
+            "kioslaverc",
+            "--group",
+            "Proxy Settings",
+            "--key",
+            key,
+            v,
+        ];
+        let ok = |p: &str| {
+            cmd(p)
+                .args(args)
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
         let _ = ok("kwriteconfig6") || ok("kwriteconfig5");
     };
     if on {
         for kind in ["http", "https", "ftp"] {
-            let hp = server.split(';').find_map(|p| p.strip_prefix(&format!("{kind}="))).or_else(|| (!server.contains('=')).then_some(server)).unwrap_or("");
-            write(&format!("{kind}Proxy"), &if hp.is_empty() { String::new() } else { format!("http://{hp}") });
+            let hp = server
+                .split(';')
+                .find_map(|p| p.strip_prefix(&format!("{kind}=")))
+                .or_else(|| (!server.contains('=')).then_some(server))
+                .unwrap_or("");
+            write(
+                &format!("{kind}Proxy"),
+                &if hp.is_empty() {
+                    String::new()
+                } else {
+                    format!("http://{hp}")
+                },
+            );
         }
-        write("NoProxyFor", &bypass.split(';').map(str::trim).filter(|h| !h.is_empty() && *h != "<local>").collect::<Vec<_>>().join(","));
+        write(
+            "NoProxyFor",
+            &bypass
+                .split(';')
+                .map(str::trim)
+                .filter(|h| !h.is_empty() && *h != "<local>")
+                .collect::<Vec<_>>()
+                .join(","),
+        );
     }
     write("ProxyType", if on { "1" } else { "0" });
-    let _ = cmd("dbus-send").args(["--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:"]).stderr(Stdio::null()).status();
+    let _ = cmd("dbus-send")
+        .args([
+            "--type=signal",
+            "/KIO/Scheduler",
+            "org.kde.KIO.Scheduler.reparseSlaveConfiguration",
+            "string:",
+        ])
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Sets the desktop's proxy (KDE's or GNOME's settings, as `system_proxy` reads them) for the browsers.
@@ -97,21 +207,37 @@ pub fn set_system_proxy(on: bool, server: &str, bypass: &str) {
         return set_kde_proxy(on, server, bypass);
     }
     let set = |schema: &str, key: &str, v: &str| {
-        let _ = cmd("gsettings").args(["set", schema, key, v]).stderr(Stdio::null()).status();
+        let _ = cmd("gsettings")
+            .args(["set", schema, key, v])
+            .stderr(Stdio::null())
+            .status();
     };
     if !on {
         set("org.gnome.system.proxy", "mode", "none");
         return;
     }
     for kind in ["http", "https"] {
-        let hp = server.split(';').find_map(|p| p.strip_prefix(&format!("{kind}="))).or_else(|| (!server.contains('=')).then_some(server)).unwrap_or("");
+        let hp = server
+            .split(';')
+            .find_map(|p| p.strip_prefix(&format!("{kind}=")))
+            .or_else(|| (!server.contains('=')).then_some(server))
+            .unwrap_or("");
         let (host, port) = hp.rsplit_once(':').unwrap_or((hp, "0"));
         let schema = format!("org.gnome.system.proxy.{kind}");
         set(&schema, "host", host);
         set(&schema, "port", port);
     }
-    let hosts: Vec<String> = bypass.split(';').map(str::trim).filter(|h| !h.is_empty() && *h != "<local>").map(|h| format!("'{h}'")).collect();
-    set("org.gnome.system.proxy", "ignore-hosts", &format!("[{}]", hosts.join(", ")));
+    let hosts: Vec<String> = bypass
+        .split(';')
+        .map(str::trim)
+        .filter(|h| !h.is_empty() && *h != "<local>")
+        .map(|h| format!("'{h}'"))
+        .collect();
+    set(
+        "org.gnome.system.proxy",
+        "ignore-hosts",
+        &format!("[{}]", hosts.join(", ")),
+    );
     set("org.gnome.system.proxy", "mode", "manual");
 }
 
@@ -126,24 +252,42 @@ fn nm_conns(active: bool) -> Option<Vec<(String, String)>> {
     if active {
         c.arg("--active");
     }
-    let o = c.stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    let o = c
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
     Some(nm_parse(&String::from_utf8_lossy(&o.stdout)))
 }
 
 fn nm_parse(text: &str) -> Vec<(String, String)> {
     // types: "vpn", "wireguard", "pppoe", "gsm", "802-11-wireless", ...
-    text.lines().filter_map(|l| l.rsplit_once(':')).filter(|(_, t)| DIAL_TYPES.contains(t)).map(|(n, t)| (n.replace("\\:", ":"), t.to_string())).collect()
+    text.lines()
+        .filter_map(|l| l.rsplit_once(':'))
+        .filter(|(_, t)| DIAL_TYPES.contains(t))
+        .map(|(n, t)| (n.replace("\\:", ":"), t.to_string()))
+        .collect()
 }
 
 #[test]
 fn nmcli_lines() {
     let text = "Home Wi-Fi:802-11-wireless\nOffice\\: VPN:vpn\nwg0:wireguard\nlo:loopback\n";
-    assert_eq!(nm_parse(text), [("Office: VPN".to_string(), "vpn".to_string()), ("wg0".into(), "wireguard".into())]);
+    assert_eq!(
+        nm_parse(text),
+        [
+            ("Office: VPN".to_string(), "vpn".to_string()),
+            ("wg0".into(), "wireguard".into())
+        ]
+    );
 }
 
 /// NetworkManager's dial-up / VPN connections.
 pub fn ras_entries() -> Vec<String> {
-    nm_conns(false).unwrap_or_default().into_iter().map(|c| c.0).collect()
+    nm_conns(false)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.0)
+        .collect()
 }
 
 /// Is a dial-up / VPN connection up? Without NetworkManager there is nothing to dial: yes.
@@ -155,12 +299,25 @@ pub fn ras_connected() -> bool {
 static PASSWORDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 fn nm_kind(entry: &str) -> Option<String> {
-    nm_conns(false)?.into_iter().find(|c| c.0 == entry).map(|c| c.1)
+    nm_conns(false)?
+        .into_iter()
+        .find(|c| c.0 == entry)
+        .map(|c| c.1)
 }
 
 fn nmcli(args: &[&str]) -> Result<(), String> {
-    let o = cmd("nmcli").args(args).output().map_err(|e| e.to_string())?;
-    if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).trim().trim_start_matches("Error: ").to_string()) }
+    let o = cmd("nmcli")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&o.stderr)
+            .trim()
+            .trim_start_matches("Error: ")
+            .to_string())
+    }
 }
 
 /// User name (and, with `save`, the password) NetworkManager keeps for `entry` (Dial Up page's Apply).
@@ -168,15 +325,40 @@ pub fn ras_save(entry: &str, user: &str, pass: &str, save: bool) -> Result<(), S
     let kind = nm_kind(entry).ok_or("NetworkManager has no such connection")?;
     PASSWORDS.lock().unwrap().retain(|p| p.0 != entry);
     if !save && !pass.is_empty() {
-        PASSWORDS.lock().unwrap().push((entry.to_string(), pass.to_string()));
+        PASSWORDS
+            .lock()
+            .unwrap()
+            .push((entry.to_string(), pass.to_string()));
     }
     let pass = if save { pass } else { "" };
     match kind.as_str() {
         "wireguard" => Ok(()), // keys, no login
-        "pppoe" | "gsm" | "cdma" => nmcli(&["connection", "modify", "id", entry, &format!("{kind}.username"), user, &format!("{kind}.password"), pass]),
+        "pppoe" | "gsm" | "cdma" => nmcli(&[
+            "connection",
+            "modify",
+            "id",
+            entry,
+            &format!("{kind}.username"),
+            user,
+            &format!("{kind}.password"),
+            pass,
+        ]),
         _ => {
             nmcli(&["connection", "modify", "id", entry, "vpn.user-name", user])?;
-            if save { nmcli(&["connection", "modify", "id", entry, "+vpn.data", "password-flags=0", "+vpn.secrets", &format!("password={pass}")]) } else { Ok(()) }
+            if save {
+                nmcli(&[
+                    "connection",
+                    "modify",
+                    "id",
+                    entry,
+                    "+vpn.data",
+                    "password-flags=0",
+                    "+vpn.secrets",
+                    &format!("password={pass}"),
+                ])
+            } else {
+                Ok(())
+            }
         }
     }
 }
@@ -185,7 +367,12 @@ pub fn ras_save(entry: &str, user: &str, pass: &str, save: bool) -> Result<(), S
 pub fn ras_dial(entry: &str) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let pass = PASSWORDS.lock().unwrap().iter().find(|p| p.0 == entry).map(|p| p.1.clone());
+    let pass = PASSWORDS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|p| p.0 == entry)
+        .map(|p| p.1.clone());
     let file = std::env::temp_dir().join(format!("ndm-dial-{}", std::process::id()));
     let mut args = vec!["--wait", "90", "connection", "up", "id", entry];
     if let Some(p) = &pass {
@@ -195,7 +382,13 @@ pub fn ras_dial(entry: &str) -> Result<(), String> {
             Some("cdma") => "cdma.password",
             _ => "vpn.secrets.password",
         };
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file).map_err(|e| e.to_string())?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&file)
+            .map_err(|e| e.to_string())?;
         writeln!(f, "{setting}:{p}").map_err(|e| e.to_string())?;
         args.extend(["passwd-file", file.to_str().unwrap_or("")]);
     }
@@ -244,12 +437,16 @@ fn default_route_devices(route: &str, route6: &str) -> Vec<String> {
 
 #[test]
 fn default_routes() {
-    let route = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+    let route =
+        "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
         wlp2s0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n\
         wlp2s0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n\
         docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n";
     let route6 = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000064 00000001 00000000 00000003 enx0a1b2c3d4e5f\n\
         00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200 lo\n\
         fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001 wlp2s0\n";
-    assert_eq!(default_route_devices(route, route6), ["wlp2s0", "enx0a1b2c3d4e5f"]);
+    assert_eq!(
+        default_route_devices(route, route6),
+        ["wlp2s0", "enx0a1b2c3d4e5f"]
+    );
 }

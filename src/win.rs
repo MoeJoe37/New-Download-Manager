@@ -9,14 +9,19 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 #[path = "platform/windows/desktop.rs"]
 mod desktop;
-#[path = "platform/windows/network.rs"]
-mod network;
 #[path = "platform/windows/drag_drop.rs"]
 mod drag_drop;
+#[path = "platform/windows/network.rs"]
+mod network;
 
-pub use self::desktop::{installed_browsers, is_host_launch, native_host, register_host, set_autostart};
-pub use self::network::{nics, pac_proxy, ras_connected, ras_dial, ras_entries, ras_hangup_all, ras_save, set_system_proxy, system_proxy};
+pub use self::desktop::{
+    installed_browsers, is_host_launch, native_host, register_host, set_autostart,
+};
 pub use self::drag_drop::{accept_drops, drop_target, drop_target_visible, take_drops};
+pub use self::network::{
+    nics, pac_proxy, ras_connected, ras_dial, ras_entries, ras_hangup_all, ras_save,
+    set_system_proxy, system_proxy,
+};
 
 pub type Rgba = (usize, usize, Vec<u8>);
 
@@ -26,7 +31,9 @@ fn wide(s: &str) -> Vec<u16> {
 
 /// The WinINet ("IE") cache's copy of `url`: (local file, its Last-Modified as an HTTP date): a normal cache entry whose file still exists and has a modification time.
 pub fn url_cache(url: &str) -> Option<(std::path::PathBuf, String)> {
-    use windows_sys::Win32::Networking::WinInet::{GetUrlCacheEntryInfoW, INTERNET_CACHE_ENTRY_INFOW, NORMAL_CACHE_ENTRY};
+    use windows_sys::Win32::Networking::WinInet::{
+        GetUrlCacheEntryInfoW, INTERNET_CACHE_ENTRY_INFOW, NORMAL_CACHE_ENTRY,
+    };
     let u = wide(url);
     let mut len = 0u32;
     unsafe {
@@ -36,18 +43,23 @@ pub fn url_cache(url: &str) -> Option<(std::path::PathBuf, String)> {
         }
         let mut buf = vec![0u64; (len as usize).div_ceil(8)]; // 8-aligned for the struct
         let e = buf.as_mut_ptr() as *mut INTERNET_CACHE_ENTRY_INFOW;
-        if GetUrlCacheEntryInfoW(u.as_ptr(), e, &mut len) == 0 || (*e).CacheEntryType & NORMAL_CACHE_ENTRY == 0 || (*e).lpszLocalFileName.is_null() {
+        if GetUrlCacheEntryInfoW(u.as_ptr(), e, &mut len) == 0
+            || (*e).CacheEntryType & NORMAL_CACHE_ENTRY == 0
+            || (*e).lpszLocalFileName.is_null()
+        {
             return None;
         }
         let p = (*e).lpszLocalFileName;
         let n = (0..).take_while(|&k| *p.add(k) != 0).count();
-        let file = std::path::PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
+        let file =
+            std::path::PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
         let ft = (*e).LastModifiedTime;
         let ticks = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
         // FILETIME = 100 ns since 1601; NDM formats it "%a, %d %b %Y %H:%M:%S GMT"
         let secs = (ticks / 10_000_000).checked_sub(11_644_473_600)?;
         let when = chrono::DateTime::from_timestamp(secs as i64, 0)?;
-        file.is_file().then(|| (file, when.format("%a, %d %b %Y %H:%M:%S GMT").to_string()))
+        file.is_file()
+            .then(|| (file, when.format("%a, %d %b %Y %H:%M:%S GMT").to_string()))
     }
 }
 
@@ -59,7 +71,16 @@ unsafe fn dib(dc: HDC, bmp: HBITMAP, w: i32, h: i32) -> Option<Vec<u8>> {
     (bi.bmiHeader.biPlanes, bi.bmiHeader.biBitCount) = (1, 32);
     bi.bmiHeader.biCompression = BI_RGB as _;
     let mut buf = vec![0u8; (w * h * 4) as usize];
-    (GetDIBits(dc, bmp, 0, h as u32, buf.as_mut_ptr().cast(), &mut bi, DIB_RGB_COLORS) != 0).then_some(buf)
+    (GetDIBits(
+        dc,
+        bmp,
+        0,
+        h as u32,
+        buf.as_mut_ptr().cast(),
+        &mut bi,
+        DIB_RGB_COLORS,
+    ) != 0)
+        .then_some(buf)
 }
 
 /// HICON -> RGBA. Destroys the icon.
@@ -70,10 +91,18 @@ unsafe fn icon_rgba(icon: HICON) -> Option<Rgba> {
         return None;
     }
     let mut bm: BITMAP = zeroed();
-    GetObjectW(ii.hbmColor, size_of::<BITMAP>() as i32, (&mut bm as *mut BITMAP).cast());
+    GetObjectW(
+        ii.hbmColor,
+        size_of::<BITMAP>() as i32,
+        (&mut bm as *mut BITMAP).cast(),
+    );
     let (w, h) = (bm.bmWidth, bm.bmHeight);
     let dc = GetDC(std::ptr::null_mut());
-    let mut px = if ii.hbmColor.is_null() || w == 0 { None } else { dib(dc, ii.hbmColor, w, h) };
+    let mut px = if ii.hbmColor.is_null() || w == 0 {
+        None
+    } else {
+        dib(dc, ii.hbmColor, w, h)
+    };
     if let Some(px) = px.as_mut() {
         // Old icons have no alpha channel; the AND mask says what's transparent.
         if px.chunks(4).all(|p| p[3] == 0) {
@@ -94,12 +123,30 @@ unsafe fn icon_rgba(icon: HICON) -> Option<Rgba> {
 
 /// The icon Explorer shows for files with this extension (or for a folder).
 pub fn shell_icon(ext: &str, folder: bool) -> Option<Rgba> {
-    let name = wide(&if folder { "folder".into() } else { format!("file.{ext}") });
-    let attr = if folder { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
+    let name = wide(&if folder {
+        "folder".into()
+    } else {
+        format!("file.{ext}")
+    });
+    let attr = if folder {
+        FILE_ATTRIBUTE_DIRECTORY
+    } else {
+        FILE_ATTRIBUTE_NORMAL
+    };
     unsafe {
         let mut sfi: SHFILEINFOW = zeroed();
-        let ok = SHGetFileInfoW(name.as_ptr(), attr, &mut sfi, size_of::<SHFILEINFOW>() as u32, SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES);
-        if ok == 0 || sfi.hIcon.is_null() { None } else { icon_rgba(sfi.hIcon) }
+        let ok = SHGetFileInfoW(
+            name.as_ptr(),
+            attr,
+            &mut sfi,
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES,
+        );
+        if ok == 0 || sfi.hIcon.is_null() {
+            None
+        } else {
+            icon_rgba(sfi.hIcon)
+        }
     }
 }
 
@@ -108,10 +155,21 @@ pub fn type_name(ext: &str) -> String {
     let name = wide(&format!("file.{ext}"));
     unsafe {
         let mut sfi: SHFILEINFOW = zeroed();
-        if SHGetFileInfoW(name.as_ptr(), FILE_ATTRIBUTE_NORMAL, &mut sfi, size_of::<SHFILEINFOW>() as u32, SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES) == 0 {
+        if SHGetFileInfoW(
+            name.as_ptr(),
+            FILE_ATTRIBUTE_NORMAL,
+            &mut sfi,
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES,
+        ) == 0
+        {
             return String::new();
         }
-        let n = sfi.szTypeName.iter().position(|c| *c == 0).unwrap_or(sfi.szTypeName.len());
+        let n = sfi
+            .szTypeName
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(sfi.szTypeName.len());
         String::from_utf16_lossy(&sfi.szTypeName[..n])
     }
 }
@@ -120,7 +178,9 @@ pub fn exe_icon(path: &Path) -> Option<Rgba> {
     let p = wide(&path.display().to_string());
     unsafe {
         let mut large: HICON = std::ptr::null_mut();
-        if ExtractIconExW(p.as_ptr(), 0, &mut large, std::ptr::null_mut(), 1) == 0 || large.is_null() {
+        if ExtractIconExW(p.as_ptr(), 0, &mut large, std::ptr::null_mut(), 1) == 0
+            || large.is_null()
+        {
             return None;
         }
         icon_rgba(large)
@@ -148,12 +208,21 @@ pub fn keep_hidden(hwnd: isize, on: bool) {
     }
 }
 
-unsafe extern "system" fn hidden_proc(h: HWND, msg: u32, w: usize, l: isize, _: usize, _: usize) -> isize {
+unsafe extern "system" fn hidden_proc(
+    h: HWND,
+    msg: u32,
+    w: usize,
+    l: isize,
+    _: usize,
+    _: usize,
+) -> isize {
     use windows_sys::Win32::UI::Shell::DefSubclassProc;
     if KEEP_HIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
         match msg {
             WM_WINDOWPOSCHANGING => (*(l as *mut WINDOWPOS)).flags &= !SWP_SHOWWINDOW,
-            WM_STYLECHANGING if w as i32 == GWL_STYLE => (*(l as *mut STYLESTRUCT)).styleNew &= !WS_VISIBLE,
+            WM_STYLECHANGING if w as i32 == GWL_STYLE => {
+                (*(l as *mut STYLESTRUCT)).styleNew &= !WS_VISIBLE
+            }
             _ => {}
         }
     }
@@ -166,12 +235,30 @@ pub fn sparse(f: &std::fs::File) {
     use windows_sys::Win32::System::IO::DeviceIoControl;
     const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
     let mut n = 0u32;
-    unsafe { DeviceIoControl(f.as_raw_handle() as _, FSCTL_SET_SPARSE, std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut n, std::ptr::null_mut()) };
+    unsafe {
+        DeviceIoControl(
+            f.as_raw_handle() as _,
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut n,
+            std::ptr::null_mut(),
+        )
+    };
 }
 
 /// A message box when NDM can't start at all (no window to show it in).
 pub fn fatal(title: &str, text: &str) {
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OK | MB_ICONERROR) };
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide(text).as_ptr(),
+            wide(title).as_ptr(),
+            MB_OK | MB_ICONERROR,
+        )
+    };
 }
 
 pub fn show(hwnd: isize) {
@@ -181,7 +268,14 @@ pub fn show(hwnd: isize) {
     }
     keep_hidden(hwnd, false);
     unsafe {
-        ShowWindow(h, if IsIconic(h) != 0 { SW_RESTORE } else { SW_SHOW });
+        ShowWindow(
+            h,
+            if IsIconic(h) != 0 {
+                SW_RESTORE
+            } else {
+                SW_SHOW
+            },
+        );
         SetForegroundWindow(h);
     }
 }
@@ -233,7 +327,11 @@ pub fn own_dialogs(main: isize, dark: bool, retitle: bool, light: &[String]) {
             let d = d.borrow();
             (d.0 && !d.2.contains(&title), d.1)
         });
-        if h != main as HWND && GetWindow(h, GW_OWNER).is_null() && IsWindowVisible(h) != 0 && GetWindowLongPtrW(h, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION {
+        if h != main as HWND
+            && GetWindow(h, GW_OWNER).is_null()
+            && IsWindowVisible(h) != 0
+            && GetWindowLongPtrW(h, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION
+        {
             SetWindowLongPtrW(h, GWLP_HWNDPARENT, main);
             dark_title(h as isize, dark);
         } else if h != main as HWND && retitle {
@@ -242,7 +340,13 @@ pub fn own_dialogs(main: isize, dark: bool, retitle: bool, light: &[String]) {
         1
     }
     if main != 0 {
-        unsafe { EnumThreadWindows(windows_sys::Win32::System::Threading::GetCurrentThreadId(), Some(each), main) };
+        unsafe {
+            EnumThreadWindows(
+                windows_sys::Win32::System::Threading::GetCurrentThreadId(),
+                Some(each),
+                main,
+            )
+        };
     }
 }
 
@@ -250,7 +354,14 @@ pub fn own_dialogs(main: isize, dark: bool, retitle: bool, light: &[String]) {
 pub fn dark_title(hwnd: isize, dark: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
     let v: i32 = dark as i32;
-    unsafe { DwmSetWindowAttribute(hwnd as HWND, DWMWA_USE_IMMERSIVE_DARK_MODE as u32, (&v as *const i32).cast(), 4) };
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd as HWND,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            (&v as *const i32).cast(),
+            4,
+        )
+    };
 }
 
 /// Changes whenever anything is copied.
@@ -262,7 +373,13 @@ pub fn clip_seq() -> u32 {
 pub fn play_sound(path: &str) {
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME};
     if Path::new(path).is_file() {
-        unsafe { PlaySoundW(wide(path).as_ptr(), std::ptr::null_mut(), SND_ASYNC | SND_FILENAME) };
+        unsafe {
+            PlaySoundW(
+                wide(path).as_ptr(),
+                std::ptr::null_mut(),
+                SND_ASYNC | SND_FILENAME,
+            )
+        };
     }
 }
 
@@ -272,8 +389,19 @@ pub fn decimal_sep() -> &'static str {
     SEP.get_or_init(|| {
         use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LOCALE_SDECIMAL};
         let mut b = [0u16; 8];
-        let n = unsafe { GetLocaleInfoEx(std::ptr::null(), LOCALE_SDECIMAL, b.as_mut_ptr(), b.len() as i32) };
-        if n > 1 { String::from_utf16_lossy(&b[..n as usize - 1]) } else { ",".into() }
+        let n = unsafe {
+            GetLocaleInfoEx(
+                std::ptr::null(),
+                LOCALE_SDECIMAL,
+                b.as_mut_ptr(),
+                b.len() as i32,
+            )
+        };
+        if n > 1 {
+            String::from_utf16_lossy(&b[..n as usize - 1])
+        } else {
+            ",".into()
+        }
     })
 }
 
@@ -283,7 +411,17 @@ pub fn system_dark() -> bool {
     let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
     let val = wide("AppsUseLightTheme");
     let (mut data, mut len) = (1u32, 4u32);
-    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), (&mut data as *mut u32).cast(), &mut len) };
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            val.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut data as *mut u32).cast(),
+            &mut len,
+        )
+    };
     r == 0 && data == 0
 }
 
@@ -291,26 +429,39 @@ pub fn system_dark() -> bool {
 /// non-Latin names); "explorer /select," is the fall-back, its path in quotes of its own (a quoted
 /// "/select,..." argument makes Explorer open Documents instead).
 pub fn show_in_folder(path: &std::path::Path) {
-    use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
     use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
-    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()).display().to_string().replace('/', "\\");
+    let full = std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+        .replace('/', "\\");
     std::thread::spawn(move || {
         let selected = unsafe {
-            let initialized = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0;
+            let initialized =
+                CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) >= 0;
             if initialized {
                 let pidl = ILCreateFromPathW(wide(&full).as_ptr());
-                let selected = if pidl.is_null() { false } else {
+                let selected = if pidl.is_null() {
+                    false
+                } else {
                     let hr = SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0);
                     ILFree(pidl);
                     hr >= 0
                 };
                 CoUninitialize();
                 selected
-            } else { false }
+            } else {
+                false
+            }
         };
         if !selected {
             use std::os::windows::process::CommandExt;
-            let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{full}\"")).spawn();
+            let _ = std::process::Command::new("explorer.exe")
+                .raw_arg(format!("/select,\"{full}\""))
+                .spawn();
         }
     });
 }
@@ -318,22 +469,65 @@ pub fn show_in_folder(path: &std::path::Path) {
 /// Adds `dir` to the user's Path (HKCU\Environment) unless it is there, and tells running programs (new
 /// terminals and Explorer pick it up).
 pub fn add_user_path(dir: &std::path::Path) {
-    use windows_sys::Win32::System::Registry::{RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE};
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_EXPAND_SZ, RRF_NOEXPAND,
+        RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    };
     let (key, val) = (wide("Environment"), wide("Path"));
     let (mut buf, mut len) = (vec![0u16; 32768], 65536u32);
-    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
-    let path = if r == 0 { String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(0)]) } else { String::new() };
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            val.as_ptr(),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    let path = if r == 0 {
+        String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(0)])
+    } else {
+        String::new()
+    };
     let want = dir.display().to_string();
-    if path.split(';').any(|p| p.trim().trim_end_matches('\\').eq_ignore_ascii_case(want.trim_end_matches('\\'))) {
+    if path.split(';').any(|p| {
+        p.trim()
+            .trim_end_matches('\\')
+            .eq_ignore_ascii_case(want.trim_end_matches('\\'))
+    }) {
         return;
     }
-    let new = if path.trim().is_empty() { want } else { format!("{};{want}", path.trim_end_matches(';')) };
+    let new = if path.trim().is_empty() {
+        want
+    } else {
+        format!("{};{want}", path.trim_end_matches(';'))
+    };
     let v = wide(&new);
     unsafe {
-        if RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), val.as_ptr(), REG_EXPAND_SZ, v.as_ptr().cast(), v.len() as u32 * 2) == 0 {
+        if RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            val.as_ptr(),
+            REG_EXPAND_SZ,
+            v.as_ptr().cast(),
+            v.len() as u32 * 2,
+        ) == 0
+        {
             let env = wide("Environment");
-            SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, env.as_ptr() as isize, SMTO_ABORTIFHUNG, 3000, std::ptr::null_mut());
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                env.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                3000,
+                std::ptr::null_mut(),
+            );
         }
     }
 }
@@ -344,7 +538,9 @@ pub fn add_user_path(dir: &std::path::Path) {
 /// starting it again shows the running window (the only way back with "Don't show" tray icon). Only a
 /// copy of this same exe counts, so a build elsewhere still runs side by side.
 pub fn running(title: &str, activate: bool) -> bool {
-    use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     let me = std::env::current_exe().ok();
     unsafe {
         let h = FindWindowW(std::ptr::null(), wide(title).as_ptr());
@@ -377,13 +573,39 @@ pub fn exit_splash(title: &str, text: &str) {
         let (w, h) = (180, 80);
         let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
         let null = std::ptr::null_mut();
-        let dlg = CreateWindowExW(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, wide("#32770").as_ptr(), wide(title).as_ptr(), WS_POPUP | WS_CAPTION | WS_VISIBLE, (sw - w) / 2, (sh - h) / 2, w, h, null, null, null, std::ptr::null());
+        let dlg = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+            wide("#32770").as_ptr(),
+            wide(title).as_ptr(),
+            WS_POPUP | WS_CAPTION | WS_VISIBLE,
+            (sw - w) / 2,
+            (sh - h) / 2,
+            w,
+            h,
+            null,
+            null,
+            null,
+            std::ptr::null(),
+        );
         if dlg.is_null() {
             return;
         }
         let mut rc = zeroed();
         GetClientRect(dlg, &mut rc);
-        let st = CreateWindowExW(0, wide("STATIC").as_ptr(), wide(text).as_ptr(), WS_CHILD | WS_VISIBLE | 0x201 /* SS_CENTER | SS_CENTERIMAGE */, 0, 0, rc.right, rc.bottom, dlg, null, null, std::ptr::null());
+        let st = CreateWindowExW(
+            0,
+            wide("STATIC").as_ptr(),
+            wide(text).as_ptr(),
+            WS_CHILD | WS_VISIBLE | 0x201, /* SS_CENTER | SS_CENTERIMAGE */
+            0,
+            0,
+            rc.right,
+            rc.bottom,
+            dlg,
+            null,
+            null,
+            std::ptr::null(),
+        );
         SendMessageW(st, WM_SETFONT, GetStockObject(DEFAULT_GUI_FONT) as usize, 1);
         UpdateWindow(dlg);
         UpdateWindow(st);
@@ -408,7 +630,9 @@ pub fn choose_font(owner: isize, face: &str, px: f32) -> Option<(String, f32)> {
         if ChooseFontW(&mut cf) == 0 {
             return None;
         }
-        let name = String::from_utf16_lossy(&lf.lfFaceName[..lf.lfFaceName.iter().position(|c| *c == 0).unwrap_or(32)]);
+        let name = String::from_utf16_lossy(
+            &lf.lfFaceName[..lf.lfFaceName.iter().position(|c| *c == 0).unwrap_or(32)],
+        );
         Some((name, cf.iPointSize as f32 / 10.0 * 96.0 / 72.0)) // 1/10 pt -> egui points (1/96 inch)
     }
 }
@@ -417,7 +641,8 @@ pub fn choose_font(owner: isize, face: &str, px: f32) -> Option<(String, f32)> {
 pub fn font_file(face: &str) -> Option<std::path::PathBuf> {
     use windows_sys::Win32::System::Registry::*;
     let key = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts";
-    let fonts = std::path::PathBuf::from(std::env::var("WINDIR").unwrap_or(r"C:\Windows".into())).join("Fonts");
+    let fonts = std::path::PathBuf::from(std::env::var("WINDIR").unwrap_or(r"C:\Windows".into()))
+        .join("Fonts");
     for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         let mut hk: HKEY = std::ptr::null_mut();
         if unsafe { RegOpenKeyExW(root, wide(key).as_ptr(), 0, KEY_READ, &mut hk) } != 0 {
@@ -425,8 +650,20 @@ pub fn font_file(face: &str) -> Option<std::path::PathBuf> {
         }
         let mut found = None;
         for i in 0.. {
-            let (mut name, mut nlen, mut data, mut dlen) = (vec![0u16; 512], 512u32, vec![0u16; 1024], 2048u32);
-            let r = unsafe { RegEnumValueW(hk, i, name.as_mut_ptr(), &mut nlen, std::ptr::null(), std::ptr::null_mut(), data.as_mut_ptr().cast(), &mut dlen) };
+            let (mut name, mut nlen, mut data, mut dlen) =
+                (vec![0u16; 512], 512u32, vec![0u16; 1024], 2048u32);
+            let r = unsafe {
+                RegEnumValueW(
+                    hk,
+                    i,
+                    name.as_mut_ptr(),
+                    &mut nlen,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    data.as_mut_ptr().cast(),
+                    &mut dlen,
+                )
+            };
             if r != 0 {
                 break;
             }
@@ -434,7 +671,9 @@ pub fn font_file(face: &str) -> Option<std::path::PathBuf> {
             let n = String::from_utf16_lossy(&name[..nlen as usize]);
             let faces = n.split(" (").next().unwrap_or("");
             if faces.split(" & ").any(|f| f.eq_ignore_ascii_case(face)) {
-                let file = String::from_utf16_lossy(&data[..(dlen as usize / 2)]).trim_end_matches('\0').to_string();
+                let file = String::from_utf16_lossy(&data[..(dlen as usize / 2)])
+                    .trim_end_matches('\0')
+                    .to_string();
                 found = Some(fonts.join(file)); // join keeps an absolute (per-user) path as is
                 break;
             }
@@ -463,7 +702,13 @@ pub fn power_off(kind: u8, force: bool) {
         }
         _ => {
             let mut c = std::process::Command::new("shutdown");
-            c.args(["/s", "/t", "60", "/c", "Download queue finished. The computer will shut down in 60 seconds."]);
+            c.args([
+                "/s",
+                "/t",
+                "60",
+                "/c",
+                "Download queue finished. The computer will shut down in 60 seconds.",
+            ]);
             c
         }
     };
@@ -494,16 +739,40 @@ fn tray_window_stays_hidden_until_explicitly_opened() {
     unsafe {
         let title = wide("NDM tray visibility test");
         let class = wide("STATIC");
-        let root = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), WS_OVERLAPPEDWINDOW,
-            0, 0, 320, 240, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+        let root = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            title.as_ptr(),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            320,
+            240,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
         assert!(!root.is_null());
         hide(root as isize);
         // eframe (or Windows restoring an owner after a popup closes) asks to show it again.
         for _ in 0..3 {
             ShowWindow(root, SW_SHOW);
             assert!(!visible(root as isize));
-            let popup = CreateWindowExW(0, class.as_ptr(), wide("Download complete").as_ptr(), WS_OVERLAPPEDWINDOW,
-                0, 0, 200, 120, root, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            let popup = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                wide("Download complete").as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                200,
+                120,
+                root,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
             assert!(!popup.is_null());
             ShowWindow(popup, SW_SHOW);
             assert!(visible(popup as isize));
@@ -525,12 +794,22 @@ fn tray_window_stays_hidden_until_explicitly_opened() {
 fn explorer_takes_any_path() {
     use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree};
     // what made "explorer /select," open Documents: spaces, a comma, non-Latin letters
-    let dir = std::env::temp_dir().join(["ndm test, folder ", "\u{2713} \u{645}\u{62c}\u{644}\u{62f}"].concat());
+    let dir = std::env::temp_dir()
+        .join(["ndm test, folder ", "\u{2713} \u{645}\u{62c}\u{644}\u{62f}"].concat());
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("My video (1).mp4");
     std::fs::write(&file, b"x").unwrap();
-    for p in [file.display().to_string(), file.display().to_string().replace(std::path::MAIN_SEPARATOR, "/")] {
-        let full = std::path::absolute(&p).unwrap().display().to_string().replace('/', "\\");
+    for p in [
+        file.display().to_string(),
+        file.display()
+            .to_string()
+            .replace(std::path::MAIN_SEPARATOR, "/"),
+    ] {
+        let full = std::path::absolute(&p)
+            .unwrap()
+            .display()
+            .to_string()
+            .replace('/', "\\");
         let w = wide(&full);
         let pidl = unsafe { ILCreateFromPathW(w.as_ptr()) };
         assert!(!pidl.is_null(), "{full}");

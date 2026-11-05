@@ -1,18 +1,48 @@
 mod pages;
 
-use crate::app::{App, Settings, core, dlu, egui, extension_dir, help, win};
-use crate::app::dialogs::{Dialog};
+use crate::app::dialogs::Dialog;
+use crate::app::{core, dlu, egui, extension_dir, help, win, App, Settings};
 
 impl App {
-    pub(super) fn dialog_options(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, tab: &mut u8, s: &mut Box<Settings>) -> bool {
+    pub(super) fn dialog_options(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        tab: &mut u8,
+        s: &mut Box<Settings>,
+    ) -> bool {
         // CPropertySheet: tab control at (7,7) holding 268x257 DLU pages, OK/Cancel/Help below.
-        let res = (self.res.icon(277), self.res.icon(295), self.res.icon(276), self.res.icon(293), self.res.icon(273), self.res.icon(278));
+        let res = (
+            self.res.icon(277),
+            self.res.icon(295),
+            self.res.icon(276),
+            self.res.icon(293),
+            self.res.icon(273),
+            self.res.icon(278),
+        );
         let ext_dir = extension_dir();
         let mut d = dlu::D::new(ui);
-        let names = ["General", "File types", "Save to", "Downloads", "Connection", "", "Proxy / Socks", "Sites Logins", "Dial Up / VPN", "Sounds"];
+        let names = [
+            "General",
+            "File types",
+            "Save to",
+            "Downloads",
+            "Connection",
+            "",
+            "Proxy / Socks",
+            "Sites Logins",
+            "Dial Up / VPN",
+            "Sounds",
+        ];
         if let Some(mut a) = self.adv_done.take() {
             if let Some((on, h, p, u, pw)) = a.http.take() {
-                (s.proxy_http, s.proxy_host, s.proxy_port, s.proxy_user, s.proxy_pass) = (on, h, p, u, pw);
+                (
+                    s.proxy_http,
+                    s.proxy_host,
+                    s.proxy_port,
+                    s.proxy_user,
+                    s.proxy_pass,
+                ) = (on, h, p, u, pw);
                 if on {
                     s.proxy_mode = 3;
                 }
@@ -31,7 +61,16 @@ impl App {
         d.tabs(4.6, 5.5, 316.0, 280.5, tab, &names);
         let origin = (6.3, 30.5);
         match *tab {
-            0 => self.options_general(d.ui, s, origin, ctx, res.0, &mut open, &mut integrate, ext_dir.is_some()),
+            0 => self.options_general(
+                d.ui,
+                s,
+                origin,
+                ctx,
+                res.0,
+                &mut open,
+                &mut integrate,
+                ext_dir.is_some(),
+            ),
             1 => Self::options_file_types(d.ui, s, origin, res.1, &mut open),
             2 => self.options_save_to(d.ui, s, origin, res.2, &mut new_cat),
             3 => Self::options_downloads(d.ui, s, origin, res.3, &mut open),
@@ -42,7 +81,13 @@ impl App {
             _ => Self::options_proxy(d.ui, s, origin, res.5, &mut adv),
         }
         if let Some(mut adv) = adv {
-            adv.http = Some((s.proxy_mode == 3 && s.proxy_http, s.proxy_host.clone(), s.proxy_port.clone(), s.proxy_user.clone(), s.proxy_pass.clone()));
+            adv.http = Some((
+                s.proxy_mode == 3 && s.proxy_http,
+                s.proxy_host.clone(),
+                s.proxy_port.clone(),
+                s.proxy_user.clone(),
+                s.proxy_pass.clone(),
+            ));
             self.open(Dialog::AdvProxy { adv });
         }
         if let Some(o) = open {

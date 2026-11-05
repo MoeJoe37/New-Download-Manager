@@ -10,7 +10,14 @@ impl Bits {
     pub(super) fn new(nal: &[u8]) -> Bits {
         let mut d = Vec::with_capacity(nal.len());
         for (k, b) in nal.iter().enumerate().skip(1) {
-            if *b == 3 && k >= 3 && nal[k - 1] == 0 && nal[k - 2] == 0 && d.len() >= 2 && d[d.len() - 1] == 0 && d[d.len() - 2] == 0 {
+            if *b == 3
+                && k >= 3
+                && nal[k - 1] == 0
+                && nal[k - 2] == 0
+                && d.len() >= 2
+                && d[d.len() - 1] == 0
+                && d[d.len() - 2] == 0
+            {
                 continue;
             }
             d.push(*b);
@@ -18,7 +25,10 @@ impl Bits {
         Bits { d, at: 0 }
     }
     pub(super) fn bit(&mut self) -> u32 {
-        let b = self.d.get(self.at / 8).map_or(0, |b| (b >> (7 - self.at % 8)) & 1);
+        let b = self
+            .d
+            .get(self.at / 8)
+            .map_or(0, |b| (b >> (7 - self.at % 8)) & 1);
         self.at += 1;
         b as u32
     }

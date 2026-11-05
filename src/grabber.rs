@@ -7,7 +7,9 @@ use url::Url;
 
 const MAX_PAGES: usize = 3000; // ponytail: hard cap instead of NDM's per-project limits
 const MAX_PAGE_BYTES: u64 = 4 << 20;
-const PAGE_EXTS: [&str; 10] = ["", "htm", "html", "shtml", "php", "asp", "aspx", "jsp", "cgi", "pl"];
+const PAGE_EXTS: [&str; 10] = [
+    "", "htm", "html", "shtml", "php", "asp", "aspx", "jsp", "cgi", "pl",
+];
 
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -76,7 +78,10 @@ pub struct Tuning {
 
 impl Default for Tuning {
     fn default() -> Self {
-        Tuning { explore: 1, adv: false }
+        Tuning {
+            explore: 1,
+            adv: false,
+        }
     }
 }
 
@@ -93,11 +98,21 @@ pub const TEMPLATES: [&str; 7] = [
 
 /// Built-in template `k` of `TEMPLATES`, `mask` = a named file filter's masks.
 /// Returns the Save To mode and the category it names (Music / Video), None for Custom settings.
-pub fn builtin_template(k: usize, opts: &mut Opts, mask: &dyn Fn(&str) -> String) -> Option<(u8, Option<&'static str>)> {
+pub fn builtin_template(
+    k: usize,
+    opts: &mut Opts,
+    mask: &dyn Fn(&str) -> String,
+) -> Option<(u8, Option<&'static str>)> {
     if k == 0 {
         return None;
     }
-    (opts.exclude, opts.convert, opts.subfolders, opts.whole_site, opts.levels_other) = (String::new(), false, false, true, 0);
+    (
+        opts.exclude,
+        opts.convert,
+        opts.subfolders,
+        opts.whole_site,
+        opts.levels_other,
+    ) = (String::new(), false, false, true, 0);
     Some(match k {
         1 => {
             opts.masks = mask("Images Files");
@@ -112,12 +127,26 @@ pub fn builtin_template(k: usize, opts: &mut Opts, mask: &dyn Fn(&str) -> String
             (1, Some("Video"))
         }
         4 => {
-            (opts.masks, opts.exclude) = ("*.*".into(), format!("*.htm;*.html;*.shtml;*.php;*.asp;*.aspx;*.jsp;{};*.svg;*.ico", mask("Images Files")));
+            (opts.masks, opts.exclude) = (
+                "*.*".into(),
+                format!(
+                    "*.htm;*.html;*.shtml;*.php;*.asp;*.aspx;*.jsp;{};*.svg;*.ico",
+                    mask("Images Files")
+                ),
+            );
             (0, None)
         }
         _ => {
             // offline copies: one folder with the site's subfolders, links converted
-            (opts.masks, opts.files_same_site, opts.hide_dups) = (if k == 5 { mask("Web content") } else { "*.*".into() }, false, false);
+            (opts.masks, opts.files_same_site, opts.hide_dups) = (
+                if k == 5 {
+                    mask("Web content")
+                } else {
+                    "*.*".into()
+                },
+                false,
+                false,
+            );
             (opts.convert, opts.subfolders) = (true, true);
             if k == 5 {
                 (opts.whole_site, opts.levels) = (false, 0);
@@ -136,16 +165,25 @@ impl Opts {
 
     /// A file of `size` bytes passes the size filter (unknown sizes pass).
     pub fn size_ok(&self, size: Option<u64>) -> bool {
-        size.is_none_or(|s| (!self.min_on || s >= self.limit(0)) && (!self.max_on || s <= self.limit(1)))
+        size.is_none_or(|s| {
+            (!self.min_on || s >= self.limit(0)) && (!self.max_on || s <= self.limit(1))
+        })
     }
 }
 
 /// "host\dir\sub" of a file's address, for "Use original relative subfolders".
 pub fn site_dir(u: &Url) -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(crate::engine::names::sanitize(u.host_str().unwrap_or("")));
+    let mut p =
+        std::path::PathBuf::from(crate::engine::names::sanitize(u.host_str().unwrap_or("")));
     let segs: Vec<&str> = u.path_segments().map(|s| s.collect()).unwrap_or_default();
-    for s in segs.iter().take(segs.len().saturating_sub(1)).filter(|s| !s.is_empty()) {
-        p.push(crate::engine::names::sanitize(&percent_encoding::percent_decode_str(s).decode_utf8_lossy()));
+    for s in segs
+        .iter()
+        .take(segs.len().saturating_sub(1))
+        .filter(|s| !s.is_empty())
+    {
+        p.push(crate::engine::names::sanitize(
+            &percent_encoding::percent_decode_str(s).decode_utf8_lossy(),
+        ));
     }
     p
 }
@@ -156,12 +194,20 @@ pub fn numbered(name: &str, free: &dyn Fn(&str) -> bool) -> String {
         Some(i) if i > 0 => (&name[..i], &name[i..]),
         _ => (name, ""),
     };
-    std::iter::once(name.to_string()).chain((2..).map(|i| format!("{stem}_{i}{ext}"))).find(|n| free(n)).unwrap()
+    std::iter::once(name.to_string())
+        .chain((2..).map(|i| format!("{stem}_{i}{ext}")))
+        .find(|n| free(n))
+        .unwrap()
 }
 
 /// "Convert the links ... for offline browsing": every href/src in a downloaded page becomes the
 /// relative path of the downloaded file it points to (`local`), else an absolute internet address.
-pub fn localize(html: &str, base: &Url, page: &std::path::Path, local: &dyn Fn(&Url) -> Option<std::path::PathBuf>) -> String {
+pub fn localize(
+    html: &str,
+    base: &Url,
+    page: &std::path::Path,
+    local: &dyn Fn(&Url) -> Option<std::path::PathBuf>,
+) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len());
     let mut at = 0;
@@ -178,11 +224,21 @@ pub fn localize(html: &str, base: &Url, page: &std::path::Path, local: &dyn Fn(&
                 Some(e) => (v + 1, v + 1 + e),
                 None => continue,
             },
-            _ => (v, v + rest.find(|c: char| c.is_whitespace() || c == '>').unwrap_or(rest.len())),
+            _ => (
+                v,
+                v + rest
+                    .find(|c: char| c.is_whitespace() || c == '>')
+                    .unwrap_or(rest.len()),
+            ),
         };
         let val = html[s..e].trim().replace("&amp;", "&");
         let lv = val.to_ascii_lowercase();
-        if s < at || val.is_empty() || ["javascript:", "mailto:", "data:", "#"].iter().any(|p| lv.starts_with(p)) {
+        if s < at
+            || val.is_empty()
+            || ["javascript:", "mailto:", "data:", "#"]
+                .iter()
+                .any(|p| lv.starts_with(p))
+        {
             continue;
         }
         let Ok(mut u) = base.join(&val) else { continue };
@@ -203,13 +259,31 @@ pub fn localize(html: &str, base: &Url, page: &std::path::Path, local: &dyn Fn(&
 
 /// `to` relative to the folder `from`, with forward slashes ("../img/a.png").
 fn relative(from: &std::path::Path, to: &std::path::Path) -> String {
-    let low = |p: &std::path::Path| p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect::<Vec<_>>();
+    let low = |p: &std::path::Path| {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+    };
     let (f, t) = (low(from), low(to));
     let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
     // non-ASCII is %-encoded too, so a Latin-1 page can take the link back byte for byte
-    const SEG: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS.add(b' ').add(b'"').add(b'#').add(b'%').add(b'<').add(b'>').add(b'?').add(b'\'').add(b'`');
-    let names = to.components().skip(common).map(|c| percent_encoding::utf8_percent_encode(&c.as_os_str().to_string_lossy(), SEG).to_string());
-    std::iter::repeat_n("..".to_string(), f.len() - common).chain(names).collect::<Vec<_>>().join("/")
+    const SEG: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'%')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'\'')
+        .add(b'`');
+    let names = to.components().skip(common).map(|c| {
+        percent_encoding::utf8_percent_encode(&c.as_os_str().to_string_lossy(), SEG).to_string()
+    });
+    std::iter::repeat_n("..".to_string(), f.len() - common)
+        .chain(names)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -258,7 +332,12 @@ pub fn mask_match(masks: &str, name: &str) -> bool {
         }
     }
     let name = name.to_ascii_lowercase();
-    !name.is_empty() && masks.split([',', ';', ' ']).map(str::trim).filter(|m| !m.is_empty()).any(|m| wild(m.to_ascii_lowercase().as_bytes(), name.as_bytes()))
+    !name.is_empty()
+        && masks
+            .split([',', ';', ' '])
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .any(|m| wild(m.to_ascii_lowercase().as_bytes(), name.as_bytes()))
 }
 
 /// `u` lies within one of the `;`-separated paths/domains: "example.com" (and its subdomains),
@@ -266,23 +345,33 @@ pub fn mask_match(masks: &str, name: &str) -> bool {
 pub fn in_paths(list: &str, u: &Url) -> bool {
     let host = u.host_str().unwrap_or("").to_ascii_lowercase();
     let at = format!("{host}{}", u.path()).to_ascii_lowercase();
-    list.split(';').map(|e| e.trim().to_ascii_lowercase()).filter(|e| !e.is_empty()).any(|e| {
-        let e = e.trim_start_matches("http://").trim_start_matches("https://").to_string();
-        if e.contains(['*', '?']) {
-            mask_match(&e, &at)
-        } else if e.contains('/') {
-            at.starts_with(&e)
-        } else {
-            host == e || host.ends_with(&format!(".{e}"))
-        }
-    })
+    list.split(';')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .any(|e| {
+            let e = e
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .to_string();
+            if e.contains(['*', '?']) {
+                mask_match(&e, &at)
+            } else if e.contains('/') {
+                at.starts_with(&e)
+            } else {
+                host == e || host.ends_with(&format!(".{e}"))
+            }
+        })
 }
 
 /// A link value as written in the page, resolved against `base`; None for scripts, mail, anchors.
 fn resolve(base: &Url, val: &str) -> Option<Url> {
     let val = val.trim().replace("&amp;", "&");
     let lv = val.to_ascii_lowercase();
-    if val.is_empty() || ["javascript:", "mailto:", "data:", "#", "tel:"].iter().any(|p| lv.starts_with(p)) {
+    if val.is_empty()
+        || ["javascript:", "mailto:", "data:", "#", "tel:"]
+            .iter()
+            .any(|p| lv.starts_with(p))
+    {
         return None;
     }
     let mut u = base.join(&val).ok()?;
@@ -301,7 +390,9 @@ fn attr_values<'a>(html: &'a str, lower: &str, attr: &str) -> Vec<(&'a str, usiz
         let v = from + i + attr.len();
         from = v;
         // a whole attribute name only: "src=" must not match inside "data-src=" unless asked for
-        if lower[..v - attr.len()].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if lower[..v - attr.len()]
+            .ends_with(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             continue;
         }
         let rest = &html[v..];
@@ -312,7 +403,9 @@ fn attr_values<'a>(html: &'a str, lower: &str, attr: &str) -> Vec<(&'a str, usiz
                 }
             }
             _ => {
-                let e = rest.find(|c: char| c.is_whitespace() || c == '>').unwrap_or(rest.len());
+                let e = rest
+                    .find(|c: char| c.is_whitespace() || c == '>')
+                    .unwrap_or(rest.len());
                 out.push((&rest[..e], v + e));
             }
         }
@@ -358,7 +451,15 @@ fn script_links(code: &str, js: bool) -> Vec<String> {
         k += 1;
         let l = s.to_ascii_lowercase();
         let abs = l.starts_with("http://") || l.starts_with("https://") || l.starts_with("//");
-        let file = !s.contains(char::is_whitespace) && !s.contains(['<', '>', '{', '}', '(', ')', ',']) && s.rsplit('/').next().is_some_and(|n| n.rsplit_once('.').is_some_and(|(a, e)| !a.is_empty() && (1..=5).contains(&e.len()) && e.bytes().all(|c| c.is_ascii_alphanumeric())));
+        let file = !s.contains(char::is_whitespace)
+            && !s.contains(['<', '>', '{', '}', '(', ')', ','])
+            && s.rsplit('/').next().is_some_and(|n| {
+                n.rsplit_once('.').is_some_and(|(a, e)| {
+                    !a.is_empty()
+                        && (1..=5).contains(&e.len())
+                        && e.bytes().all(|c| c.is_ascii_alphanumeric())
+                })
+            });
         if (abs && !s.contains(char::is_whitespace)) || (js && file) {
             out.push(s);
         }
@@ -374,8 +475,16 @@ pub fn links(base: &Url, html: &str, js: bool, adv: bool) -> Vec<(Url, String)> 
     let mut out = vec![];
     let text_after = |end: usize| -> String {
         let after = &html[end.min(html.len())..];
-        let t = after.find('>').and_then(|g| after[g + 1..].split('<').next()).unwrap_or("");
-        t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect()
+        let t = after
+            .find('>')
+            .and_then(|g| after[g + 1..].split('<').next())
+            .unwrap_or("");
+        t.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(120)
+            .collect()
     };
     let mut attrs = vec!["href=", "src="];
     if adv {
@@ -390,7 +499,11 @@ pub fn links(base: &Url, html: &str, js: bool, adv: bool) -> Vec<(Url, String)> 
     }
     if adv {
         for (val, _) in attr_values(html, &lower, "srcset=") {
-            out.extend(val.split(',').filter_map(|c| resolve(base, c.split_whitespace().next().unwrap_or(""))).map(|u| (u, String::new())));
+            out.extend(
+                val.split(',')
+                    .filter_map(|c| resolve(base, c.split_whitespace().next().unwrap_or("")))
+                    .map(|u| (u, String::new())),
+            );
         }
         let mut from = 0;
         while let Some(i) = lower[from..].find("url(") {
@@ -404,9 +517,15 @@ pub fn links(base: &Url, html: &str, js: bool, adv: bool) -> Vec<(Url, String)> 
         }
         // <meta http-equiv="refresh" content="5; url=next.html">
         for (val, _) in attr_values(html, &lower, "content=") {
-            let at = val.to_ascii_lowercase().find("url=").filter(|_| val.trim_start().starts_with(|c: char| c.is_ascii_digit()));
+            let at = val
+                .to_ascii_lowercase()
+                .find("url=")
+                .filter(|_| val.trim_start().starts_with(|c: char| c.is_ascii_digit()));
             if let Some(a) = at {
-                out.extend(resolve(base, val[a + 4..].trim_matches(['"', '\'', ' '])).map(|u| (u, String::new())));
+                out.extend(
+                    resolve(base, val[a + 4..].trim_matches(['"', '\'', ' ']))
+                        .map(|u| (u, String::new())),
+                );
             }
         }
     }
@@ -417,35 +536,56 @@ pub fn links(base: &Url, html: &str, js: bool, adv: bool) -> Vec<(Url, String)> 
         let s = from + i;
         let Some(g) = lower[s..].find('>') else { break };
         let body = s + g + 1;
-        let end = lower[body..].find("</script").map_or(html.len(), |e| body + e);
+        let end = lower[body..]
+            .find("</script")
+            .map_or(html.len(), |e| body + e);
         code.push_str(&html[body..end]);
         code.push('\n');
         from = end;
     }
-    for ev in ["onclick=", "onload=", "onmouseover=", "onchange=", "onsubmit="] {
+    for ev in [
+        "onclick=",
+        "onload=",
+        "onmouseover=",
+        "onchange=",
+        "onsubmit=",
+    ] {
         for (val, _) in attr_values(html, &lower, ev) {
             code.push_str(val);
             code.push('\n');
         }
     }
-    out.extend(script_links(&code, js).iter().filter_map(|s| resolve(base, s)).map(|u| (u, String::new())));
+    out.extend(
+        script_links(&code, js)
+            .iter()
+            .filter_map(|s| resolve(base, s))
+            .map(|u| (u, String::new())),
+    );
     out
 }
 
 /// Addresses opened in popup windows: the first string argument of each `window.open(` / `open(` call.
 pub fn popup_links(base: &Url, html: &str) -> Vec<Url> {
     let lower = html.to_ascii_lowercase();
-    lower.match_indices("open(").filter(|(i, _)| !lower[..*i].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')).filter_map(|(i, _)| {
-        let rest = html[i + 5..].trim_start();
-        let q = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-        let end = rest[1..].find(q)?;
-        resolve(base, &rest[1..end + 1])
-    }).collect()
+    lower
+        .match_indices("open(")
+        .filter(|(i, _)| !lower[..*i].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        .filter_map(|(i, _)| {
+            let rest = html[i + 5..].trim_start();
+            let q = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+            let end = rest[1..].find(q)?;
+            resolve(base, &rest[1..end + 1])
+        })
+        .collect()
 }
 
 fn main_domain(host: &str) -> String {
     let parts: Vec<&str> = host.rsplitn(3, '.').collect();
-    if parts.len() >= 2 { format!("{}.{}", parts[1], parts[0]) } else { host.into() }
+    if parts.len() >= 2 {
+        format!("{}.{}", parts[1], parts[0])
+    } else {
+        host.into()
+    }
 }
 
 /// `host` is `site` or one of its subdomains, or both share the main domain.
@@ -454,18 +594,40 @@ pub fn same_domain(host: &str, site: &str) -> bool {
 }
 
 fn is_page(u: &Url) -> bool {
-    let last = u.path_segments().and_then(|mut s| s.next_back()).unwrap_or("");
-    let ext = last.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let last = u
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .unwrap_or("");
+    let ext = last
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     PAGE_EXTS.contains(&ext.as_str())
 }
 
 /// The file name an explored page is saved under: "index.html" for a folder, ".html" added when the
 /// name doesn't end in .htm/.html (so it opens in a browser offline).
 pub fn page_name(u: &Url) -> String {
-    let last = u.path_segments().and_then(|mut s| s.next_back()).unwrap_or("");
-    let name = if last.is_empty() { "index.html".to_string() } else { crate::engine::names::sanitize(&percent_encoding::percent_decode_str(last).decode_utf8_lossy()) };
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-    if ["htm", "html"].contains(&ext.as_str()) { name } else { format!("{name}.html") }
+    let last = u
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .unwrap_or("");
+    let name = if last.is_empty() {
+        "index.html".to_string()
+    } else {
+        crate::engine::names::sanitize(
+            &percent_encoding::percent_decode_str(last).decode_utf8_lossy(),
+        )
+    };
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ["htm", "html"].contains(&ext.as_str()) {
+        name
+    } else {
+        format!("{name}.html")
+    }
 }
 
 /// What the explorers share: pages to explore (with their link levels), what was seen, files found.
@@ -498,26 +660,55 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
         h == host || (opts.main_domain && (h == domain || h.ends_with(&format!(".{domain}"))))
     };
     let dir = start.path()[..=start.path().rfind('/').unwrap_or(0)].to_string();
-    let work = Mutex::new(Work { queue: VecDeque::from([(start.clone(), 0, 0)]), busy: 0, seen: HashSet::from([start.to_string()]), files: HashSet::new(), names: HashSet::new() });
+    let work = Mutex::new(Work {
+        queue: VecDeque::from([(start.clone(), 0, 0)]),
+        busy: 0,
+        seen: HashSet::from([start.to_string()]),
+        files: HashSet::new(),
+        names: HashSet::new(),
+    });
     let wake = std::sync::Condvar::new();
     let req = |m: &str, u: &Url| {
         let r = agent.request(m, u.as_str());
-        if opts.cookies.is_empty() { r } else { r.set("Cookie", &opts.cookies) }
+        if opts.cookies.is_empty() {
+            r
+        } else {
+            r.set("Cookie", &opts.cookies)
+        }
     };
     // one file found: filters, size, duplicates (`work` must not be locked by the caller)
-    let take = |l: &Url, name: String, text: String, page: &str, size: Option<u64>| -> Option<Found> {
-        let wanted = !mask_match(&opts.exclude, &name)
-            && (!opts.files_same_site || same_site(l))
-            && (!opts.files_in_on || in_paths(&opts.files_in, l))
-            && !(opts.files_not_on && in_paths(&opts.files_not, l));
-        if !wanted || !work.lock().unwrap().files.insert(l.to_string()) {
-            return None;
-        }
-        let size = size.or_else(|| if opts.min_on || opts.max_on { req("HEAD", l).call().ok().and_then(|r| r.header("Content-Length")?.parse().ok()) } else { None });
-        // duplicates stay visible with relative subfolders: each copy has its own folder
-        let dup = opts.hide_dups && !opts.subfolders && !work.lock().unwrap().names.insert(name.to_ascii_lowercase());
-        (opts.size_ok(size) && !dup).then(|| Found { url: l.to_string(), name: crate::engine::names::sanitize(&name), text, checked: true, page: page.to_string(), size })
-    };
+    let take =
+        |l: &Url, name: String, text: String, page: &str, size: Option<u64>| -> Option<Found> {
+            let wanted = !mask_match(&opts.exclude, &name)
+                && (!opts.files_same_site || same_site(l))
+                && (!opts.files_in_on || in_paths(&opts.files_in, l))
+                && !(opts.files_not_on && in_paths(&opts.files_not, l));
+            if !wanted || !work.lock().unwrap().files.insert(l.to_string()) {
+                return None;
+            }
+            let size = size.or_else(|| {
+                if opts.min_on || opts.max_on {
+                    req("HEAD", l)
+                        .call()
+                        .ok()
+                        .and_then(|r| r.header("Content-Length")?.parse().ok())
+                } else {
+                    None
+                }
+            });
+            // duplicates stay visible with relative subfolders: each copy has its own folder
+            let dup = opts.hide_dups
+                && !opts.subfolders
+                && !work.lock().unwrap().names.insert(name.to_ascii_lowercase());
+            (opts.size_ok(size) && !dup).then(|| Found {
+                url: l.to_string(),
+                name: crate::engine::names::sanitize(&name),
+                text,
+                checked: true,
+                page: page.to_string(),
+                size,
+            })
+        };
     let explore = || loop {
         let next = {
             let mut w = work.lock().unwrap();
@@ -545,7 +736,11 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
             Ok(resp) => {
                 let base = Url::parse(resp.get_url()).unwrap_or(u.clone());
                 let len = resp.header("Content-Length").and_then(|v| v.parse().ok());
-                if !resp.header("Content-Type").unwrap_or("text/html").contains("html") {
+                if !resp
+                    .header("Content-Type")
+                    .unwrap_or("text/html")
+                    .contains("html")
+                {
                     // a "page" address that turned out to be a file (download.php?id=...)
                     let name = crate::engine::names::url_name(u.as_str());
                     if mask_match(&opts.masks, &name) {
@@ -553,7 +748,12 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
                     }
                 } else {
                     let mut body = vec![];
-                    if resp.into_reader().take(MAX_PAGE_BYTES).read_to_end(&mut body).is_ok() {
+                    if resp
+                        .into_reader()
+                        .take(MAX_PAGE_BYTES)
+                        .read_to_end(&mut body)
+                        .is_ok()
+                    {
                         let html = String::from_utf8_lossy(&body);
                         // the page itself, when the filters ask for web pages ("The whole web site", offline)
                         let pn = page_name(&base);
@@ -562,7 +762,11 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
                         }
                         let mut all = links(&base, &html, opts.js, t.adv);
                         if opts.popups {
-                            all.extend(popup_links(&base, &html).into_iter().map(|u| (u, String::new())));
+                            all.extend(
+                                popup_links(&base, &html)
+                                    .into_iter()
+                                    .map(|u| (u, String::new())),
+                            );
                         }
                         c.state.lock().unwrap().explored += all.len();
                         for (l, text) in all {
@@ -574,13 +778,22 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
                             if !is_page(&l) || !work.lock().unwrap().seen.insert(l.to_string()) {
                                 continue;
                             }
-                            let at = |list: &str| in_paths(list, &l) || mask_match(list, l.as_str());
-                            if (opts.logout_on && at(&opts.logout)) || (opts.explore_in_on && !in_paths(&opts.explore_in, &l)) || (opts.explore_not_on && in_paths(&opts.explore_not, &l)) {
+                            let at =
+                                |list: &str| in_paths(list, &l) || mask_match(list, l.as_str());
+                            if (opts.logout_on && at(&opts.logout))
+                                || (opts.explore_in_on && !in_paths(&opts.explore_in, &l))
+                                || (opts.explore_not_on && in_paths(&opts.explore_not, &l))
+                            {
                                 continue;
                             }
                             let same = same_site(&l);
                             let (nd, nod) = if same { (d + 1, od) } else { (d, od + 1) };
-                            let ok = if same { (opts.whole_site || nd <= opts.levels) && (!opts.no_parent || l.path().starts_with(&dir)) } else { nod <= opts.levels_other };
+                            let ok = if same {
+                                (opts.whole_site || nd <= opts.levels)
+                                    && (!opts.no_parent || l.path().starts_with(&dir))
+                            } else {
+                                nod <= opts.levels_other
+                            };
                             if ok {
                                 work.lock().unwrap().queue.push_back((l, nd, nod));
                                 wake.notify_one();
@@ -592,7 +805,9 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
             }
             Err(ureq::Error::Status(401, r)) if u == start => {
                 let h = r.header("WWW-Authenticate").unwrap_or("");
-                let realm = h.split_once("realm=").map_or("", |(_, v)| v.trim_start_matches('"').split('"').next().unwrap_or(""));
+                let realm = h.split_once("realm=").map_or("", |(_, v)| {
+                    v.trim_start_matches('"').split('"').next().unwrap_or("")
+                });
                 c.state.lock().unwrap().need_login = Some(realm.to_string());
                 c.stop.store(true, Relaxed);
             }
@@ -617,7 +832,15 @@ pub fn run(opts: Opts, agent: crate::transport::Agent, c: Arc<Crawl>, t: Tuning)
     });
     let stopped = c.stop.load(Relaxed) && c.state.lock().unwrap().need_login.is_none();
     set(&|s| {
-        s.status = if stopped { "Stopped".into() } else { format!("Done. {} web pages processed, {} files found", s.pages, s.files.len()) };
+        s.status = if stopped {
+            "Stopped".into()
+        } else {
+            format!(
+                "Done. {} web pages processed, {} files found",
+                s.pages,
+                s.files.len()
+            )
+        };
         s.done = true;
     });
 }
@@ -633,37 +856,84 @@ mod tests {
         let u = |s: &str| Url::parse(s).unwrap();
         assert!(in_paths("example.com", &u("https://cdn.example.com/a.zip")));
         assert!(!in_paths("example.com", &u("https://example.org/a.zip")));
-        assert!(in_paths("other.net; example.com/docs/", &u("http://example.com/docs/x/y.pdf")));
-        assert!(!in_paths("example.com/docs/", &u("http://example.com/img/y.pdf")));
-        assert!(in_paths("*/logout*", &u("https://example.com/user/logout.php")));
+        assert!(in_paths(
+            "other.net; example.com/docs/",
+            &u("http://example.com/docs/x/y.pdf")
+        ));
+        assert!(!in_paths(
+            "example.com/docs/",
+            &u("http://example.com/img/y.pdf")
+        ));
+        assert!(in_paths(
+            "*/logout*",
+            &u("https://example.com/user/logout.php")
+        ));
     }
 
     #[test]
     fn script_and_advanced_links() {
         let base = Url::parse("http://h.com/d/p.html").unwrap();
-        let urls = |html: &str, js, adv| links(&base, html, js, adv).into_iter().map(|(u, _)| u.to_string()).collect::<Vec<_>>();
+        let urls = |html: &str, js, adv| {
+            links(&base, html, js, adv)
+                .into_iter()
+                .map(|(u, _)| u.to_string())
+                .collect::<Vec<_>>()
+        };
         let page = r#"<script>var a = "https://cdn.com/x.zip"; var b = 'files/' + "y.zip"; var t = "text/javascript";</script><button onclick="go('z.pdf')">"#;
         assert_eq!(urls(page, false, false), ["https://cdn.com/x.zip"]);
-        assert_eq!(urls(page, true, false), ["https://cdn.com/x.zip", "http://h.com/d/files/y.zip", "http://h.com/d/z.pdf"]);
+        assert_eq!(
+            urls(page, true, false),
+            [
+                "https://cdn.com/x.zip",
+                "http://h.com/d/files/y.zip",
+                "http://h.com/d/z.pdf"
+            ]
+        );
         let adv = r#"<img data-src="lazy.jpg" srcset="s.jpg 1x, /l.jpg 2x"><div style="background:url('bg.png')"></div><meta http-equiv="refresh" content="3; url=next.html"><meta property="og:url" content="https://h.com/?url=x">"#;
         assert_eq!(urls(adv, false, false), Vec::<String>::new());
-        assert_eq!(urls(adv, false, true), ["http://h.com/d/lazy.jpg", "http://h.com/d/s.jpg", "http://h.com/l.jpg", "http://h.com/d/bg.png", "http://h.com/d/next.html"]);
-        assert_eq!(page_name(&Url::parse("http://h.com/a/").unwrap()), "index.html");
+        assert_eq!(
+            urls(adv, false, true),
+            [
+                "http://h.com/d/lazy.jpg",
+                "http://h.com/d/s.jpg",
+                "http://h.com/l.jpg",
+                "http://h.com/d/bg.png",
+                "http://h.com/d/next.html"
+            ]
+        );
+        assert_eq!(
+            page_name(&Url::parse("http://h.com/a/").unwrap()),
+            "index.html"
+        );
         let pop: Vec<String> = popup_links(&base, r#"<a onclick="window.open('win.html','w')">x</a><script>reopen("no.html"); open("/top.php")</script>"#).iter().map(Url::to_string).collect();
         assert_eq!(pop, ["http://h.com/d/win.html", "http://h.com/top.php"]);
-        assert_eq!(page_name(&Url::parse("http://h.com/a/view.php?id=1").unwrap()), "view.php.html");
+        assert_eq!(
+            page_name(&Url::parse("http://h.com/a/view.php?id=1").unwrap()),
+            "view.php.html"
+        );
     }
 
     #[test]
     fn templates() {
         let m = |f: &str| format!("<{f}>");
-        let mut o = Opts { exclude: "*.x".into(), ..Opts::default() };
+        let mut o = Opts {
+            exclude: "*.x".into(),
+            ..Opts::default()
+        };
         assert_eq!(builtin_template(0, &mut o, &m), None);
         assert_eq!(o.exclude, "*.x");
         assert_eq!(builtin_template(2, &mut o, &m), Some((1, Some("Music"))));
-        assert!(o.masks == "<Audio Files>" && !o.whole_site && o.levels == 1 && o.exclude.is_empty());
+        assert!(
+            o.masks == "<Audio Files>" && !o.whole_site && o.levels == 1 && o.exclude.is_empty()
+        );
         assert_eq!(builtin_template(5, &mut o, &m), Some((2, None)));
-        assert!(o.convert && o.subfolders && !o.whole_site && o.levels == 0 && o.masks == "<Web content>");
+        assert!(
+            o.convert
+                && o.subfolders
+                && !o.whole_site
+                && o.levels == 0
+                && o.masks == "<Web content>"
+        );
         assert_eq!(builtin_template(6, &mut o, &m), Some((2, None)));
         assert!(o.whole_site && o.masks == "*.*" && o.convert);
         assert_eq!(TEMPLATES.len(), 7);
@@ -680,12 +950,37 @@ mod tests {
             _ => None,
         };
         let html = r##"<img src="../img/a%20b.png"><a href='p2.html#x'>2</a><a href=/z.zip>z</a><a href="#top">t</a>"##;
-        let out = localize(html, &base, Path::new(r"C:\s\h.com\docs\index.html"), &local);
-        assert_eq!(out, r##"<img src="../img/a%20b.png"><a href='p2.html#x'>2</a><a href=http://h.com/z.zip>z</a><a href="#top">t</a>"##);
-        assert_eq!(site_dir(&Url::parse("http://h.com/a/b%20c/f.zip").unwrap()), PathBuf::from(r"h.com\a\b c"));
-        assert_eq!(numbered("index.html", &|n| n == "index_3.html"), "index_3.html");
-        let o = Opts { min_on: true, max_on: true, size: [1, 10], units: [0, 1], ..Opts::default() };
-        assert!(o.size_ok(Some(2048)) && o.size_ok(None) && !o.size_ok(Some(100)) && !o.size_ok(Some(11 << 20)));
+        let out = localize(
+            html,
+            &base,
+            Path::new(r"C:\s\h.com\docs\index.html"),
+            &local,
+        );
+        assert_eq!(
+            out,
+            r##"<img src="../img/a%20b.png"><a href='p2.html#x'>2</a><a href=http://h.com/z.zip>z</a><a href="#top">t</a>"##
+        );
+        assert_eq!(
+            site_dir(&Url::parse("http://h.com/a/b%20c/f.zip").unwrap()),
+            PathBuf::from(r"h.com\a\b c")
+        );
+        assert_eq!(
+            numbered("index.html", &|n| n == "index_3.html"),
+            "index_3.html"
+        );
+        let o = Opts {
+            min_on: true,
+            max_on: true,
+            size: [1, 10],
+            units: [0, 1],
+            ..Opts::default()
+        };
+        assert!(
+            o.size_ok(Some(2048))
+                && o.size_ok(None)
+                && !o.size_ok(Some(100))
+                && !o.size_ok(Some(11 << 20))
+        );
     }
 
     #[test]
@@ -705,9 +1000,21 @@ mod tests {
     #[test]
     fn extracts_links() {
         let base = Url::parse("http://h.com/dir/page.html").unwrap();
-        let l = links(&base, r##"<a href="f.zip">The File</a> <A HREF='/x/'>x</A> <img src=//cdn.com/i.png> <a href="javascript:void(0)">j</a> <a href="#top">t</a>"##, false, false);
+        let l = links(
+            &base,
+            r##"<a href="f.zip">The File</a> <A HREF='/x/'>x</A> <img src=//cdn.com/i.png> <a href="javascript:void(0)">j</a> <a href="#top">t</a>"##,
+            false,
+            false,
+        );
         let urls: Vec<String> = l.iter().map(|(u, _)| u.to_string()).collect();
-        assert_eq!(urls, ["http://h.com/dir/f.zip", "http://h.com/x/", "http://cdn.com/i.png"]);
+        assert_eq!(
+            urls,
+            [
+                "http://h.com/dir/f.zip",
+                "http://h.com/x/",
+                "http://cdn.com/i.png"
+            ]
+        );
         assert_eq!(l[0].1, "The File");
     }
 
@@ -722,7 +1029,9 @@ mod tests {
                 r.read_line(&mut line).unwrap();
                 while r.read_line(&mut String::new()).is_ok_and(|n| n > 2) {}
                 let body = match line.split(' ').nth(1).unwrap() {
-                    "/" => r#"<a href="a.zip">A</a><a href="sub/">next</a><a href="page.txt">t</a>"#,
+                    "/" => {
+                        r#"<a href="a.zip">A</a><a href="sub/">next</a><a href="page.txt">t</a>"#
+                    }
                     "/sub/" => r#"<a href="b.zip">B</a><a href="deeper.html">d</a>"#,
                     "/sub/deeper.html" => r#"<a href="c.zip">C</a>"#,
                     _ => "",
@@ -732,20 +1041,63 @@ mod tests {
         });
         let crawl = |levels| {
             let c = Arc::new(Crawl::default());
-            let opts = Opts { start: format!("{base}/"), levels, masks: "*.zip".into(), ..Opts::default() };
-            run(opts, crate::transport::client::agent("", ""), c.clone(), Tuning::default());
+            let opts = Opts {
+                start: format!("{base}/"),
+                levels,
+                masks: "*.zip".into(),
+                ..Opts::default()
+            };
+            run(
+                opts,
+                crate::transport::client::agent("", ""),
+                c.clone(),
+                Tuning::default(),
+            );
             let s = c.state.lock().unwrap();
-            (s.pages, s.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>())
+            (
+                s.pages,
+                s.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+            )
         };
         assert_eq!(crawl(0), (1, vec!["a.zip".to_string()]));
         assert_eq!(crawl(1), (2, vec!["a.zip".to_string(), "b.zip".into()]));
         assert_eq!(crawl(5).1, ["a.zip", "b.zip", "c.zip"]);
         // four explorers at once; web pages wanted too (the offline templates save them)
         let c = Arc::new(Crawl::default());
-        let opts = Opts { start: format!("{base}/"), levels: 5, masks: "*.zip,*.html".into(), ..Opts::default() };
-        run(opts, crate::transport::client::agent("", ""), c.clone(), Tuning { explore: 4, adv: true });
-        let mut names: Vec<String> = c.state.lock().unwrap().files.iter().map(|f| f.name.clone()).collect();
+        let opts = Opts {
+            start: format!("{base}/"),
+            levels: 5,
+            masks: "*.zip,*.html".into(),
+            ..Opts::default()
+        };
+        run(
+            opts,
+            crate::transport::client::agent("", ""),
+            c.clone(),
+            Tuning {
+                explore: 4,
+                adv: true,
+            },
+        );
+        let mut names: Vec<String> = c
+            .state
+            .lock()
+            .unwrap()
+            .files
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
         names.sort();
-        assert_eq!(names, ["a.zip", "b.zip", "c.zip", "deeper.html", "index.html", "index.html"]);
+        assert_eq!(
+            names,
+            [
+                "a.zip",
+                "b.zip",
+                "c.zip",
+                "deeper.html",
+                "index.html",
+                "index.html"
+            ]
+        );
     }
 }

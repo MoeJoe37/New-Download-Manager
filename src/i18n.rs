@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 /// (exact key -> text, key without the product name -> text); see `key`.
-static TABLE: RwLock<Option<(HashMap<String, String>, HashMap<String, String>)>> = RwLock::new(None);
+static TABLE: RwLock<Option<(HashMap<String, String>, HashMap<String, String>)>> =
+    RwLock::new(None);
 static CURRENT: RwLock<String> = RwLock::new(String::new());
 
 /// The loaded language's file stem ("" = English).
@@ -31,27 +32,49 @@ pub fn dir() -> Option<PathBuf> {
 /// target\release), or in a Mac app's Contents/Resources.
 pub fn beside_exe(name: &str, file: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    exe.ancestors().flat_map(|a| [a.join(name), a.join("Resources").join(name)]).find(|d| d.join(file).exists())
+    exe.ancestors()
+        .flat_map(|a| [a.join(name), a.join("Resources").join(name)])
+        .find(|d| d.join(file).exists())
 }
 
 /// (file stem, display name from its `lang=0x.. Name` line), sorted by name; English (ndm_en) is built in.
 pub fn list() -> Vec<(String, String)> {
     let Some(d) = dir() else { return Vec::new() };
-    let mut v: Vec<(String, String)> = std::fs::read_dir(d).into_iter().flatten().flatten().filter_map(|e| {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let stem = name.strip_suffix(".lng").filter(|s| s.starts_with("ndm_") && *s != "ndm_en")?.to_string();
-        let (_, header) = read(&e.path())?;
-        let name = header.split_once(' ').map_or(header.clone(), |h| h.1.trim().to_string());
-        Some((stem.clone(), if rtl_stem(&stem) { rtl(&name) } else { name }))
-    }).collect();
+    let mut v: Vec<(String, String)> = std::fs::read_dir(d)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stem = name
+                .strip_suffix(".lng")
+                .filter(|s| s.starts_with("ndm_") && *s != "ndm_en")?
+                .to_string();
+            let (_, header) = read(&e.path())?;
+            let name = header
+                .split_once(' ')
+                .map_or(header.clone(), |h| h.1.trim().to_string());
+            Some((
+                stem.clone(),
+                if rtl_stem(&stem) { rtl(&name) } else { name },
+            ))
+        })
+        .collect();
     v.sort_by_cached_key(|item| item.1.to_lowercase());
     v
 }
 
 /// Use `stem` (e.g. "ndm_de"); "" = English.
 pub fn load(stem: &str) {
-    let table = (!stem.is_empty()).then(|| dir().and_then(|d| read(&d.join(format!("{stem}.lng"))))).flatten().map(|(m, _)| own(m));
-    *CURRENT.write().unwrap() = if table.is_some() { stem.to_string() } else { String::new() };
+    let table = (!stem.is_empty())
+        .then(|| dir().and_then(|d| read(&d.join(format!("{stem}.lng")))))
+        .flatten()
+        .map(|(m, _)| own(m));
+    *CURRENT.write().unwrap() = if table.is_some() {
+        stem.to_string()
+    } else {
+        String::new()
+    };
     *TABLE.write().unwrap() = table;
 }
 
@@ -72,7 +95,13 @@ fn lookup(s: &str) -> Option<String> {
     let (m, loose) = t.as_ref()?;
     let k = key(s);
     // without the product name only for longer texts: "Download with NDM" must not become "Download"
-    m.get(&k).or_else(|| Some(unbranded(&k)).filter(|u| u.split(' ').count() >= 3).and_then(|u| loose.get(&u))).cloned()
+    m.get(&k)
+        .or_else(|| {
+            Some(unbranded(&k))
+                .filter(|u| u.split(' ').count() >= 3)
+                .and_then(|u| loose.get(&u))
+        })
+        .cloned()
 }
 
 /// The translation of an English UI string, or the string itself (laid out for display when it is text
@@ -102,7 +131,11 @@ pub fn tr_os(s: &str) -> String {
 /// The punctuation of the English call site wins ("Options" vs a file's "&Options..."); the same marks
 /// spaced the language's way stay as the translation has them (French "Port :").
 fn punct(s: &str, t: &str) -> String {
-    let end = |x: &str| x.len() - x.trim_end_matches(['.', ':', ' ', '\u{2026}', '\u{ff1a}']).len();
+    let end = |x: &str| {
+        x.len()
+            - x.trim_end_matches(['.', ':', ' ', '\u{2026}', '\u{ff1a}'])
+                .len()
+    };
     let (se, te) = (&s[s.len() - end(s)..], &t[t.len() - end(t)..]);
     if se.replace(' ', "") == te.replace(' ', "") {
         return format!("{}{}", t.trim_end(), &se[se.trim_end().len()..]);
@@ -112,7 +145,10 @@ fn punct(s: &str, t: &str) -> String {
 
 /// `trf` in reading order, for a line put together from several pieces (see `line`).
 pub fn trf_os(en: &str, args: &[&dyn std::fmt::Display]) -> String {
-    fill(&lookup(en).map_or_else(|| en.to_string(), |t| punct(en, &t)), args)
+    fill(
+        &lookup(en).map_or_else(|| en.to_string(), |t| punct(en, &t)),
+        args,
+    )
 }
 
 /// A line put together in reading order (pieces from `tr_os` / `trf_os`, numbers, names) laid out for egui:
@@ -125,7 +161,11 @@ pub fn line(s: &str) -> String {
 /// A name, path or address in a right-to-left line: kept left to right as a whole (a bidi isolate), so
 /// "/home/x" doesn't come out as "home/x/".
 pub fn ltr(s: &str) -> String {
-    if is_rtl() { format!("\u{2066}{s}\u{2069}") } else { s.to_string() }
+    if is_rtl() {
+        format!("\u{2066}{s}\u{2069}")
+    } else {
+        s.to_string()
+    }
 }
 
 /// Whether `s` is right-to-left text still in reading order: Hebrew, or Arabic letters not yet joined
@@ -142,7 +182,11 @@ pub fn wrap_rtl(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> String
     for para in text.replace('\r', "").split('\n') {
         let mut cur = String::new();
         for word in para.split(' ') {
-            let next = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+            let next = if cur.is_empty() {
+                word.to_string()
+            } else {
+                format!("{cur} {word}")
+            };
             if !cur.is_empty() && measure(&rtl(&next)) > width {
                 lines.push(rtl(&cur));
                 cur = word.to_string();
@@ -177,7 +221,13 @@ const MESSAGES: [&str; 13] = [
 /// then filled with the same values), in reading order: for a line put together from pieces (`line`).
 pub fn tr_msg_os(s: &str) -> String {
     match message(s) {
-        Some((t, args)) => trf_os(t, &args.iter().map(|a| a as &dyn std::fmt::Display).collect::<Vec<_>>()),
+        Some((t, args)) => trf_os(
+            t,
+            &args
+                .iter()
+                .map(|a| a as &dyn std::fmt::Display)
+                .collect::<Vec<_>>(),
+        ),
         None => tr_os(s),
     }
 }
@@ -190,7 +240,11 @@ fn message(s: &str) -> Option<(&'static str, Vec<String>)> {
         let mut args = Vec::new();
         for (k, lit) in parts.iter().enumerate().skip(1) {
             // the last literal ends the text; the others are the next place they occur
-            let at = if k == parts.len() - 1 { rest.strip_suffix(lit).map(str::len)? } else { rest.find(lit).filter(|_| !lit.is_empty())? };
+            let at = if k == parts.len() - 1 {
+                rest.strip_suffix(lit).map(str::len)?
+            } else {
+                rest.find(lit).filter(|_| !lit.is_empty())?
+            };
             args.push(rest[..at].to_string());
             rest = &rest[at + lit.len()..];
         }
@@ -207,7 +261,11 @@ fn visual(t: &str) -> String {
     if !unshaped(t) {
         return t.to_string();
     }
-    if rtl_stem(&current()) { rtl(t) } else { reorder(t, unicode_bidi::Level::ltr()) }
+    if rtl_stem(&current()) {
+        rtl(t)
+    } else {
+        reorder(t, unicode_bidi::Level::ltr())
+    }
 }
 
 /// A file name, folder, address or description as it is shown (the download list, File Info, Properties):
@@ -240,7 +298,12 @@ fn reorder(t: &str, base: unicode_bidi::Level) -> String {
                 }
             }
             // the isolates and marks have done their work; egui would draw them as boxes
-            out.retain(|c| !matches!(c, '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}' | '\u{61c}'));
+            out.retain(|c| {
+                !matches!(
+                    c,
+                    '\u{2066}'..='\u{2069}' | '\u{200e}' | '\u{200f}' | '\u{61c}'
+                )
+            });
             out
         })
         .collect::<Vec<_>>()
@@ -292,7 +355,9 @@ pub fn tips() -> Vec<String> {
 /// the template, then fill its %s / %d / %ld / %I64d slots in order.
 pub fn trf(en: &str, args: &[&dyn std::fmt::Display]) -> String {
     // fill the slots in reading order, then lay the whole line out (right-to-left languages)
-    let Some(t) = lookup(en).map(|t| punct(en, &t)) else { return fill(en, args) };
+    let Some(t) = lookup(en).map(|t| punct(en, &t)) else {
+        return fill(en, args);
+    };
     visual(&fill(&t, args))
 }
 
@@ -324,13 +389,26 @@ fn fill(t: &str, args: &[&dyn std::fmt::Display]) -> String {
 /// Lookup key: no '&' accelerators or "\tCtrl+N" shortcuts, the product name as "ndm", no trailing ':' /
 /// '...', lower case, single spaces.
 fn key(s: &str) -> String {
-    let s = s.split('\t').next().unwrap_or("").replace('&', "").replace("New Download Manager", "NDM");
-    s.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches(['.', ':', ' ', '!']).to_lowercase()
+    let s = s
+        .split('\t')
+        .next()
+        .unwrap_or("")
+        .replace('&', "")
+        .replace("New Download Manager", "NDM");
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(['.', ':', ' ', '!'])
+        .to_lowercase()
 }
 
 /// A key with the product name left out ("customize ndm menu items" = "customize menu items").
 fn unbranded(k: &str) -> String {
-    k.replace("with ndm", "").split_whitespace().filter(|w| !matches!(*w, "ndm" | "ndm's")).collect::<Vec<_>>().join(" ")
+    k.replace("with ndm", "")
+        .split_whitespace()
+        .filter(|w| !matches!(*w, "ndm" | "ndm's"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A language file: ("English" -> text, the `lang=` header). UTF-8, with or without a BOM.
@@ -339,7 +417,11 @@ fn read(path: &Path) -> Option<(HashMap<String, String>, String)> {
     let text = String::from_utf8_lossy(b.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&b)).into_owned();
     let mut lines = text.lines();
     let header = lines.next()?.trim().strip_prefix("lang=")?.to_string();
-    let map = lines.filter(|l| !l.starts_with("//")).filter_map(|l| l.split_once('=')).map(|(k, v)| (k.trim().to_string(), v.trim_end_matches('\r').to_string())).collect();
+    let map = lines
+        .filter(|l| !l.starts_with("//"))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim_end_matches('\r').to_string()))
+        .collect();
     Some((map, header))
 }
 
@@ -349,8 +431,17 @@ mod tests {
 
     #[test]
     fn languages() {
-        let (m, _) = own(HashMap::from([("&Options...".to_string(), "Optionen".to_string()), ("Line one\\nline two".into(), "A\\nB".into())]));
-        assert_eq!((m.get(&key("Options")).map(String::as_str), m.get(&key("Line one\nline two")).map(String::as_str)), (Some("Optionen"), Some("A\nB")));
+        let (m, _) = own(HashMap::from([
+            ("&Options...".to_string(), "Optionen".to_string()),
+            ("Line one\\nline two".into(), "A\\nB".into()),
+        ]));
+        assert_eq!(
+            (
+                m.get(&key("Options")).map(String::as_str),
+                m.get(&key("Line one\nline two")).map(String::as_str)
+            ),
+            (Some("Optionen"), Some("A\nB"))
+        );
         assert!(rtl_stem("ndm_ar") && !rtl_stem("ndm_en") && !rtl_stem(""));
         // display order of "a (b) 7 -> 8": "8 <- 7 (b) a", the arrow and the brackets facing the right way
         let v: Vec<char> = rtl("\u{627} (\u{628}) 7 -> 8").chars().collect();
@@ -359,24 +450,75 @@ mod tests {
         // a path stays in one piece, without the isolate characters around it
         let p: String = rtl("\u{627}: \u{2066}/a/b\u{2069}");
         assert!(p.starts_with("/a/b") && !p.contains('\u{2066}'), "{p:?}");
-        assert!(unshaped("\u{627}\u{628}") && !unshaped(&rtl("\u{627}\u{628}")) && !unshaped("abc"));
+        assert!(
+            unshaped("\u{627}\u{628}") && !unshaped(&rtl("\u{627}\u{628}")) && !unshaped("abc")
+        );
         load("ndm_en");
-        assert_eq!((current(), tr("Options")), ("ndm_en".to_string(), "Options".to_string()), "Languages\\ndm_en.lng loads");
+        assert_eq!(
+            (current(), tr("Options")),
+            ("ndm_en".to_string(), "Options".to_string()),
+            "Languages\\ndm_en.lng loads"
+        );
         assert_eq!(tr("no such string"), "no such string");
         assert_eq!(tips().len(), 11);
         load("");
         assert_eq!(tr("Options"), "Options");
         assert_eq!(key("&Options...\tCtrl+O"), "options");
-        assert_eq!(key("Download with New Download Manager"), key("Download with NDM"));
+        assert_eq!(
+            key("Download with New Download Manager"),
+            key("Download with NDM")
+        );
         assert_eq!(trf("Queue # %ld", &[&3]), "Queue # 3");
-        assert_eq!(message("Done. 4 web pages processed, 17 files found"), Some(("Done. %d web pages processed, %d files found", vec!["4".to_string(), "17".into()])));
-        assert_eq!((message("12 links").map(|m| m.1), message("Exploring"), tr_msg_os("Exploring http://a/")), (Some(vec!["12".to_string()]), None, "Exploring http://a/".to_string()));
-        assert_eq!((punct("Port:", "Port :"), punct("Result: ", "Résultat :"), punct("Options", "Opciones..."), punct("Save To...", "Guardar en")), ("Port :".to_string(), "Résultat : ".into(), "Opciones".into(), "Guardar en...".into()));
+        assert_eq!(
+            message("Done. 4 web pages processed, 17 files found"),
+            Some((
+                "Done. %d web pages processed, %d files found",
+                vec!["4".to_string(), "17".into()]
+            ))
+        );
+        assert_eq!(
+            (
+                message("12 links").map(|m| m.1),
+                message("Exploring"),
+                tr_msg_os("Exploring http://a/")
+            ),
+            (
+                Some(vec!["12".to_string()]),
+                None,
+                "Exploring http://a/".to_string()
+            )
+        );
+        assert_eq!(
+            (
+                punct("Port:", "Port :"),
+                punct("Result: ", "Résultat :"),
+                punct("Options", "Opciones..."),
+                punct("Save To...", "Guardar en")
+            ),
+            (
+                "Port :".to_string(),
+                "Résultat : ".into(),
+                "Opciones".into(),
+                "Guardar en...".into()
+            )
+        );
         // right-to-left lines wrap from the start of the text: the first words on the first line
-        let w = wrap_rtl("\u{627}\u{628} \u{62a}\u{62b} \u{62c}\u{62d}", 5.0, |l| l.chars().count() as f32);
-        assert_eq!(w.lines().map(|l| l.chars().count()).collect::<Vec<_>>(), [5, 2], "{w}");
-        assert!(w.lines().next().unwrap().ends_with(&rtl("\u{627}\u{628}")), "{w}");
-        assert_eq!(trf("Downloaded %s (%I64d Bytes) 100%%", &[&"1 MB", &1048576]), "Downloaded 1 MB (1048576 Bytes) 100%");
+        let w = wrap_rtl("\u{627}\u{628} \u{62a}\u{62b} \u{62c}\u{62d}", 5.0, |l| {
+            l.chars().count() as f32
+        });
+        assert_eq!(
+            w.lines().map(|l| l.chars().count()).collect::<Vec<_>>(),
+            [5, 2],
+            "{w}"
+        );
+        assert!(
+            w.lines().next().unwrap().ends_with(&rtl("\u{627}\u{628}")),
+            "{w}"
+        );
+        assert_eq!(
+            trf("Downloaded %s (%I64d Bytes) 100%%", &[&"1 MB", &1048576]),
+            "Downloaded 1 MB (1048576 Bytes) 100%"
+        );
     }
 
     /// A downloaded file's Arabic or Hebrew name is shown as it is written, in an English window too:
@@ -384,12 +526,27 @@ mod tests {
     #[test]
     fn names_read_as_written_in_a_left_to_right_window() {
         let ltr = |t: &str| reorder(t, unicode_bidi::Level::ltr());
-        let back = |t: &str| ar_reshaper::reshape_line(t).chars().rev().collect::<String>();
-        assert_eq!(shown("report 2024.pdf"), "report 2024.pdf", "Latin names stay as they are");
+        let back = |t: &str| {
+            ar_reshaper::reshape_line(t)
+                .chars()
+                .rev()
+                .collect::<String>()
+        };
+        assert_eq!(
+            shown("report 2024.pdf"),
+            "report 2024.pdf",
+            "Latin names stay as they are"
+        );
         assert_eq!(ltr("فيلم.mp4"), format!("{}.mp4", back("فيلم")));
-        assert_eq!(ltr("Lecture 2 - مقدمة.pdf"), format!("Lecture 2 - {}.pdf", back("مقدمة")));
+        assert_eq!(
+            ltr("Lecture 2 - مقدمة.pdf"),
+            format!("Lecture 2 - {}.pdf", back("مقدمة"))
+        );
         // two Arabic words: the first one on the right
-        assert_eq!(ltr("أغنية جميلة.mp3"), format!("{}.mp3", back("أغنية جميلة")));
+        assert_eq!(
+            ltr("أغنية جميلة.mp3"),
+            format!("{}.mp3", back("أغنية جميلة"))
+        );
         assert_eq!(ltr("שלום.txt"), "םולש.txt");
         // the letters come out joined (presentation forms), not the separate letters
         assert!(!unshaped(&ltr("فيلم.mp4")), "joined forms");

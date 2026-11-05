@@ -1,4 +1,8 @@
-use crate::app::{Align, App, Cat, Color32, Column, Dialog, HashMap, HashSet, Layout, PathBuf, RichText, Sense, Status, TableBuilder, Vec2, Which, core, date, dlu, egui, explore, human, i18n, open_folder_of, open_with, rate, time_left, tr, tr_os};
+use crate::app::{
+    core, date, dlu, egui, explore, human, i18n, open_folder_of, open_with, rate, time_left, tr,
+    tr_os, Align, App, Cat, Color32, Column, Dialog, HashMap, HashSet, Layout, PathBuf, RichText,
+    Sense, Status, TableBuilder, Vec2, Which,
+};
 
 /// List row height: NDM's 19 px at 125%.
 pub(in crate::app) const ROW_H: f32 = 15.2;
@@ -62,39 +66,70 @@ pub(in crate::app) struct Row {
 impl Row {
     fn left(&self) -> Option<u64> {
         let size = self.size?;
-        (self.running && self.speed > 0.0).then(|| (size.saturating_sub(self.done) as f64 / self.speed) as u64)
+        (self.running && self.speed > 0.0)
+            .then(|| (size.saturating_sub(self.done) as f64 / self.speed) as u64)
     }
     pub(in crate::app) fn pct(&self) -> Option<f64> {
         if let Some((_, f)) = &self.post {
             // processing: the same bar starts again for it
             return (*f >= 0.0).then_some(*f as f64 * 100.0);
         }
-        self.size.filter(|s| *s > 0).map(|s| self.done as f64 * 100.0 / s as f64)
+        self.size
+            .filter(|s| *s > 0)
+            .map(|s| self.done as f64 * 100.0 / s as f64)
     }
     pub(in crate::app) fn status_text(&self) -> String {
         if let Some((_, f)) = self.post.as_ref().filter(|_| self.running) {
-            return if *f >= 0.0 { format!("{} {:.0}%", tr_os("Processing"), f * 100.0) } else { tr("Processing...") };
+            return if *f >= 0.0 {
+                format!("{} {:.0}%", tr_os("Processing"), f * 100.0)
+            } else {
+                tr("Processing...")
+            };
         }
         match &self.status {
             Status::Complete => tr("Complete"),
             Status::Error(_) => tr("Error"),
             Status::Connecting => tr("Connecting..."),
             _ if self.done == 0 && !self.running => String::new(),
-            _ => self.pct().map_or_else(|| human(self.done), |p| format!("{p:.2}%")),
+            _ => self
+                .pct()
+                .map_or_else(|| human(self.done), |p| format!("{p:.2}%")),
         }
     }
     pub(in crate::app) fn cell(&self, c: Col) -> String {
         match c {
-            Col::Name => if self.name.is_empty() { self.url.clone() } else { self.name.clone() },
-            Col::Q => if self.queued { "Q".into() } else { String::new() },
+            Col::Name => {
+                if self.name.is_empty() {
+                    self.url.clone()
+                } else {
+                    self.name.clone()
+                }
+            }
+            Col::Q => {
+                if self.queued {
+                    "Q".into()
+                } else {
+                    String::new()
+                }
+            }
             Col::Size => self.size.map(human).unwrap_or_default(),
             Col::Status => self.status_text(),
             Col::Left => self.left().map(time_left).unwrap_or_default(),
-            Col::Rate => if self.running { rate(self.speed) } else { String::new() },
+            Col::Rate => {
+                if self.running {
+                    rate(self.speed)
+                } else {
+                    String::new()
+                }
+            }
             Col::LastTry => date(self.last_try),
             Col::Desc => self.desc.clone(),
             Col::Added => date(self.added),
-            Col::SaveTo => self.path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+            Col::SaveTo => self
+                .path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
             Col::Referer => self.referrer.clone(),
             Col::Parent => self.parent.clone(),
         }
@@ -104,10 +139,24 @@ impl Row {
 /// Does download `r` match the search: each ticked target is compared as a
 /// substring, or whole with flag 2; case-insensitive unless flag 1.
 pub(in crate::app) fn find_hit(flags: u32, needle: &str, r: &Row) -> bool {
-    let up = |t: &str| if flags & 1 != 0 { t.to_string() } else { t.to_uppercase() };
+    let up = |t: &str| {
+        if flags & 1 != 0 {
+            t.to_string()
+        } else {
+            t.to_uppercase()
+        }
+    };
     let n = up(needle);
-    let hit = |t: &str| if flags & 2 != 0 { up(t) == n } else { up(t).contains(&n) };
-    (flags & 4 != 0 && hit(&r.name)) || (flags & 8 != 0 && hit(&r.desc)) || (flags & 0x10 != 0 && [&r.url, &r.parent, &r.referrer].iter().any(|t| hit(t)))
+    let hit = |t: &str| {
+        if flags & 2 != 0 {
+            up(t) == n
+        } else {
+            up(t).contains(&n)
+        }
+    };
+    (flags & 4 != 0 && hit(&r.name))
+        || (flags & 8 != 0 && hit(&r.desc))
+        || (flags & 0x10 != 0 && [&r.url, &r.parent, &r.referrer].iter().any(|t| hit(t)))
 }
 
 impl App {
@@ -131,19 +180,32 @@ impl App {
         }
         let rows = self.rows();
         let from = self.find_pos.min(rows.len());
-        match (from..rows.len()).chain(0..from).find(|&k| find_hit(flags, &needle, &rows[k])) {
+        match (from..rows.len())
+            .chain(0..from)
+            .find(|&k| find_hit(flags, &needle, &rows[k]))
+        {
             Some(k) => {
                 self.sel = HashSet::from([rows[k].id]);
                 self.anchor = Some(rows[k].id);
                 (self.find_pos, self.scroll_to) = (k + 1, Some(k));
             }
-            None => self.open(Dialog::Info { title: "Find file".into(), text: "No such files found".into() }),
+            None => self.open(Dialog::Info {
+                title: "Find file".into(),
+                text: "No such files found".into(),
+            }),
         }
     }
 
     pub(in crate::app) fn rows(&self) -> Vec<Row> {
         let grab_urls: HashSet<String> = match &self.cat {
-            Cat::Grabber(Some(p)) => self.core.settings().grab_projects.iter().filter(|x| x.opts.name == *p).flat_map(|x| x.files.iter().map(|f| f.url.clone())).collect(),
+            Cat::Grabber(Some(p)) => self
+                .core
+                .settings()
+                .grab_projects
+                .iter()
+                .filter(|x| x.opts.name == *p)
+                .flat_map(|x| x.files.iter().map(|f| f.url.clone()))
+                .collect(),
             _ => HashSet::new(),
         };
         let mut rows: Vec<Row> = self
@@ -189,14 +251,20 @@ impl App {
             })
             .filter(|r| {
                 let f = self.filter.trim().to_lowercase();
-                f.is_empty() || [&r.name, &r.url, &r.desc].iter().any(|t| t.to_lowercase().contains(&f))
+                f.is_empty()
+                    || [&r.name, &r.url, &r.desc]
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&f))
             })
             .collect();
         let (col, asc) = self.sort;
         rows.sort_by(|a, b| {
             let o = match col {
                 Col::Added => (a.added, a.id).cmp(&(b.added, b.id)),
-                Col::Name => a.cell(Col::Name).to_lowercase().cmp(&b.cell(Col::Name).to_lowercase()),
+                Col::Name => a
+                    .cell(Col::Name)
+                    .to_lowercase()
+                    .cmp(&b.cell(Col::Name).to_lowercase()),
                 Col::Q => a.queued.cmp(&b.queued),
                 Col::Size => a.size.cmp(&b.size),
                 Col::Status => a.pct().unwrap_or(0.0).total_cmp(&b.pct().unwrap_or(0.0)),
@@ -208,13 +276,21 @@ impl App {
                 Col::Referer => a.referrer.cmp(&b.referrer),
                 Col::Parent => a.parent.cmp(&b.parent),
             };
-            if asc { o } else { o.reverse() }
+            if asc {
+                o
+            } else {
+                o.reverse()
+            }
         });
         rows
     }
 
     pub(in crate::app) fn sort_by(&mut self, c: Col) {
-        self.sort = if self.sort.0 == c { (c, !self.sort.1) } else { (c, true) };
+        self.sort = if self.sort.0 == c {
+            (c, !self.sort.1)
+        } else {
+            (c, true)
+        };
     }
 
     pub(in crate::app) fn table(&mut self, ui: &mut egui::Ui, rows: &[Row]) {
@@ -225,24 +301,54 @@ impl App {
         let mut columns_dlg = false;
         let mut dbl = None;
         let mut to_queue: Option<(Option<u32>, u64)> = None; // (queue or a new one, row)
-        let queues: Vec<(u32, String)> = self.core.settings().queues.iter().map(|q| (q.id, tr(&q.name))).collect();
+        let queues: Vec<(u32, String)> = self
+            .core
+            .settings()
+            .queues
+            .iter()
+            .map(|q| (q.id, tr(&q.name)))
+            .collect();
         let (mut cols, dbl_open): (Vec<(Col, &str, f32)>, bool) = {
             let s = self.core.settings();
-            (s.columns.iter().filter_map(|(k, w)| COLS.get(*k as usize).map(|c| (c.0, c.1, *w as f32))).collect(), s.dbl_open)
+            (
+                s.columns
+                    .iter()
+                    .filter_map(|(k, w)| COLS.get(*k as usize).map(|c| (c.0, c.1, *w as f32)))
+                    .collect(),
+                s.dbl_open,
+            )
         };
         if i18n::is_rtl() {
             cols.reverse(); // columns mirror, as the tree does
         }
-        let icons: Vec<Option<egui::TextureId>> = rows.iter().map(|r| self.icon(ui.ctx(), &core::ext(&r.cell(Col::Name)))).collect();
+        let icons: Vec<Option<egui::TextureId>> = rows
+            .iter()
+            .map(|r| self.icon(ui.ctx(), &core::ext(&r.cell(Col::Name))))
+            .collect();
         let modern = !self.core.settings().classic;
         let nt = dlu::ndm().then(|| dlu::theme(ui.visuals().dark_mode));
         let font_h = egui::TextStyle::Body.resolve(ui.style()).size;
         // taller rows for a bigger font; NDM Style gives every row room to breathe
-        let row_h = if nt.is_some() { (font_h * 2.4).max(24.0) } else { ROW_H.max(font_h * 1.5) };
+        let row_h = if nt.is_some() {
+            (font_h * 2.4).max(24.0)
+        } else {
+            ROW_H.max(font_h * 1.5)
+        };
         // Q column: the queue's tree picture (main / synchronization, idle / running) like NDM's list
-        let qpics: HashMap<u32, egui::TextureId> = self.core.settings().queues.iter().filter_map(|q| {
-            self.res.tree([[311, 312], [315, 316]][q.sync as usize][self.core.queue_running(q.id) as usize]).map(|t| (q.id, t))
-        }).collect();
+        let qpics: HashMap<u32, egui::TextureId> = self
+            .core
+            .settings()
+            .queues
+            .iter()
+            .filter_map(|q| {
+                self.res
+                    .tree(
+                        [[311, 312], [315, 316]][q.sync as usize]
+                            [self.core.queue_running(q.id) as usize],
+                    )
+                    .map(|t| (q.id, t))
+            })
+            .collect();
         let mut row_rects = Vec::new();
         if let Some(t) = &nt {
             ui.visuals_mut().widgets.noninteractive.bg_stroke.color = t.raised; // the column edges
@@ -254,36 +360,79 @@ impl App {
             tb = tb.scroll_to_row(k, Some(Align::Center));
         }
         // right-to-left languages: cells read from the right edge, the file icon right of the name
-        let cell = if i18n::is_rtl() { Layout::right_to_left(Align::Center) } else { Layout::left_to_right(Align::Center) };
-        let mut tb = tb.striped(false).resizable(true).auto_shrink(false).sense(Sense::click()).cell_layout(cell);
+        let cell = if i18n::is_rtl() {
+            Layout::right_to_left(Align::Center)
+        } else {
+            Layout::left_to_right(Align::Center)
+        };
+        let mut tb = tb
+            .striped(false)
+            .resizable(true)
+            .auto_shrink(false)
+            .sense(Sense::click())
+            .cell_layout(cell);
         for (k, (_, _, w)) in cols.iter().enumerate() {
-            tb = tb.column(if k + 1 == cols.len() { Column::remainder().at_least(*w) } else { Column::initial(*w).at_least(20.0).clip(true) });
+            tb = tb.column(if k + 1 == cols.len() {
+                Column::remainder().at_least(*w)
+            } else {
+                Column::initial(*w).at_least(20.0).clip(true)
+            });
         }
         // NDM's list at 125%: 24 px header, 19 px rows
-        tb.header(if nt.is_some() { (font_h * 2.4).max(24.0) } else { 19.2 }, |mut h| {
-            for (c, name, _) in &cols {
-                let (_, resp) = h.col(|ui| {
-                    ui.add_space(if nt.is_some() { 8.0 } else { 4.0 });
-                    let arrow = if self.sort.0 == *c { if self.sort.1 { " ⏶" } else { " ⏷" } } else { "" };
-                    let head = match &nt {
-                        Some(t) => RichText::new(i18n::line(&format!("{}{arrow}", tr_os(name)))).color(if self.sort.0 == *c { t.accent } else { t.muted }),
-                        None => RichText::new(i18n::line(&format!("{}{arrow}", tr_os(name)))),
-                    };
-                    // a longer translation gets smaller type in a narrow column
-                    let head = dlu::fit(ui, head.into(), ui.available_width() - 4.0, egui::TextStyle::Body);
-                    if ui.add(egui::Label::new(head).selectable(false).sense(Sense::click())).clicked() {
-                        sort = Some(*c);
-                    }
-                });
-                // NDM's header menu has one item (0x4613c0, popup +0x230)
-                resp.context_menu(|ui| {
-                    if ui.button(tr("Columns...")).clicked() {
-                        columns_dlg = true;
-                        ui.close_menu();
-                    }
-                });
-            }
-        })
+        tb.header(
+            if nt.is_some() {
+                (font_h * 2.4).max(24.0)
+            } else {
+                19.2
+            },
+            |mut h| {
+                for (c, name, _) in &cols {
+                    let (_, resp) = h.col(|ui| {
+                        ui.add_space(if nt.is_some() { 8.0 } else { 4.0 });
+                        let arrow = if self.sort.0 == *c {
+                            if self.sort.1 {
+                                " ⏶"
+                            } else {
+                                " ⏷"
+                            }
+                        } else {
+                            ""
+                        };
+                        let head = match &nt {
+                            Some(t) => {
+                                RichText::new(i18n::line(&format!("{}{arrow}", tr_os(name))))
+                                    .color(if self.sort.0 == *c { t.accent } else { t.muted })
+                            }
+                            None => RichText::new(i18n::line(&format!("{}{arrow}", tr_os(name)))),
+                        };
+                        // a longer translation gets smaller type in a narrow column
+                        let head = dlu::fit(
+                            ui,
+                            head.into(),
+                            ui.available_width() - 4.0,
+                            egui::TextStyle::Body,
+                        );
+                        if ui
+                            .add(
+                                egui::Label::new(head)
+                                    .selectable(false)
+                                    .sense(Sense::click()),
+                            )
+                            .clicked()
+                        {
+                            sort = Some(*c);
+                        }
+                    });
+                    // NDM's header menu has one item (0x4613c0, popup +0x230)
+                    resp.context_menu(|ui| {
+                        if ui.button(tr("Columns...")).clicked() {
+                            columns_dlg = true;
+                            ui.close_menu();
+                        }
+                    });
+                }
+            },
+        )
         .body(|body| {
             body.rows(row_h, rows.len(), |mut row| {
                 let k = row.index();
@@ -291,7 +440,13 @@ impl App {
                 row.set_selected(self.sel.contains(&r.id));
                 for (c, _, _) in &cols {
                     row.col(|ui| {
-                        ui.add_space(if nt.is_some() { 8.0 } else if *c == Col::Name { 1.6 } else { 4.0 });
+                        ui.add_space(if nt.is_some() {
+                            8.0
+                        } else if *c == Col::Name {
+                            1.6
+                        } else {
+                            4.0
+                        });
                         if *c == Col::Name {
                             if let Some(t) = icons[k] {
                                 ui.add(egui::Image::new((t, Vec2::splat(16.0))));
@@ -304,29 +459,70 @@ impl App {
                         }
                         // names, folders and addresses as they are written (Arabic and Hebrew in reading order)
                         let text = match c {
-                            Col::Name | Col::Desc | Col::SaveTo | Col::Referer | Col::Parent => i18n::shown(&r.cell(*c)),
+                            Col::Name | Col::Desc | Col::SaveTo | Col::Referer | Col::Parent => {
+                                i18n::shown(&r.cell(*c))
+                            }
                             _ => r.cell(*c),
                         };
                         let error = matches!(r.status, Status::Error(_));
                         if let (Some(t), Col::Status) = (&nt, *c) {
                             // NDM Style: the status in its colour over a thin progress bar
-                            let ink = if error { t.danger } else if r.status == Status::Complete { t.success } else if r.running { t.accent } else { t.muted };
-                            if let Some(f) = r.pct().filter(|f| *f > 0.0 && r.status != Status::Complete) {
+                            let ink = if error {
+                                t.danger
+                            } else if r.status == Status::Complete {
+                                t.success
+                            } else if r.running {
+                                t.accent
+                            } else {
+                                t.muted
+                            };
+                            if let Some(f) =
+                                r.pct().filter(|f| *f > 0.0 && r.status != Status::Complete)
+                            {
                                 let (cell, rtl) = (ui.max_rect(), i18n::is_rtl());
-                                let (x0, x1) = if rtl { (cell.left() + 10.0, cell.right()) } else { (cell.left(), cell.right() - 10.0) };
-                                let bar = egui::Rect::from_min_max(egui::pos2(x0, cell.bottom() - 6.0), egui::pos2(x1, cell.bottom() - 3.0));
+                                let (x0, x1) = if rtl {
+                                    (cell.left() + 10.0, cell.right())
+                                } else {
+                                    (cell.left(), cell.right() - 10.0)
+                                };
+                                let bar = egui::Rect::from_min_max(
+                                    egui::pos2(x0, cell.bottom() - 6.0),
+                                    egui::pos2(x1, cell.bottom() - 3.0),
+                                );
                                 if bar.width() > 8.0 {
                                     ui.painter().rect_filled(bar, 1.5, t.raised);
                                     // filling from where the text starts (the right in right-to-left languages)
                                     let w = bar.width() * (f / 100.0).clamp(0.0, 1.0) as f32;
-                                    let done = if rtl { egui::Rect::from_min_max(egui::pos2(bar.right() - w, bar.top()), bar.max) } else { egui::Rect::from_min_size(bar.min, Vec2::new(w, bar.height())) };
-                                    ui.painter().rect_filled(done, 1.5, if r.running { t.accent } else { t.muted });
+                                    let done = if rtl {
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(bar.right() - w, bar.top()),
+                                            bar.max,
+                                        )
+                                    } else {
+                                        egui::Rect::from_min_size(
+                                            bar.min,
+                                            Vec2::new(w, bar.height()),
+                                        )
+                                    };
+                                    ui.painter().rect_filled(
+                                        done,
+                                        1.5,
+                                        if r.running { t.accent } else { t.muted },
+                                    );
                                 }
                             }
-                            ui.add(egui::Label::new(RichText::new(text).color(ink)).selectable(false).truncate());
+                            ui.add(
+                                egui::Label::new(RichText::new(text).color(ink))
+                                    .selectable(false)
+                                    .truncate(),
+                            );
                             return;
                         }
-                        let text = if *c == Col::Status && error { RichText::new(text).color(Color32::RED) } else { RichText::new(text) };
+                        let text = if *c == Col::Status && error {
+                            RichText::new(text).color(Color32::RED)
+                        } else {
+                            RichText::new(text)
+                        };
                         ui.add(egui::Label::new(text).selectable(false).truncate());
                     });
                 }
@@ -336,14 +532,18 @@ impl App {
                 }
                 if resp.double_clicked() {
                     action = Some((k, true));
-                } else if resp.clicked() || (resp.secondary_clicked() && !self.sel.contains(&r.id)) {
+                } else if resp.clicked() || (resp.secondary_clicked() && !self.sel.contains(&r.id))
+                {
                     action = Some((k, false));
                 }
                 // the list's context menu
                 resp.context_menu(|ui| {
                     let done = r.status == Status::Complete;
                     let mut item = |ui: &mut egui::Ui, cmd: &'static str, enabled: bool| {
-                        if ui.add_enabled(enabled, egui::Button::new(tr(cmd))).clicked() {
+                        if ui
+                            .add_enabled(enabled, egui::Button::new(tr(cmd)))
+                            .clicked()
+                        {
                             menu_cmd = Some((cmd, r.id));
                             ui.close_menu();
                         }
@@ -361,7 +561,11 @@ impl App {
                     item(ui, "Stop Download", r.running);
                     item(ui, "Speed limit...", !done);
                     ui.separator();
-                    item(ui, "Recover download", matches!(r.status, Status::Error(_)) && !r.running);
+                    item(
+                        ui,
+                        "Recover download",
+                        matches!(r.status, Status::Error(_)) && !r.running,
+                    );
                     item(ui, "Refresh download address", !done);
                     ui.separator();
                     item(ui, "Remove", true);
@@ -369,7 +573,13 @@ impl App {
                     ui.add_enabled_ui(!done, |ui| {
                         ui.menu_button(tr("Add to download queue"), |ui| {
                             for (id, name) in &queues {
-                                if ui.add_enabled(!(r.queued && r.queue == *id), egui::Button::new(name)).clicked() {
+                                if ui
+                                    .add_enabled(
+                                        !(r.queued && r.queue == *id),
+                                        egui::Button::new(name),
+                                    )
+                                    .clicked()
+                                {
                                     to_queue = Some((Some(*id), r.id));
                                     ui.close_menu();
                                 }
@@ -399,18 +609,34 @@ impl App {
         if let Some(t) = &nt {
             // NDM Style: a hairline between rows, none below the last
             for r in &row_rects {
-                ui.painter().hline(r.x_range(), r.bottom() + ui.spacing().item_spacing.y / 2.0, egui::Stroke::new(1.0_f32, t.raised));
+                ui.painter().hline(
+                    r.x_range(),
+                    r.bottom() + ui.spacing().item_spacing.y / 2.0,
+                    egui::Stroke::new(1.0_f32, t.raised),
+                );
             }
         } else if modern {
             // NDM's list grid (LVS_EX_GRIDLINES / its dark-mode custom grid, 0x475710): a line under every row,
             // continued down the empty part of the list
             let area = ui.min_rect().intersect(ui.clip_rect()); // only the visible part
-            // the fixed row pitch: a measured row rect can be 0 tall, and a 0 pitch never ends the loop below
+                                                                // the fixed row pitch: a measured row rect can be 0 tall, and a 0 pitch never ends the loop below
             let pitch = row_h + ui.spacing().item_spacing.y;
-            let mut y = row_rects.last().map_or(area.top() + 22.0 + ui.spacing().item_spacing.y, |r| r.bottom() + ui.spacing().item_spacing.y / 2.0).max(area.top());
-            let stroke = egui::Stroke::new(1.0_f32, Color32::from_gray(if self.dark { 85 } else { 225 }));
+            let mut y = row_rects
+                .last()
+                .map_or(area.top() + 22.0 + ui.spacing().item_spacing.y, |r| {
+                    r.bottom() + ui.spacing().item_spacing.y / 2.0
+                })
+                .max(area.top());
+            let stroke = egui::Stroke::new(
+                1.0_f32,
+                Color32::from_gray(if self.dark { 85 } else { 225 }),
+            );
             for r in &row_rects {
-                ui.painter().hline(area.x_range(), r.bottom() + ui.spacing().item_spacing.y / 2.0, stroke);
+                ui.painter().hline(
+                    area.x_range(),
+                    r.bottom() + ui.spacing().item_spacing.y / 2.0,
+                    stroke,
+                );
             }
             while y < area.bottom() {
                 ui.painter().hline(area.x_range(), y, stroke);
@@ -424,7 +650,11 @@ impl App {
             self.core.settings().dbl_open = on;
         }
         if let Some((q, id)) = to_queue {
-            let ids: Vec<u64> = if self.sel.contains(&id) { self.sel.iter().copied().collect() } else { vec![id] };
+            let ids: Vec<u64> = if self.sel.contains(&id) {
+                self.sel.iter().copied().collect()
+            } else {
+                vec![id]
+            };
             match q {
                 Some(q) => self.core.set_queue(&ids, Some(q)),
                 None => self.new_queue(ids),
@@ -443,7 +673,10 @@ impl App {
                     self.properties(&rows[k]);
                 }
             } else if shift && self.anchor.is_some() {
-                let a = rows.iter().position(|r| Some(r.id) == self.anchor).unwrap_or(k);
+                let a = rows
+                    .iter()
+                    .position(|r| Some(r.id) == self.anchor)
+                    .unwrap_or(k);
                 self.sel = rows[a.min(k)..=a.max(k)].iter().map(|r| r.id).collect();
             } else if ctrl {
                 if !self.sel.remove(&id) {
@@ -456,7 +689,11 @@ impl App {
             }
         }
         if let Some((cmd, id)) = menu_cmd {
-            let ids: Vec<u64> = if self.sel.contains(&id) { self.sel.iter().copied().collect() } else { vec![id] };
+            let ids: Vec<u64> = if self.sel.contains(&id) {
+                self.sel.iter().copied().collect()
+            } else {
+                vec![id]
+            };
             let row = rows.iter().find(|r| r.id == id).unwrap();
             match cmd {
                 "Open" => explore(&row.path),
@@ -473,7 +710,11 @@ impl App {
                 "Delete from queue" => self.core.set_queue(&ids, None),
                 "Speed limit..." => {
                     let kb = self.core.find(id).map_or(0, |j| j.info().limit_kb);
-                    self.open(Dialog::SpeedLimit { ids, on: kb > 0, kb: if kb > 0 { kb.to_string() } else { "200".into() } });
+                    self.open(Dialog::SpeedLimit {
+                        ids,
+                        on: kb > 0,
+                        kb: if kb > 0 { kb.to_string() } else { "200".into() },
+                    });
                 }
                 "Remove" => self.ask_delete(ids),
                 _ => self.properties(row),
@@ -483,7 +724,9 @@ impl App {
 
     /// Move/Rename: pick a new path; a finished file is moved on disk, an unfinished one moves its .part.
     pub(in crate::app) fn move_rename(&mut self, id: u64) {
-        let Some(j) = self.core.find(id).filter(|j| !j.running()) else { return };
+        let Some(j) = self.core.find(id).filter(|j| !j.running()) else {
+            return;
+        };
         let (path, done) = {
             let i = j.info();
             (i.path(), i.status == Status::Complete)
@@ -502,17 +745,40 @@ impl App {
         let mut i = j.info();
         let from = if done { i.path() } else { i.part() };
         let mut moved_info = i.clone();
-        moved_info.folder = to.parent().map(|p| p.display().to_string()).unwrap_or_default();
-        moved_info.name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        moved_info.folder = to
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        moved_info.name = to
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let target = if done { to.clone() } else { moved_info.part() };
         // rename, or copy + delete when moving to another drive
-        let moved = !from.exists() || std::fs::rename(&from, &target).is_ok() || (std::fs::copy(&from, &target).is_ok() && std::fs::remove_file(&from).is_ok());
+        let moved = !from.exists()
+            || std::fs::rename(&from, &target).is_ok()
+            || (std::fs::copy(&from, &target).is_ok() && std::fs::remove_file(&from).is_ok());
         if moved {
-            i.folder = to.parent().map(|p| p.display().to_string()).unwrap_or_default();
-            i.name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            i.folder = to
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            i.name = to
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
         } else {
             drop(i);
-            self.open(Dialog::Info { title: "Move/Rename".into(), text: i18n::trf_os("Cannot move %s to %s.", &[&i18n::ltr(&from.display().to_string()), &i18n::ltr(&target.display().to_string())]) });
+            self.open(Dialog::Info {
+                title: "Move/Rename".into(),
+                text: i18n::trf_os(
+                    "Cannot move %s to %s.",
+                    &[
+                        &i18n::ltr(&from.display().to_string()),
+                        &i18n::ltr(&target.display().to_string()),
+                    ],
+                ),
+            });
         }
     }
 
@@ -521,7 +787,12 @@ impl App {
         let id = row.id;
         if row.status != Status::Complete {
             let details = self.core.settings().prog_details;
-            return self.open(Dialog::Progress { id, tab: 0, details, min: false });
+            return self.open(Dialog::Progress {
+                id,
+                tab: 0,
+                details,
+                min: false,
+            });
         }
         self.file_properties(id);
     }
@@ -530,8 +801,17 @@ impl App {
     pub(in crate::app) fn open_columns(&mut self) {
         let shown = self.core.settings().columns.clone();
         let mut list: Vec<(u8, bool, u16)> = shown.iter().map(|(k, w)| (*k, true, *w)).collect();
-        list.extend(COLS.iter().enumerate().filter(|(k, _)| !shown.iter().any(|c| c.0 as usize == *k)).map(|(k, c)| (k as u8, false, c.2)));
+        list.extend(
+            COLS.iter()
+                .enumerate()
+                .filter(|(k, _)| !shown.iter().any(|c| c.0 as usize == *k))
+                .map(|(k, c)| (k as u8, false, c.2)),
+        );
         let width = list[0].2.to_string();
-        self.open(Dialog::Columns { list, sel: 0, width });
+        self.open(Dialog::Columns {
+            list,
+            sel: 0,
+            width,
+        });
     }
 }

@@ -18,8 +18,11 @@ fn performance_download() {
     let mut segments = Vec::new();
     for trial in 0..3 {
         let job = Job::new(Info {
-            id: trial + 1, url: format!("{url}r/fixture.bin"),
-            name: format!("trial-{trial}.bin"), folder: root.display().to_string(), conns: 8,
+            id: trial + 1,
+            url: format!("{url}r/fixture.bin"),
+            name: format!("trial-{trial}.bin"),
+            folder: root.display().to_string(),
+            conns: 8,
             ..Default::default()
         });
         let started = Instant::now();
@@ -31,7 +34,9 @@ fn performance_download() {
         let mut read = 0;
         loop {
             let count = file.read(&mut buffer).unwrap();
-            if count == 0 { break }
+            if count == 0 {
+                break;
+            }
             assert!(buffer[..count].iter().all(|byte| *byte == 0x5a));
             read += count;
         }
@@ -39,10 +44,13 @@ fn performance_download() {
     }
     let mut sorted = trials.clone();
     sorted.sort_by(f64::total_cmp);
-    println!("NDM_BENCH {}", serde_json::json!({
-        "case": "range_download", "bytes": BYTES, "trials_seconds": trials,
-        "median_seconds": sorted[1], "bytes_per_second": BYTES as f64 / sorted[1],
-        "connection_limit": 8, "segments": segments,
-    }));
+    println!(
+        "NDM_BENCH {}",
+        serde_json::json!({
+            "case": "range_download", "bytes": BYTES, "trials_seconds": trials,
+            "median_seconds": sorted[1], "bytes_per_second": BYTES as f64 / sorted[1],
+            "connection_limit": 8, "segments": segments,
+        })
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

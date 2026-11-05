@@ -1,8 +1,8 @@
-use super::*;
 use super::ftp::{FtpCfg, FTP};
 use super::job::{merge_cookies, VERIFY};
 use super::names::typed_name;
 use super::probe::same_file;
+use super::*;
 use crate::transport::auth::{digest, md5_hex};
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
@@ -26,7 +26,10 @@ fn browser_file_is_checked() {
             let mut line = String::new();
             let mut r = BufReader::new(&s);
             r.read_line(&mut line).unwrap();
-            while { let mut h = String::new(); r.read_line(&mut h).unwrap_or(0) > 2 } {}
+            while {
+                let mut h = String::new();
+                r.read_line(&mut h).unwrap_or(0) > 2
+            } {}
             let head = match line.split(' ').nth(1).unwrap_or("") {
                 "/file" => "HTTP/1.1 206 Partial\r\nContent-Type: video/mp4\r\nContent-Range: bytes 0-0/1000\r\nContent-Length: 1\r\n\r\nx",
                 "/app" => "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 4\r\n\r\n<p/>",
@@ -36,19 +39,43 @@ fn browser_file_is_checked() {
         }
     });
     let a = agent("", "");
-    let check = |path: &str, mime: &str, size: u64, name: &str| same_file(&a, &format!("{base}{path}"), "", "", mime, size, name);
+    let check = |path: &str, mime: &str, size: u64, name: &str| {
+        same_file(&a, &format!("{base}{path}"), "", "", mime, size, name)
+    };
     assert!(check("/file", "video/mp4", 1000, "v.mp4").is_ok());
-    assert!(check("/file", "", 0, "v.mp4").is_ok(), "nothing known from the browser");
-    assert!(check("/file", "video/mp4", 1_000_000, "v.mp4").is_err(), "another size");
-    assert!(check("/app", "video/mp4", 12_000_000, "v.mp4").is_err(), "a page for a video");
-    assert!(check("/app", "", 0, "song.mp3").is_err(), "a page for an mp3");
-    assert!(check("/app", "text/html", 0, "page.html").is_ok(), "a page is a page");
-    assert!(check("/gone", "audio/mpeg", 0, "a.mp3").is_err(), "an error");
+    assert!(
+        check("/file", "", 0, "v.mp4").is_ok(),
+        "nothing known from the browser"
+    );
+    assert!(
+        check("/file", "video/mp4", 1_000_000, "v.mp4").is_err(),
+        "another size"
+    );
+    assert!(
+        check("/app", "video/mp4", 12_000_000, "v.mp4").is_err(),
+        "a page for a video"
+    );
+    assert!(
+        check("/app", "", 0, "song.mp3").is_err(),
+        "a page for an mp3"
+    );
+    assert!(
+        check("/app", "text/html", 0, "page.html").is_ok(),
+        "a page is a page"
+    );
+    assert!(
+        check("/gone", "audio/mpeg", 0, "a.mp3").is_err(),
+        "an error"
+    );
 }
 
 /// A server that serves at most `most` requests at once and answers 503 to the rest (`hang`: leaves
 /// them unanswered, as some video sites do); returns its address and how many it turned away.
-fn serve_limited(data: Arc<Vec<u8>>, most: usize, hang: bool) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+fn serve_limited(
+    data: Arc<Vec<u8>>,
+    most: usize,
+    hang: bool,
+) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
     use std::sync::atomic::AtomicUsize;
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/", l.local_addr().unwrap());
@@ -72,7 +99,10 @@ fn serve_limited(data: Arc<Vec<u8>>, most: usize, hang: bool) -> (String, Arc<st
                     }
                     if let Some(v) = strip_ci(&h, "range: bytes=") {
                         let (a, b) = v.trim().split_once('-').unwrap();
-                        range = (a.parse().unwrap(), b.parse().unwrap_or(data.len() - 1).min(data.len() - 1));
+                        range = (
+                            a.parse().unwrap(),
+                            b.parse().unwrap_or(data.len() - 1).min(data.len() - 1),
+                        );
                     }
                 }
                 let mut w = &s;
@@ -83,7 +113,9 @@ fn serve_limited(data: Arc<Vec<u8>>, most: usize, hang: bool) -> (String, Arc<st
                         thread::sleep(Duration::from_secs(120));
                         return;
                     }
-                    let _ = w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+                    let _ = w.write_all(
+                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+                    );
                     continue;
                 }
                 let (a, b) = range;
@@ -105,19 +137,39 @@ fn serve_limited(data: Arc<Vec<u8>>, most: usize, hang: bool) -> (String, Arc<st
 
 #[test]
 fn keeps_to_a_servers_connection_limit() {
-    let data: Arc<Vec<u8>> = Arc::new((0..3 * 1024 * 1024).map(|i: u32| (i * 13 % 251) as u8).collect());
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..3 * 1024 * 1024)
+            .map(|i: u32| (i * 13 % 251) as u8)
+            .collect(),
+    );
     let (base, refused) = serve_limited(data.clone(), 2, false);
     let dir = std::env::temp_dir().join(format!("ndm-test-limit-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(Info { conns: 8, ..info(format!("{base}f.bin"), &dir) });
+    let j = Job::new(Info {
+        conns: 8,
+        ..info(format!("{base}f.bin"), &dir)
+    });
     let t = Instant::now();
     run(&j);
-    let (status, segs) = { let i = j.info(); (i.status.clone(), i.segs.iter().map(|s| (s.start, s.next, s.stop, s.owned, s.info.clone())).collect::<Vec<_>>()) };
+    let (status, segs) = {
+        let i = j.info();
+        (
+            i.status.clone(),
+            i.segs
+                .iter()
+                .map(|s| (s.start, s.next, s.stop, s.owned, s.info.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
     assert_eq!(status, Status::Complete, "{segs:?}");
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
     // the connections the server turned away end at once instead of retrying for a minute
     assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
-    assert!(refused.load(Relaxed) <= 12, "{} requests refused", refused.load(Relaxed));
+    assert!(
+        refused.load(Relaxed) <= 12,
+        "{} requests refused",
+        refused.load(Relaxed)
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -126,11 +178,18 @@ fn keeps_to_a_servers_connection_limit() {
 /// stuck).
 #[test]
 fn keeps_to_a_server_that_leaves_connections_hanging() {
-    let data: Arc<Vec<u8>> = Arc::new((0..3 * 1024 * 1024).map(|i: u32| (i * 7 % 251) as u8).collect());
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..3 * 1024 * 1024)
+            .map(|i: u32| (i * 7 % 251) as u8)
+            .collect(),
+    );
     let (base, _) = serve_limited(data.clone(), 1, true);
     let dir = std::env::temp_dir().join(format!("ndm-test-hang-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(Info { conns: 8, ..info(format!("{base}f.bin"), &dir) });
+    let j = Job::new(Info {
+        conns: 8,
+        ..info(format!("{base}f.bin"), &dir)
+    });
     let t = Instant::now();
     run(&j);
     assert_eq!(j.info().status, Status::Complete);
@@ -147,7 +206,12 @@ fn run(job: &Arc<Job>) {
 }
 
 fn info(url: String, dir: &Path) -> Info {
-    Info { url, folder: dir.display().to_string(), conns: 4, ..Default::default() }
+    Info {
+        url,
+        folder: dir.display().to_string(),
+        conns: 4,
+        ..Default::default()
+    }
 }
 
 /// The finished file copied out of a temporary directory on another drive: in place, the temporary
@@ -158,7 +222,11 @@ fn file_types() {
     assert_eq!(mime_ext("text/html"), None);
     assert_eq!(typed_name("watch", Some("mp4")), "watch.mp4");
     assert_eq!(typed_name("download.php", Some("zip")), "download.zip");
-    assert_eq!(typed_name("setup.exe", Some("zip")), "setup.exe", "a real extension stays");
+    assert_eq!(
+        typed_name("setup.exe", Some("zip")),
+        "setup.exe",
+        "a real extension stays"
+    );
     assert_eq!(typed_name("v 1.2 final", Some("pdf")), "v 1.2 final.pdf");
     assert_eq!(typed_name("a.zip", None), "a.zip");
     let dir = std::env::temp_dir().join(format!("ndm-sniff-{}", std::process::id()));
@@ -166,7 +234,10 @@ fn file_types() {
     for (bytes, want) in [
         (b"\0\0\0\x18ftypisom\0\0\0\0".to_vec(), Some("mp4")),
         (b"\0\0\0\x18ftypM4A \0\0\0\0".to_vec(), Some("m4a")),
-        ([&[0x1A, 0x45, 0xDF, 0xA3][..], b"\x9fB\x82\x84webm"].concat(), Some("webm")),
+        (
+            [&[0x1A, 0x45, 0xDF, 0xA3][..], b"\x9fB\x82\x84webm"].concat(),
+            Some("webm"),
+        ),
         (b"ID3\x04\0".to_vec(), Some("mp3")),
         (b"%PDF-1.7".to_vec(), Some("pdf")),
         (b"PK\x03\x04rest".to_vec(), Some("zip")),
@@ -197,7 +268,11 @@ fn copy_out_moves_the_file() {
 
 #[test]
 fn downloads_resumes_and_splits() {
-    let data: Arc<Vec<u8>> = Arc::new((0..3 * 1024 * 1024 + 123).map(|i: u32| (i * 7 % 251) as u8).collect());
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..3 * 1024 * 1024 + 123)
+            .map(|i: u32| (i * 7 % 251) as u8)
+            .collect(),
+    );
     let base = serve(data.clone());
     let dir = std::env::temp_dir().join(format!("ndm-test-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -210,7 +285,11 @@ fn downloads_resumes_and_splits() {
     assert!(j.info().segs.len() >= 2, "{}", j.info().segs.len());
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
     let t = fs::metadata(j.info().path()).unwrap().modified().unwrap();
-    assert_eq!(t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(), 784111777, "server's Last-Modified");
+    assert_eq!(
+        t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+        784111777,
+        "server's Last-Modified"
+    );
 
     let j = Job::new(info(format!("{base}plain.bin"), &dir));
     run(&j);
@@ -219,7 +298,10 @@ fn downloads_resumes_and_splits() {
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
 
     // pause mid-way, round-trip through JSON (as on restart), resume
-    let j = Job::new(Info { limit_kb: 1024, ..info(format!("{base}r2.bin"), &dir) });
+    let j = Job::new(Info {
+        limit_kb: 1024,
+        ..info(format!("{base}r2.bin"), &dir)
+    });
     j.start(agent("", ""), Arc::new(Limiter::default()));
     thread::sleep(Duration::from_millis(800));
     j.stop();
@@ -228,7 +310,12 @@ fn downloads_resumes_and_splits() {
     }
     let saved = serde_json::to_string(&*j.info()).unwrap();
     let mut i: Info = serde_json::from_str(&saved).unwrap();
-    assert!(i.status == Status::Stopped && i.done() > 0 && i.done() < data.len() as u64, "{:?} {}", i.status, i.done());
+    assert!(
+        i.status == Status::Stopped && i.done() > 0 && i.done() < data.len() as u64,
+        "{:?} {}",
+        i.status,
+        i.done()
+    );
     i.limit_kb = 0;
     let j = Job::new(i);
     run(&j);
@@ -242,7 +329,9 @@ fn downloads_resumes_and_splits() {
 fn ie_cache_not_modified() {
     use std::io::{BufRead, BufReader, Write};
     use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::Networking::WinInet::{CommitUrlCacheEntryW, CreateUrlCacheEntryW, DeleteUrlCacheEntryW, NORMAL_CACHE_ENTRY};
+    use windows_sys::Win32::Networking::WinInet::{
+        CommitUrlCacheEntryW, CreateUrlCacheEntryW, DeleteUrlCacheEntryW, NORMAL_CACHE_ENTRY,
+    };
     // a server that answers 304 when asked If-Modified-Since, else sends "fresh"
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/cached.txt", l.local_addr().unwrap());
@@ -254,7 +343,11 @@ fn ie_cache_not_modified() {
                 ims |= line.to_ascii_lowercase().starts_with("if-modified-since:");
                 line.clear();
             }
-            let reply = if ims { "HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n".to_string() } else { "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh".to_string() };
+            let reply = if ims {
+                "HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n".to_string()
+            } else {
+                "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh".to_string()
+            };
             let _ = (&s).write_all(reply.as_bytes());
         }
     });
@@ -266,44 +359,93 @@ fn ie_cache_not_modified() {
     // WinINet only commits files it handed out itself (CreateUrlCacheEntryW)
     let mut name = [0u16; 260];
     let made = unsafe { CreateUrlCacheEntryW(wu.as_ptr(), 0, ext.as_ptr(), name.as_mut_ptr(), 0) };
-    let cache_file = std::path::PathBuf::from(String::from_utf16_lossy(&name[..name.iter().position(|&c| c == 0).unwrap_or(0)]));
-    let t = FILETIME { dwLowDateTime: 0xd53e_8000, dwHighDateTime: 0x01d9_0000 }; // some time in 2022
+    let cache_file = std::path::PathBuf::from(String::from_utf16_lossy(
+        &name[..name.iter().position(|&c| c == 0).unwrap_or(0)],
+    ));
+    let t = FILETIME {
+        dwLowDateTime: 0xd53e_8000,
+        dwHighDateTime: 0x01d9_0000,
+    }; // some time in 2022
     let ok = made != 0
         && fs::write(&cache_file, "cached copy").is_ok()
-        && unsafe { CommitUrlCacheEntryW(wu.as_ptr(), name.as_ptr(), FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }, t, NORMAL_CACHE_ENTRY, std::ptr::null(), 0, ext.as_ptr(), std::ptr::null()) } != 0;
+        && unsafe {
+            CommitUrlCacheEntryW(
+                wu.as_ptr(),
+                name.as_ptr(),
+                FILETIME {
+                    dwLowDateTime: 0,
+                    dwHighDateTime: 0,
+                },
+                t,
+                NORMAL_CACHE_ENTRY,
+                std::ptr::null(),
+                0,
+                ext.as_ptr(),
+                std::ptr::null(),
+            )
+        } != 0;
     if !ok {
-        eprintln!("ie_cache_not_modified skipped: CommitUrlCacheEntryW failed ({})", std::io::Error::last_os_error());
+        eprintln!(
+            "ie_cache_not_modified skipped: CommitUrlCacheEntryW failed ({})",
+            std::io::Error::last_os_error()
+        );
         return; // no WinINet cache on this machine (e.g. a service account): nothing to look up
     }
     let found = crate::win::url_cache(&url);
     let out = dir.join("out");
-    let j = Job::new(Info { ie_cache: true, name: "f.txt".into(), ..info(url.clone(), &out) });
+    let j = Job::new(Info {
+        ie_cache: true,
+        name: "f.txt".into(),
+        ..info(url.clone(), &out)
+    });
     run(&j);
-    let plain = Job::new(Info { name: "g.txt".into(), ..info(url.clone(), &out) });
+    let plain = Job::new(Info {
+        name: "g.txt".into(),
+        ..info(url.clone(), &out)
+    });
     run(&plain);
     unsafe { DeleteUrlCacheEntryW(wu.as_ptr()) };
     let (_, since) = found.expect("the entry just committed");
     assert!(since.ends_with(" GMT") && since.contains("2022"), "{since}");
     assert_eq!(j.info().status, Status::Complete);
-    assert_eq!(fs::read_to_string(j.info().path()).unwrap(), "cached copy", "304: the cached file is used");
-    assert_eq!(fs::read_to_string(plain.info().path()).unwrap(), "fresh", "without the option the server's copy");
+    assert_eq!(
+        fs::read_to_string(j.info().path()).unwrap(),
+        "cached copy",
+        "304: the cached file is used"
+    );
+    assert_eq!(
+        fs::read_to_string(plain.info().path()).unwrap(),
+        "fresh",
+        "without the option the server's copy"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn rejects_invalid_ranges_and_preserves_partial_when_etag_changes() {
-    for value in ["bytes 5-4/6", "bytes 0-6/6", "bytes */6", "items 0-1/6", "bytes 0-1/*"] {
+    for value in [
+        "bytes 5-4/6",
+        "bytes 0-6/6",
+        "bytes */6",
+        "items 0-1/6",
+        "bytes 0-1/*",
+    ] {
         assert_eq!(content_range(value), None, "{value}");
     }
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/video.mp4?signature=abc", server.local_addr().unwrap());
+    let url = format!(
+        "http://{}/video.mp4?signature=abc",
+        server.local_addr().unwrap()
+    );
     let handle = thread::spawn(move || {
         let (mut socket, _) = server.accept().unwrap();
         let mut request = String::new();
         let mut reader = BufReader::new(&socket);
         loop {
             let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() <= 2 { break; }
+            if reader.read_line(&mut line).unwrap() <= 2 {
+                break;
+            }
             request.push_str(&line);
         }
         assert!(request.to_ascii_lowercase().contains("if-range: \"old\""));
@@ -311,8 +453,19 @@ fn rejects_invalid_ranges_and_preserves_partial_when_etag_changes() {
     });
     let dir = std::env::temp_dir().join(format!("ndm-test-etag-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    let info = Info { name: "video.mp4".into(), size: Some(4), ranges: true, probed: true, etag: "\"old\"".into(),
-        segs: vec![Seg { next: 2, stop: Some(4), ..Default::default() }], ..info(url, &dir) };
+    let info = Info {
+        name: "video.mp4".into(),
+        size: Some(4),
+        ranges: true,
+        probed: true,
+        etag: "\"old\"".into(),
+        segs: vec![Seg {
+            next: 2,
+            stop: Some(4),
+            ..Default::default()
+        }],
+        ..info(url, &dir)
+    };
     fs::write(info.part(), b"AB\0\0").unwrap();
     let job = Job::new(info);
     run(&job);
@@ -330,16 +483,23 @@ fn rejects_invalid_ranges_and_preserves_partial_when_etag_changes() {
 fn initial_full_response_is_downloaded_once_without_splitting() {
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/video", server.local_addr().unwrap());
-    let data = [0, 0, 0, 16, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', 0, 0, 0, 0];
+    let data = [
+        0, 0, 0, 16, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', 0, 0, 0, 0,
+    ];
     let handle = thread::spawn(move || {
         let (mut socket, _) = server.accept().unwrap();
         let mut reader = BufReader::new(&socket);
         while reader.read_line(&mut String::new()).unwrap() > 2 {}
-        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 16\r\n\r\n").unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 16\r\n\r\n")
+            .unwrap();
         socket.write_all(&data).unwrap();
     });
     let dir = std::env::temp_dir().join(format!("ndm-test-full-range-{}", std::process::id()));
-    let job = Job::new(Info { conns: 8, ..info(url, &dir) });
+    let job = Job::new(Info {
+        conns: 8,
+        ..info(url, &dir)
+    });
     run(&job);
     let current = job.info();
     assert_eq!(current.status, Status::Complete);
@@ -358,7 +518,11 @@ fn resume_detects_changed_file() {
     let (ua, ub) = (serve(a), serve(b.clone()));
     let dir = std::env::temp_dir().join(format!("ndm-test-chg-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(Info { limit_kb: 512, conns: 1, ..info(format!("{ua}r.bin"), &dir) });
+    let j = Job::new(Info {
+        limit_kb: 512,
+        conns: 1,
+        ..info(format!("{ua}r.bin"), &dir)
+    });
     j.start(agent("", ""), Arc::new(Limiter::default()));
     thread::sleep(Duration::from_millis(600));
     j.stop();
@@ -371,7 +535,10 @@ fn resume_detects_changed_file() {
     let j = Job::new(i);
     run(&j);
     assert_eq!(j.info().status, Status::Error(CHANGED.into()));
-    assert!(j.ended.load(Relaxed), "a failed run fires the Download failed sound");
+    assert!(
+        j.ended.load(Relaxed),
+        "a failed run fires the Download failed sound"
+    );
     run(&j);
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *b);
@@ -402,11 +569,22 @@ fn ftp_serve(data: Arc<Vec<u8>>) -> String {
                             let p = TcpListener::bind("127.0.0.1:0").unwrap();
                             let port = p.local_addr().unwrap().port();
                             pasv = Some(p);
-                            format!("227 Entering Passive Mode (127,0,0,1,{},{}).", port / 256, port % 256)
+                            format!(
+                                "227 Entering Passive Mode (127,0,0,1,{},{}).",
+                                port / 256,
+                                port % 256
+                            )
                         }
                         "PORT" => {
                             let n: Vec<u16> = arg.split(',').map(|x| x.parse().unwrap()).collect();
-                            port = Some(format!("{}.{}.{}.{}:{}", n[0], n[1], n[2], n[3], n[4] * 256 + n[5]));
+                            port = Some(format!(
+                                "{}.{}.{}.{}:{}",
+                                n[0],
+                                n[1],
+                                n[2],
+                                n[3],
+                                n[4] * 256 + n[5]
+                            ));
                             "200 port ok".into()
                         }
                         "REST" => {
@@ -458,7 +636,10 @@ fn serve_ua(data: Arc<Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
                         log.lock().unwrap().push(v.trim().to_string());
                     } else if let Some(v) = strip_ci(&line, "range: bytes=") {
                         let (a, b) = v.trim().split_once('-').unwrap();
-                        range = (a.parse().unwrap(), b.parse().unwrap_or(data.len() - 1).min(data.len() - 1));
+                        range = (
+                            a.parse().unwrap(),
+                            b.parse().unwrap_or(data.len() - 1).min(data.len() - 1),
+                        );
                     }
                     line.clear();
                 }
@@ -477,25 +658,42 @@ fn serve_ua(data: Arc<Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
     (url, log)
 }
 
-fn lanes_run(lanes: Vec<(String, Agent)>, tag: &str) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+fn lanes_run(
+    lanes: Vec<(String, Agent)>,
+    tag: &str,
+) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
     lanes_run_then(lanes, tag, None)
 }
 
 /// As `lanes_run`; after a second the download's networks become `later`, as the core sets them
 /// when a network comes or goes.
 /// A download over `lanes`, which become `later` after `after` (if given).
-fn lanes_run_then(lanes: Vec<(String, Agent)>, tag: &str, later: Option<(Duration, Vec<(String, Agent)>)>) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
-    let data: Arc<Vec<u8>> = Arc::new((0..4 * 1024 * 1024 + 3).map(|i: u32| (i * 17 % 249) as u8).collect());
+fn lanes_run_then(
+    lanes: Vec<(String, Agent)>,
+    tag: &str,
+    later: Option<(Duration, Vec<(String, Agent)>)>,
+) -> (Arc<Job>, Arc<Vec<u8>>, Arc<Mutex<Vec<String>>>, PathBuf) {
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..4 * 1024 * 1024 + 3)
+            .map(|i: u32| (i * 17 % 249) as u8)
+            .collect(),
+    );
     let (url, log) = serve_ua(data.clone());
     let dir = std::env::temp_dir().join(format!("ndm-test-lanes-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(Info { conns: 4, ..info(url, &dir) });
+    let j = Job::new(Info {
+        conns: 4,
+        ..info(url, &dir)
+    });
     *j.lanes.lock().unwrap() = lanes;
     j.start(agent("", "main"), Arc::new(Limiter::default()));
     let (start, until) = (Instant::now(), Instant::now() + Duration::from_secs(60));
     let mut later = later;
     while j.running() && Instant::now() < until {
-        if later.as_ref().is_some_and(|(after, _)| start.elapsed() >= *after) {
+        if later
+            .as_ref()
+            .is_some_and(|(after, _)| start.elapsed() >= *after)
+        {
             *j.lanes.lock().unwrap() = later.take().unwrap().1;
         }
         thread::sleep(Duration::from_millis(20));
@@ -505,22 +703,43 @@ fn lanes_run_then(lanes: Vec<(String, Agent)>, tag: &str, later: Option<(Duratio
 
 #[test]
 fn segments_use_every_lane() {
-    let (j, data, log, dir) = lanes_run(vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))], "every");
+    let (j, data, log, dir) = lanes_run(
+        vec![
+            ("a".into(), agent("", "lane-a")),
+            ("b".into(), agent("", "lane-b")),
+        ],
+        "every",
+    );
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
     let uas = log.lock().unwrap();
-    assert!(uas.iter().any(|u| u == "lane-a") && uas.iter().any(|u| u == "lane-b") && !uas.iter().any(|u| u == "main"), "{uas:?}");
+    assert!(
+        uas.iter().any(|u| u == "lane-a")
+            && uas.iter().any(|u| u == "lane-b")
+            && !uas.iter().any(|u| u == "main"),
+        "{uas:?}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn lane_joins_mid_download() {
     // "b" is plugged in while "a" ramps up (four connections finish the file in about a second)
-    let both = vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))];
-    let (j, data, log, dir) = lanes_run_then(vec![("a".into(), agent("", "lane-a"))], "join", Some((Duration::from_millis(300), both)));
+    let both = vec![
+        ("a".into(), agent("", "lane-a")),
+        ("b".into(), agent("", "lane-b")),
+    ];
+    let (j, data, log, dir) = lanes_run_then(
+        vec![("a".into(), agent("", "lane-a"))],
+        "join",
+        Some((Duration::from_millis(300), both)),
+    );
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
-    assert!(log.lock().unwrap().iter().any(|u| u == "lane-b"), "the network that joined got connections");
+    assert!(
+        log.lock().unwrap().iter().any(|u| u == "lane-b"),
+        "the network that joined got connections"
+    );
     assert!(j.net_bytes.lock().unwrap().get("b").is_some_and(|n| *n > 0));
     let _ = fs::remove_dir_all(&dir);
 }
@@ -528,8 +747,18 @@ fn lane_joins_mid_download() {
 #[test]
 fn lane_leaves_mid_download() {
     // "b" is unplugged after a second: its parts go to "a", and the download completes without an error
-    let both = vec![("a".into(), agent("", "lane-a")), ("b".into(), agent("", "lane-b"))];
-    let (j, data, _, dir) = lanes_run_then(both, "leave", Some((Duration::from_secs(1), vec![("a".into(), agent("", "lane-a"))])));
+    let both = vec![
+        ("a".into(), agent("", "lane-a")),
+        ("b".into(), agent("", "lane-b")),
+    ];
+    let (j, data, _, dir) = lanes_run_then(
+        both,
+        "leave",
+        Some((
+            Duration::from_secs(1),
+            vec![("a".into(), agent("", "lane-a"))],
+        )),
+    );
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
     let _ = fs::remove_dir_all(&dir);
@@ -541,20 +770,39 @@ fn slow_lane_doesnt_hold_up_the_end() {
     // (how much bigger depends on how busy the machine is), and the end comes when it would on the fast
     // network alone
     let t = Instant::now();
-    let (j, data, _, dir) = lanes_run(vec![("fast".into(), agent("", "lane-a")), ("slow".into(), agent("", "slow"))], "slow");
+    let (j, data, _, dir) = lanes_run(
+        vec![
+            ("fast".into(), agent("", "lane-a")),
+            ("slow".into(), agent("", "slow")),
+        ],
+        "slow",
+    );
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
     let bytes = j.net_bytes.lock().unwrap().clone();
-    let (fast, slow) = (bytes.get("fast").copied().unwrap_or(0), bytes.get("slow").copied().unwrap_or(0));
+    let (fast, slow) = (
+        bytes.get("fast").copied().unwrap_or(0),
+        bytes.get("slow").copied().unwrap_or(0),
+    );
     assert!(slow > 0 && fast > slow, "fast {fast}, slow {slow}");
-    assert!(t.elapsed() < Duration::from_secs(8), "took {:?}", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_secs(8),
+        "took {:?}",
+        t.elapsed()
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn dead_lane_doesnt_fail_download() {
     // port 9 refuses: every connection on the "dead" network fails at once
-    let (j, data, _, dir) = lanes_run(vec![("ok".into(), agent("", "")), ("dead".into(), agent("socks5://127.0.0.1:9", ""))], "dead");
+    let (j, data, _, dir) = lanes_run(
+        vec![
+            ("ok".into(), agent("", "")),
+            ("dead".into(), agent("socks5://127.0.0.1:9", "")),
+        ],
+        "dead",
+    );
     assert!(!j.running(), "finished within 60 s");
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
@@ -565,18 +813,31 @@ fn dead_lane_doesnt_fail_download() {
 static FTP_TESTS: Mutex<()> = Mutex::new(());
 
 fn ftp_route(route: String) {
-    *FTP.lock().unwrap() = FtpCfg { pasv: true, route: Some(Arc::new(move |_: &str| route.clone())) };
+    *FTP.lock().unwrap() = FtpCfg {
+        pasv: true,
+        route: Some(Arc::new(move |_: &str| route.clone())),
+    };
 }
 
 #[test]
 fn ftp_downloads_and_resumes() {
     let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-    *FTP.lock().unwrap() = FtpCfg { pasv: true, route: None };
-    let data: Arc<Vec<u8>> = Arc::new((0..2 * 1024 * 1024 + 77).map(|i: u32| (i * 13 % 241) as u8).collect());
+    *FTP.lock().unwrap() = FtpCfg {
+        pasv: true,
+        route: None,
+    };
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..2 * 1024 * 1024 + 77)
+            .map(|i: u32| (i * 13 % 241) as u8)
+            .collect(),
+    );
     let url = ftp_serve(data.clone());
     let dir = std::env::temp_dir().join(format!("ndm-test-ftp-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(Info { limit_kb: 512, ..info(url, &dir) });
+    let j = Job::new(Info {
+        limit_kb: 512,
+        ..info(url, &dir)
+    });
     j.start(agent("", ""), Arc::new(Limiter::default()));
     thread::sleep(Duration::from_millis(700));
     j.stop();
@@ -584,16 +845,27 @@ fn ftp_downloads_and_resumes() {
         thread::sleep(Duration::from_millis(20));
     }
     let mut i = j.info().clone();
-    assert!(i.ranges && i.name == "f.bin" && i.done() > VERIFY && i.done() < data.len() as u64, "{:?} {}", i.status, i.done());
+    assert!(
+        i.ranges && i.name == "f.bin" && i.done() > VERIFY && i.done() < data.len() as u64,
+        "{:?} {}",
+        i.status,
+        i.done()
+    );
     i.limit_kb = 0;
     // resume in active mode through an "FTP proxy" (the test server, reached as user@host)
     let addr = i.url.split('/').nth(2).unwrap().to_string();
     let proxy = format!("ftp://{addr}");
-    *FTP.lock().unwrap() = FtpCfg { pasv: false, route: Some(Arc::new(move |_: &str| proxy.clone())) };
+    *FTP.lock().unwrap() = FtpCfg {
+        pasv: false,
+        route: Some(Arc::new(move |_: &str| proxy.clone())),
+    };
     i.url = i.url.replace(&addr, "files.example");
     let j = Job::new(i);
     run(&j);
-    *FTP.lock().unwrap() = FtpCfg { pasv: true, route: None };
+    *FTP.lock().unwrap() = FtpCfg {
+        pasv: true,
+        route: None,
+    };
     assert_eq!(j.info().status, Status::Complete);
     assert_eq!(fs::read(j.info().path()).unwrap(), *data);
     let _ = fs::remove_dir_all(&dir);
@@ -613,13 +885,21 @@ fn fake_http_proxy(data: Arc<Vec<u8>>, honour_range: bool) -> (u16, Arc<Mutex<Ve
                 let mut r = BufReader::new(&s);
                 let mut head = String::new();
                 while r.read_line(&mut head).unwrap_or(0) > 0 && !head.ends_with("\r\n\r\n") {}
-                let from: usize = head.split("Range: bytes=").nth(1).and_then(|v| v.split('-').next()).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let from: usize = head
+                    .split("Range: bytes=")
+                    .nth(1)
+                    .and_then(|v| v.split('-').next())
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
                 heads.lock().unwrap().push(head);
                 let mut w = &s;
                 let (h, body) = if honour_range {
                     (format!("HTTP/1.0 206 Partial\r\nContent-Range: bytes {from}-{}/{}\r\nContent-Length: {}\r\n\r\n", data.len() - 1, data.len(), data.len() - from), &data[from..])
                 } else {
-                    (format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", data.len()), &data[..])
+                    (
+                        format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", data.len()),
+                        &data[..],
+                    )
                 };
                 let _ = w.write_all(h.as_bytes());
                 for c in body.chunks(64 * 1024) {
@@ -638,9 +918,15 @@ fn ftp_via(route: String, url: &str, data: &[u8], tag: &str) -> Info {
     let dir = std::env::temp_dir().join(format!("ndm-test-ftp-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     ftp_route(route);
-    let j = Job::new(Info { conns: 4, ..info(url.into(), &dir) });
+    let j = Job::new(Info {
+        conns: 4,
+        ..info(url.into(), &dir)
+    });
     run(&j);
-    *FTP.lock().unwrap() = FtpCfg { pasv: true, route: None };
+    *FTP.lock().unwrap() = FtpCfg {
+        pasv: true,
+        route: None,
+    };
     let i = j.info().clone();
     assert_eq!(i.status, Status::Complete);
     assert_eq!(fs::read(i.path()).unwrap(), data);
@@ -651,21 +937,46 @@ fn ftp_via(route: String, url: &str, data: &[u8], tag: &str) -> Info {
 #[test]
 fn ftp_through_http_proxy() {
     let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-    let data: Arc<Vec<u8>> = Arc::new((0..1024 * 1024 + 5).map(|i: u32| (i * 7 % 251) as u8).collect());
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..1024 * 1024 + 5)
+            .map(|i: u32| (i * 7 % 251) as u8)
+            .collect(),
+    );
     let (port, heads) = fake_http_proxy(data.clone(), true);
-    let i = ftp_via(format!("http://u:p@127.0.0.1:{port}"), "ftp://h.example/f.bin", &data, "http");
+    let i = ftp_via(
+        format!("http://u:p@127.0.0.1:{port}"),
+        "ftp://h.example/f.bin",
+        &data,
+        "http",
+    );
     assert!(i.ranges);
     let first = &heads.lock().unwrap()[0];
-    assert!(first.starts_with("GET ftp://h.example/f.bin HTTP/1.0\r\n"), "{first}");
-    assert!(first.contains("\r\nRange: bytes=0-\r\n") && first.contains("\r\nProxy-Authorization: Basic dTpw\r\n"), "{first}");
+    assert!(
+        first.starts_with("GET ftp://h.example/f.bin HTTP/1.0\r\n"),
+        "{first}"
+    );
+    assert!(
+        first.contains("\r\nRange: bytes=0-\r\n")
+            && first.contains("\r\nProxy-Authorization: Basic dTpw\r\n"),
+        "{first}"
+    );
 }
 
 #[test]
 fn ftp_http_proxy_without_ranges() {
     let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-    let data: Arc<Vec<u8>> = Arc::new((0..1024 * 1024 + 5).map(|i: u32| (i * 11 % 251) as u8).collect());
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..1024 * 1024 + 5)
+            .map(|i: u32| (i * 11 % 251) as u8)
+            .collect(),
+    );
     let (port, heads) = fake_http_proxy(data.clone(), false);
-    let i = ftp_via(format!("http://127.0.0.1:{port}"), "ftp://h.example/f.bin", &data, "norange");
+    let i = ftp_via(
+        format!("http://127.0.0.1:{port}"),
+        "ftp://h.example/f.bin",
+        &data,
+        "norange",
+    );
     assert!(!i.ranges);
     assert_eq!(heads.lock().unwrap().len(), 1, "one connection");
 }
@@ -673,16 +984,27 @@ fn ftp_http_proxy_without_ranges() {
 #[test]
 fn ftp_through_socks() {
     let _one = FTP_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-    let data: Arc<Vec<u8>> = Arc::new((0..1024 * 1024 + 9).map(|i: u32| (i * 3 % 253) as u8).collect());
+    let data: Arc<Vec<u8>> = Arc::new(
+        (0..1024 * 1024 + 9)
+            .map(|i: u32| (i * 3 % 253) as u8)
+            .collect(),
+    );
     let url = ftp_serve(data.clone());
     let i = ftp_via(crate::net::local_proxy(""), &url, &data, "socks");
     assert!(i.ranges);
 }
 
-
 #[test]
 fn steal_keeps_segments_contiguous() {
-    let j = Job::new(Info { ranges: true, segs: vec![Seg { stop: Some(10 * MIN_SEG), owned: true, ..Default::default() }], ..Default::default() });
+    let j = Job::new(Info {
+        ranges: true,
+        segs: vec![Seg {
+            stop: Some(10 * MIN_SEG),
+            owned: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
     let k = j.steal("").unwrap();
     let i = j.info();
     assert_eq!(i.segs[0].stop, Some(i.segs[k].start));
@@ -691,19 +1013,51 @@ fn steal_keeps_segments_contiguous() {
 
 #[test]
 fn names() {
-    assert_eq!(disposition_name(r#"attachment; filename="a b.zip""#).unwrap(), "a b.zip");
-    assert_eq!(disposition_name("attachment; filename=x.bin; filename*=UTF-8''%E2%82%AC.txt").unwrap(), "€.txt");
-    assert_eq!(url_name("https://h.com/dir/my%20file.iso?x=1"), "my file.iso");
+    assert_eq!(
+        disposition_name(r#"attachment; filename="a b.zip""#).unwrap(),
+        "a b.zip"
+    );
+    assert_eq!(
+        disposition_name("attachment; filename=x.bin; filename*=UTF-8''%E2%82%AC.txt").unwrap(),
+        "€.txt"
+    );
+    assert_eq!(
+        url_name("https://h.com/dir/my%20file.iso?x=1"),
+        "my file.iso"
+    );
     assert_eq!(url_name("https://h.com"), "");
     assert_eq!(sanitize("a:b?.."), "a_b_");
-    assert_eq!(merge_cookies("a=1; b=2", &["b=3".into(), "c=4".into()]), "a=1; b=3; c=4");
+    assert_eq!(
+        merge_cookies("a=1; b=2", &["b=3".into(), "c=4".into()]),
+        "a=1; b=3; c=4"
+    );
     // RFC 2617 section 3.5 example
     assert_eq!(md5_hex(""), "d41d8cd98f00b204e9800998ecf8427e");
-    let h = digest(r#"realm="testrealm@host.com", qop="auth,auth-int", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41""#, "Mufasa", "Circle Of Life", "GET", "/dir/index.html");
-    assert!(h.contains(r#"realm="testrealm@host.com""#) && h.contains("qop=auth, nc=00000001") && h.contains(r#"opaque="5ccc069c403ebaf9f0171e9517f40e41""#), "{h}");
+    let h = digest(
+        r#"realm="testrealm@host.com", qop="auth,auth-int", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41""#,
+        "Mufasa",
+        "Circle Of Life",
+        "GET",
+        "/dir/index.html",
+    );
+    assert!(
+        h.contains(r#"realm="testrealm@host.com""#)
+            && h.contains("qop=auth, nc=00000001")
+            && h.contains(r#"opaque="5ccc069c403ebaf9f0171e9517f40e41""#),
+        "{h}"
+    );
     let ha1 = md5_hex("Mufasa:testrealm@host.com:Circle Of Life");
-    let cn = h.split("cnonce=\"").nth(1).unwrap().split('"').next().unwrap();
-    let want = md5_hex(&format!("{ha1}:dcd98b7102dd2f0e8b11d0f600bfb0c093:00000001:{cn}:auth:{}", md5_hex("GET:/dir/index.html")));
+    let cn = h
+        .split("cnonce=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let want = md5_hex(&format!(
+        "{ha1}:dcd98b7102dd2f0e8b11d0f600bfb0c093:00000001:{cn}:auth:{}",
+        md5_hex("GET:/dir/index.html")
+    ));
     assert!(h.contains(&format!(r#"response="{want}""#)));
     assert_eq!(ha1, "939e7578ed9e3c518a452acee763bce9");
 }

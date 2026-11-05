@@ -2,11 +2,20 @@ use crate::core::{AdvProxy, BTreeMap, Deserialize, Path, Queue, Sched, Serialize
 
 /// NDM's default categories (and their file types); the user edits them in "NDM categories" (template 204).
 pub const CATEGORIES: [(&str, &str); 5] = [
-    ("Compressed", "zip rar r0 r1 arj gz sit sitx sea ace bz2 7z tar tgz xz zst iso"),
-    ("Documents", "doc docx pdf ppt pps pptx xls xlsx odt ods rtf txt epub"),
+    (
+        "Compressed",
+        "zip rar r0 r1 arj gz sit sitx sea ace bz2 7z tar tgz xz zst iso",
+    ),
+    (
+        "Documents",
+        "doc docx pdf ppt pps pptx xls xlsx odt ods rtf txt epub",
+    ),
     ("Music", "mp3 wav wma mpa ram ra aac aif m4a flac ogg opus"),
     ("Programs", "exe msi msix apk dmg deb rpm appimage"),
-    ("Video", "avi mpg mpe mpeg asf wmv mov qt rm mp4 flv m4v webm ogv mkv ts 3gp"),
+    (
+        "Video",
+        "avi mpg mpe mpeg asf wmv mov qt rm mp4 flv m4v webm ogv mkv ts 3gp",
+    ),
 ];
 
 pub const GENERAL: &str = "General";
@@ -267,10 +276,20 @@ pub struct Browser {
 /// browser's User-Agent. Chrome is last: the others' User-Agents contain "Chrome/" too.
 pub fn browser_kind(text: &str) -> &'static str {
     let t = text.to_ascii_lowercase();
-    [("edg", "edge"), ("opr/", "opera"), ("opera", "opera"), ("vivaldi", "vivaldi"), ("yabrowser", "yandex"), ("yandex", "yandex"), ("firefox", "firefox"), ("brave", "brave"), ("chrom", "chrome")]
-        .iter()
-        .find(|(k, _)| t.contains(k))
-        .map_or("", |(_, v)| v)
+    [
+        ("edg", "edge"),
+        ("opr/", "opera"),
+        ("opera", "opera"),
+        ("vivaldi", "vivaldi"),
+        ("yabrowser", "yandex"),
+        ("yandex", "yandex"),
+        ("firefox", "firefox"),
+        ("brave", "brave"),
+        ("chrom", "chrome"),
+    ]
+    .iter()
+    .find(|(k, _)| t.contains(k))
+    .map_or("", |(_, v)| v)
 }
 
 /// Special keys (template 229; SpecialKeys\UseKeyToPrevent, AltP... InsF, CheckMouse, SkipHtml,
@@ -294,14 +313,41 @@ pub struct Keys {
 
 impl Default for Keys {
     fn default() -> Self {
-        Keys { prevent: true, alt_p: false, shift_p: false, ctrl_p: false, del_p: true, force: false, alt_f: false, shift_f: false, ctrl_f: false, ins_f: true, check_mouse: false, skip_html: true }
+        Keys {
+            prevent: true,
+            alt_p: false,
+            shift_p: false,
+            ctrl_p: false,
+            del_p: true,
+            force: false,
+            alt_f: false,
+            shift_f: false,
+            ctrl_f: false,
+            ins_f: true,
+            check_mouse: false,
+            skip_html: true,
+        }
     }
 }
 
-pub const SOUND_EVENTS: [&str; 4] = ["Download complete", "Download failed", "Queue processing started", "Queue processing stopped/finished"];
+pub const SOUND_EVENTS: [&str; 4] = [
+    "Download complete",
+    "Download failed",
+    "Queue processing started",
+    "Queue processing stopped/finished",
+];
 
 /// NDM's default visible columns: File Name, Q, Size, Status, Time left, Transfer rate, Last Try Date, Description.
-pub const DEFAULT_COLUMNS: [(u8, u16); 8] = [(0, 150), (2, 20), (3, 75), (4, 65), (5, 75), (6, 95), (7, 65), (8, 200)];
+pub const DEFAULT_COLUMNS: [(u8, u16); 8] = [
+    (0, 150),
+    (2, 20),
+    (3, 75),
+    (4, 65),
+    (5, 75),
+    (6, 95),
+    (7, 65),
+    (8, 200),
+];
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
@@ -313,8 +359,14 @@ pub struct Login {
 
 impl Default for Settings {
     fn default() -> Self {
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
-        let mut types: Vec<&str> = CATEGORIES.iter().flat_map(|c| c.1.split(' ')).filter(|e| *e != "txt").collect();
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".into());
+        let mut types: Vec<&str> = CATEGORIES
+            .iter()
+            .flat_map(|c| c.1.split(' '))
+            .filter(|e| *e != "txt")
+            .collect();
         types.extend(["bin", "img", "torrent"]);
         Settings {
             base_dir: Path::new(&home).join("Downloads").display().to_string(),
@@ -326,7 +378,14 @@ impl Default for Settings {
             show_complete: true,
             file_types: types.join(" "),
             queues: vec![Queue::default(), Queue::sync_default(1)],
-            categories: CATEGORIES.iter().map(|(n, e)| Category { name: n.to_string(), exts: e.to_string(), ..Default::default() }).collect(),
+            categories: CATEGORIES
+                .iter()
+                .map(|(n, e)| Category {
+                    name: n.to_string(),
+                    exts: e.to_string(),
+                    ..Default::default()
+                })
+                .collect(),
             old_sched: None,
             old_max_active: None,
             cat_dirs: Default::default(),
@@ -352,7 +411,10 @@ impl Default for Settings {
             proxy_browser: false,
             proxy_bypass_on: false,
             proxy_bypass: String::new(),
-            adv: AdvProxy { socks5: true, ..Default::default() },
+            adv: AdvProxy {
+                socks5: true,
+                ..Default::default()
+            },
             proxy_host: String::new(),
             proxy_port: "8080".into(),
             proxy_user: String::new(),
@@ -387,7 +449,10 @@ impl Default for Settings {
             panel_skip: String::new(),
             browsers: Vec::new(),
             keys: Keys::default(),
-            panel_types: PANEL_TYPES.split(' ').map(|t| (t.to_string(), true)).collect(),
+            panel_types: PANEL_TYPES
+                .split(' ')
+                .map(|t| (t.to_string(), true))
+                .collect(),
             // NDM's DwnlPanel\minsize defaults: MP3 0xc800 and OGG 0x19000 bytes
             panel_min: BTreeMap::from([("MP3".to_string(), 50), ("OGG".to_string(), 100)]),
             panel_mini: false,

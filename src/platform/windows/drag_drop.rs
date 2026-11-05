@@ -1,6 +1,14 @@
-use super::{HWND, Rgba, show, size_of, visible, wide, zeroed};
-use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, GetSystemMetrics, HTCAPTION, IDC_SIZEALL, LoadCursorW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP};
+use super::{show, size_of, visible, wide, zeroed, Rgba, HWND};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, GetSystemMetrics, LoadCursorW, RegisterClassW, ShowWindow,
+    UpdateLayeredWindow, HTCAPTION, IDC_SIZEALL, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
+    SW_SHOWNOACTIVATE, ULW_ALPHA, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+};
 
 /// Links dropped on the drop target or the main window, for the UI to take (`take_drops`).
 static DROPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -33,14 +41,24 @@ struct DropObj {
 }
 unsafe impl Sync for DropObj {}
 
-unsafe extern "system" fn d_query(this: *mut DropObj, _: *const windows_sys::core::GUID, out: *mut Ptr) -> i32 {
+unsafe extern "system" fn d_query(
+    this: *mut DropObj,
+    _: *const windows_sys::core::GUID,
+    out: *mut Ptr,
+) -> i32 {
     *out = this.cast();
     0
 }
 unsafe extern "system" fn d_ref(_: *mut DropObj) -> u32 {
     1 // a static object: never freed
 }
-unsafe extern "system" fn d_enter(_: *mut DropObj, data: Ptr, _: u32, _: Pt, effect: *mut u32) -> i32 {
+unsafe extern "system" fn d_enter(
+    _: *mut DropObj,
+    data: Ptr,
+    _: u32,
+    _: Pt,
+    effect: *mut u32,
+) -> i32 {
     *effect = if dropped_links(data).is_empty() { 0 } else { 1 }; // DROPEFFECT_COPY
     0
 }
@@ -51,7 +69,13 @@ unsafe extern "system" fn d_over(_: *mut DropObj, _: u32, _: Pt, effect: *mut u3
 unsafe extern "system" fn d_leave(_: *mut DropObj) -> i32 {
     0
 }
-unsafe extern "system" fn d_drop(_: *mut DropObj, data: Ptr, _: u32, _: Pt, effect: *mut u32) -> i32 {
+unsafe extern "system" fn d_drop(
+    _: *mut DropObj,
+    data: Ptr,
+    _: u32,
+    _: Pt,
+    effect: *mut u32,
+) -> i32 {
     let links = dropped_links(data);
     *effect = if links.is_empty() { 0 } else { 1 };
     if !links.is_empty() {
@@ -67,7 +91,15 @@ unsafe extern "system" fn d_drop(_: *mut DropObj, data: Ptr, _: u32, _: Pt, effe
     }
     0
 }
-static DROP_VTBL: DropVtbl = DropVtbl { query: d_query, add_ref: d_ref, release: d_ref, enter: d_enter, over: d_over, leave: d_leave, drop: d_drop };
+static DROP_VTBL: DropVtbl = DropVtbl {
+    query: d_query,
+    add_ref: d_ref,
+    release: d_ref,
+    enter: d_enter,
+    over: d_over,
+    leave: d_leave,
+    drop: d_drop,
+};
 static DROP_OBJ: DropObj = DropObj { vtbl: &DROP_VTBL };
 
 /// http/https/ftp addresses in a dropped IDataObject (a link: its URL; text: every address in it).
@@ -79,9 +111,17 @@ unsafe fn dropped_links(data: Ptr) -> Vec<String> {
         return vec![];
     }
     let get: GetData = *(*(data as *const *const GetData)).add(3); // IDataObject::GetData
-    let url = windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW(wide("UniformResourceLocatorW").as_ptr()) as u16;
+    let url = windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW(
+        wide("UniformResourceLocatorW").as_ptr(),
+    ) as u16;
     for cf in [url, 13 /* CF_UNICODETEXT */] {
-        let fmt = FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: 1, lindex: -1, tymed: 1 /* TYMED_HGLOBAL */ };
+        let fmt = FORMATETC {
+            cfFormat: cf,
+            ptd: std::ptr::null_mut(),
+            dwAspect: 1,
+            lindex: -1,
+            tymed: 1, /* TYMED_HGLOBAL */
+        };
         let mut m: STGMEDIUM = zeroed();
         if get(data, &fmt, &mut m) != 0 {
             continue;
@@ -94,7 +134,15 @@ unsafe fn dropped_links(data: Ptr) -> Vec<String> {
             GlobalUnlock(m.u.hGlobal);
         }
         windows_sys::Win32::System::Ole::ReleaseStgMedium(&mut m);
-        let links: Vec<String> = text.split_whitespace().filter(|w| ["http://", "https://", "ftp://"].iter().any(|s| w.to_ascii_lowercase().starts_with(s))).map(str::to_string).collect();
+        let links: Vec<String> = text
+            .split_whitespace()
+            .filter(|w| {
+                ["http://", "https://", "ftp://"]
+                    .iter()
+                    .any(|s| w.to_ascii_lowercase().starts_with(s))
+            })
+            .map(str::to_string)
+            .collect();
         if !links.is_empty() {
             return links;
         }
@@ -110,7 +158,10 @@ pub fn accept_drops(hwnd: isize, wake: impl Fn() + Send + Sync + 'static) {
     unsafe {
         windows_sys::Win32::System::Ole::OleInitialize(std::ptr::null());
         windows_sys::Win32::System::Ole::RevokeDragDrop(hwnd as HWND);
-        windows_sys::Win32::System::Ole::RegisterDragDrop(hwnd as HWND, &DROP_OBJ as *const DropObj as Ptr);
+        windows_sys::Win32::System::Ole::RegisterDragDrop(
+            hwnd as HWND,
+            &DROP_OBJ as *const DropObj as Ptr,
+        );
     }
 }
 
@@ -143,38 +194,92 @@ pub fn drop_target(show: bool, (iw, ih, px): &Rgba) {
                 return;
             }
             let class = wide("NDMDropTarget");
-            let inst = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
-            let wc = WNDCLASSW { lpfnWndProc: Some(drop_wnd_proc), hInstance: inst, lpszClassName: class.as_ptr(), hCursor: LoadCursorW(std::ptr::null_mut(), IDC_SIZEALL), ..zeroed() };
+            let inst =
+                windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null());
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(drop_wnd_proc),
+                hInstance: inst,
+                lpszClassName: class.as_ptr(),
+                hCursor: LoadCursorW(std::ptr::null_mut(), IDC_SIZEALL),
+                ..zeroed()
+            };
             RegisterClassW(&wc);
             let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
             let (w, ht) = (*iw as i32, *ih as i32);
-            h = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class.as_ptr(), wide("Drop target").as_ptr(), WS_POPUP, sw - w - 40, sh - ht - 120, w, ht, std::ptr::null_mut(), std::ptr::null_mut(), inst, std::ptr::null());
+            h = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                class.as_ptr(),
+                wide("Drop target").as_ptr(),
+                WS_POPUP,
+                sw - w - 40,
+                sh - ht - 120,
+                w,
+                ht,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                inst,
+                std::ptr::null(),
+            );
             if h.is_null() {
                 return;
             }
             // the picture through a 32-bit DIB, alpha premultiplied as UpdateLayeredWindow wants it
-            let bi = BITMAPINFO { bmiHeader: BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -ht, biPlanes: 1, biBitCount: 32, ..zeroed() }, ..zeroed() };
+            let bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -ht,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..zeroed()
+                },
+                ..zeroed()
+            };
             let screen = GetDC(std::ptr::null_mut());
             let mem = CreateCompatibleDC(screen);
             let mut bits = std::ptr::null_mut();
-            let bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+            let bmp =
+                CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
             if !bits.is_null() {
                 let dst = std::slice::from_raw_parts_mut(bits as *mut u8, iw * ih * 4);
                 for (d, s) in dst.chunks_mut(4).zip(px.chunks(4)) {
                     let a = s[3] as u32;
-                    (d[0], d[1], d[2], d[3]) = ((s[2] as u32 * a / 255) as u8, (s[1] as u32 * a / 255) as u8, (s[0] as u32 * a / 255) as u8, s[3]);
+                    (d[0], d[1], d[2], d[3]) = (
+                        (s[2] as u32 * a / 255) as u8,
+                        (s[1] as u32 * a / 255) as u8,
+                        (s[0] as u32 * a / 255) as u8,
+                        s[3],
+                    );
                 }
                 let old = SelectObject(mem, bmp);
                 let size = windows_sys::Win32::Foundation::SIZE { cx: w, cy: ht };
                 let src = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-                let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
-                UpdateLayeredWindow(h, screen, std::ptr::null(), &size, mem, &src, 0, &blend, ULW_ALPHA);
+                let blend = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    BlendFlags: 0,
+                    SourceConstantAlpha: 255,
+                    AlphaFormat: AC_SRC_ALPHA as u8,
+                };
+                UpdateLayeredWindow(
+                    h,
+                    screen,
+                    std::ptr::null(),
+                    &size,
+                    mem,
+                    &src,
+                    0,
+                    &blend,
+                    ULW_ALPHA,
+                );
                 SelectObject(mem, old);
             }
             DeleteObject(bmp);
             DeleteDC(mem);
             ReleaseDC(std::ptr::null_mut(), screen);
-            windows_sys::Win32::System::Ole::RegisterDragDrop(h, &DROP_OBJ as *const DropObj as Ptr);
+            windows_sys::Win32::System::Ole::RegisterDragDrop(
+                h,
+                &DROP_OBJ as *const DropObj as Ptr,
+            );
             DROP_HWND.store(h as isize, Relaxed);
         }
         ShowWindow(h, if show { SW_SHOWNOACTIVATE } else { SW_HIDE });

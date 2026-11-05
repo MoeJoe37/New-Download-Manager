@@ -1,12 +1,17 @@
-use super::{output};
+use super::output;
 
 /// The system's proxy (System Settings -> Network -> Proxies, as `scutil --proxy` shows it) in Windows'
 /// Internet Settings shape: (on, "http=host:port;https=host:port", bypass list).
 pub fn system_proxy() -> (bool, String, String) {
-    let (on, mut server, bypass) = scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default());
+    let (on, mut server, bypass) =
+        scutil_proxy(&output("scutil", &["--proxy"]).unwrap_or_default());
     if on && crate::mac_capture::has_journal() {
         let local = format!("http=127.0.0.1:{}", crate::core::routing::PROXY_PORT);
-        server = server.split(';').filter(|entry| *entry != local).collect::<Vec<_>>().join(";");
+        server = server
+            .split(';')
+            .filter(|entry| *entry != local)
+            .collect::<Vec<_>>()
+            .join(";");
     }
     (!server.is_empty(), server, bypass)
 }
@@ -33,7 +38,13 @@ fn scutil_proxy(text: &str) -> (bool, String, String) {
     let server: Vec<String> = [("http", "HTTP"), ("https", "HTTPS"), ("ftp", "FTP")]
         .iter()
         .filter(|(_, k)| get(&format!("{k}Enable")) == "1" && !get(&format!("{k}Proxy")).is_empty())
-        .map(|(n, k)| format!("{n}={}:{}", get(&format!("{k}Proxy")), get(&format!("{k}Port"))))
+        .map(|(n, k)| {
+            format!(
+                "{n}={}:{}",
+                get(&format!("{k}Proxy")),
+                get(&format!("{k}Port"))
+            )
+        })
         .collect();
     (!server.is_empty(), server.join(";"), bypass.join(";"))
 }
@@ -41,13 +52,22 @@ fn scutil_proxy(text: &str) -> (bool, String, String) {
 #[test]
 fn scutil_proxy_output() {
     let t = "<dictionary> {\n  ExceptionsList : <array> {\n    0 : *.local\n    1 : 169.254/16\n  }\n  FTPPassive : 1\n  HTTPEnable : 1\n  HTTPPort : 3128\n  HTTPProxy : 10.0.0.1\n  HTTPSEnable : 0\n  HTTPSPort : 3129\n  HTTPSProxy : 10.0.0.2\n}\n";
-    assert_eq!(scutil_proxy(t), (true, "http=10.0.0.1:3128".into(), "*.local;169.254/16".into()));
+    assert_eq!(
+        scutil_proxy(t),
+        (
+            true,
+            "http=10.0.0.1:3128".into(),
+            "*.local;169.254/16".into()
+        )
+    );
     assert!(!scutil_proxy("<dictionary> {\n  HTTPEnable : 0\n}\n").0);
 }
 
 /// (name, connected) for each VPN service `scutil --nc list` shows: `* (Connected)  ID  IPSec  "Work"  [IPSec]`.
 fn nc_list() -> Vec<(String, bool)> {
-    output("scutil", &["--nc", "list"]).map(|t| nc_parse(&t)).unwrap_or_default()
+    output("scutil", &["--nc", "list"])
+        .map(|t| nc_parse(&t))
+        .unwrap_or_default()
 }
 
 fn nc_parse(text: &str) -> Vec<(String, bool)> {
@@ -62,7 +82,13 @@ fn nc_parse(text: &str) -> Vec<(String, bool)> {
 #[test]
 fn nc_lines() {
     let t = "Available network connection services in the current set (*=enabled):\n* (Disconnected)   A1B2  PPP --> L2TP  \"Office VPN\"   [PPP/L2TP]\n* (Connected)      C3D4  IPSec         \"Home\"         [IPSec]\n";
-    assert_eq!(nc_parse(t), [("Office VPN".to_string(), false), ("Home".to_string(), true)]);
+    assert_eq!(
+        nc_parse(t),
+        [
+            ("Office VPN".to_string(), false),
+            ("Home".to_string(), true)
+        ]
+    );
 }
 
 pub fn ras_entries() -> Vec<String> {
@@ -84,7 +110,9 @@ pub fn ras_save(_entry: &str, _user: &str, _pass: &str, _save: bool) -> Result<(
 pub fn ras_dial(entry: &str) -> Result<(), String> {
     output("scutil", &["--nc", "start", entry]).ok_or("the VPN didn't start")?;
     for _ in 0..180 {
-        if output("scutil", &["--nc", "status", entry]).is_some_and(|s| s.lines().next().is_some_and(|l| l.trim() == "Connected")) {
+        if output("scutil", &["--nc", "status", entry])
+            .is_some_and(|s| s.lines().next().is_some_and(|l| l.trim() == "Connected"))
+        {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -103,7 +131,14 @@ pub fn ras_hangup_all() {
 /// The networks a download can be spread over: up, not loopback, with an address and a default route
 /// (`netstat -rn`, the scoped default routes included: one per connected network).
 pub fn nics() -> Vec<crate::net::Nic> {
-    let routes = [output("netstat", &["-rn", "-f", "inet"]), output("netstat", &["-rn", "-f", "inet6"])].into_iter().flatten().collect::<Vec<_>>().join("\n");
+    let routes = [
+        output("netstat", &["-rn", "-f", "inet"]),
+        output("netstat", &["-rn", "-f", "inet6"]),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n");
     crate::posix::ifaddrs(&default_route_devices(&routes))
 }
 
@@ -112,7 +147,11 @@ fn default_route_devices(netstat: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for l in netstat.lines() {
         let f: Vec<&str> = l.split_whitespace().collect();
-        if f.first() == Some(&"default") && f.len() >= 4 && !f[3].starts_with("lo") && !out.iter().any(|o| o == f[3]) {
+        if f.first() == Some(&"default")
+            && f.len() >= 4
+            && !f[3].starts_with("lo")
+            && !out.iter().any(|o| o == f[3])
+        {
             out.push(f[3].to_string());
         }
     }

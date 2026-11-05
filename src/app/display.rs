@@ -16,7 +16,11 @@ pub(in crate::app) fn human_os(n: u64) -> String {
 }
 
 pub(in crate::app) fn rate(bps: f64) -> String {
-    if bps <= 0.0 { String::new() } else { i18n::line(&format!("{}/{}", human_os(bps as u64), tr_os("sec"))) }
+    if bps <= 0.0 {
+        String::new()
+    } else {
+        i18n::line(&format!("{}/{}", human_os(bps as u64), tr_os("sec")))
+    }
 }
 
 /// NDM's time left (0x43f730): seconds, minutes and seconds, or hours and minutes ("%ld hour(s) %d min" in
@@ -40,7 +44,12 @@ pub(in crate::app) fn size3(n: u64) -> String {
 
 /// `size3` in reading order, for a line it is part of.
 pub(in crate::app) fn size3_os(n: u64) -> String {
-    let (b, kb, mb, gb) = (n % 1024, n / 1024 % 1024, n / 1_048_576 % 1024, n / 1_073_741_824);
+    let (b, kb, mb, gb) = (
+        n % 1024,
+        n / 1024 % 1024,
+        n / 1_048_576 % 1024,
+        n / 1_073_741_824,
+    );
     let (whole, frac, unit) = if gb == 0 && mb < 1000 {
         if mb == 0 && kb < 1000 {
             if kb == 0 {
@@ -59,7 +68,12 @@ pub(in crate::app) fn size3_os(n: u64) -> String {
 /// A percentage as NDM prints it: whole part, separator, two truncated decimals.
 pub(in crate::app) fn pct2(p: f64) -> String {
     let whole = p.trunc();
-    format!("{}{}{:02}", whole as u64, win::decimal_sep(), ((p - whole) * 100.0).trunc() as u64)
+    format!(
+        "{}{}{:02}",
+        whole as u64,
+        win::decimal_sep(),
+        ((p - whole) * 100.0).trunc() as u64
+    )
 }
 
 /// A date and time as NDM's English prints it, or in the language file's format (its "%b %d %H:%M:%S %Y"
@@ -71,6 +85,14 @@ pub(in crate::app) fn date(ts: i64) -> String {
         return String::new();
     }
     // a format chrono can't read would panic when printed
-    let f = Some(tr_os(EN)).filter(|f| !chrono::format::StrftimeItems::new(f).any(|i| matches!(i, chrono::format::Item::Error))).unwrap_or_else(|| EN.into());
-    chrono::Local.timestamp_opt(ts, 0).single().map(|d| d.format(&f).to_string()).unwrap_or_default()
+    let f = Some(tr_os(EN))
+        .filter(|f| {
+            !chrono::format::StrftimeItems::new(f).any(|i| matches!(i, chrono::format::Item::Error))
+        })
+        .unwrap_or_else(|| EN.into());
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .map(|d| d.format(&f).to_string())
+        .unwrap_or_default()
 }

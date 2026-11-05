@@ -1,4 +1,10 @@
-use crate::engine::{Agent, Arc, AtomicBool, AtomicU32, Body, CHANGED, CHUNK, Duration, File, Info, Instant, Job, Limiter, MIN_SEG, Mutex, MutexGuard, OpenOptions, Path, PathBuf, Probe, RETRIES, Read, Relaxed, Request, Response, Seek, SeekFrom, Seg, Status, Write, call, fs, ftp_open, is_ftp, is_page, permanent_error, probe_of, request, retry_delay, sanitize, sniff, thread, unique_name, url_name, valid_layout, validate_http_response};
+use crate::engine::{
+    call, fs, ftp_open, is_ftp, is_page, permanent_error, probe_of, request, retry_delay, sanitize,
+    sniff, thread, unique_name, url_name, valid_layout, validate_http_response, Agent, Arc,
+    AtomicBool, AtomicU32, Body, Duration, File, Info, Instant, Job, Limiter, Mutex, MutexGuard,
+    OpenOptions, Path, PathBuf, Probe, Read, Relaxed, Request, Response, Seek, SeekFrom, Seg,
+    Status, Write, CHANGED, CHUNK, MIN_SEG, RETRIES,
+};
 /// A connection's network left the download (`fetch`).
 const LANE_GONE: &str = "network left the download";
 
@@ -26,7 +32,12 @@ const NO_ANSWER_ERR: &str = "no answer from the server";
 /// `old` ("a=1; b=2") with each `name=value` of `set` replacing the cookie of that name or added.
 pub(super) fn merge_cookies(old: &str, set: &[String]) -> String {
     let name = |c: &str| c.split('=').next().unwrap_or("").trim().to_string();
-    let mut all: Vec<String> = old.split(';').map(str::trim).filter(|c| !c.is_empty()).map(String::from).collect();
+    let mut all: Vec<String> = old
+        .split(';')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(String::from)
+        .collect();
     for c in set {
         all.retain(|o| name(o) != name(c));
         all.push(c.clone());
@@ -36,8 +47,17 @@ pub(super) fn merge_cookies(old: &str, set: &[String]) -> String {
 
 fn with_headers(mut request: Request, headers: &[(String, String)]) -> Request {
     for (key, value) in headers {
-        if !matches!(key.to_ascii_lowercase().as_str(), "host" | "connection" | "proxy-authorization"
-            | "content-length" | "transfer-encoding" | "te" | "upgrade" | "accept-encoding") {
+        if !matches!(
+            key.to_ascii_lowercase().as_str(),
+            "host"
+                | "connection"
+                | "proxy-authorization"
+                | "content-length"
+                | "transfer-encoding"
+                | "te"
+                | "upgrade"
+                | "accept-encoding"
+        ) {
             request = request.set(key, value);
         }
     }
@@ -47,7 +67,9 @@ fn with_headers(mut request: Request, headers: &[(String, String)]) -> Request {
 impl Job {
     pub fn new(info: Info) -> Arc<Job> {
         let limiter = Limiter::default();
-        limiter.rate.store(info.limit_kb.saturating_mul(1024), Relaxed);
+        limiter
+            .rate
+            .store(info.limit_kb.saturating_mul(1024), Relaxed);
         let done = info.done();
         Arc::new(Job {
             info: Mutex::new(info),
@@ -89,7 +111,11 @@ impl Job {
         if dt >= 1.0 {
             *s = (Instant::now(), done, done.saturating_sub(s.1) as f64 / dt);
         }
-        if self.running() { s.2 } else { 0.0 }
+        if self.running() {
+            s.2
+        } else {
+            0.0
+        }
     }
 
     /// Shows what NDM does with the data after the download (see `Info::post`); `frac` below 0 = unknown.
@@ -111,14 +137,22 @@ impl Job {
             let mut buf = vec![0u8; 4 << 20];
             let mut done = 0u64;
             loop {
-                if self.stopping() { return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "stopped")); }
+                if self.stopping() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "stopped",
+                    ));
+                }
                 let n = src.read(&mut buf)?;
                 if n == 0 {
                     break;
                 }
                 dst.write_all(&buf[..n])?;
                 done += n as u64;
-                self.set_post("Moving the file to its folder...", done as f32 / total as f32);
+                self.set_post(
+                    "Moving the file to its folder...",
+                    done as f32 / total as f32,
+                );
             }
             dst.sync_all()?;
             drop(dst);
@@ -167,12 +201,14 @@ impl Job {
                 Ok(false) => Status::Stopped,
                 Err(e) => Status::Error(e),
             };
-            job.ended.store(!matches!(i.status, Status::Stopped), Relaxed);
+            job.ended
+                .store(!matches!(i.status, Status::Stopped), Relaxed);
             match i.status {
                 Status::Error(_) => job.fails.fetch_add(1, Relaxed),
                 _ => job.fails.swap(0, Relaxed),
             };
-            *job.failed_at.lock().unwrap() = matches!(i.status, Status::Error(_)).then(Instant::now);
+            *job.failed_at.lock().unwrap() =
+                matches!(i.status, Status::Error(_)).then(Instant::now);
             for s in &mut i.segs {
                 s.info.clear();
                 s.owned = false;
@@ -201,7 +237,13 @@ impl Job {
         let (url, referrer, cookies, probed, headers) = {
             let mut i = self.info();
             i.last_try = chrono::Local::now().timestamp();
-            (i.url.clone(), i.referrer.clone(), i.cookies.clone(), i.probed, i.headers.clone())
+            (
+                i.url.clone(),
+                i.referrer.clone(),
+                i.cookies.clone(),
+                i.probed,
+                i.headers.clone(),
+            )
         };
         if self.info().fed {
             return Err(crate::i18n::tr_os("This file came from its web page through the browser: download it again from the page."));
@@ -221,15 +263,32 @@ impl Job {
         let mut first = None;
         // "Look up files in IE cache before downloading": a cached copy is offered to the
         // server as If-Modified-Since; on 304 Not Modified (0x7573) the cached file is copied into place.
-        let cached = if self.info().ie_cache && !probed && !is_ftp(&url) { crate::win::url_cache(&url) } else { None };
+        let cached = if self.info().ie_cache && !probed && !is_ftp(&url) {
+            crate::win::url_cache(&url)
+        } else {
+            None
+        };
         if !probed {
             // Like NDM (0x589960) the first request is the download itself, `bytes=0-`; no separate probe.
             let (p, r): (Probe, Body) = if is_ftp(&url) {
                 let (size, ranges, r) = ftp_open(&url, 0)?;
-                (Probe { name: sanitize(&url_name(&url)), size, ranges, modified: String::new(), etag: String::new(), stream: false, page: false, ytdlp: false }, r)
+                (
+                    Probe {
+                        name: sanitize(&url_name(&url)),
+                        size,
+                        ranges,
+                        modified: String::new(),
+                        etag: String::new(),
+                        stream: false,
+                        page: false,
+                        ytdlp: false,
+                    },
+                    r,
+                )
             } else {
                 let first_req = |agent: &Agent| {
-                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).set("Range", "bytes=0-");
+                    let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers)
+                        .set("Range", "bytes=0-");
                     if let Some((_, since)) = &cached {
                         req = req.set("If-Modified-Since", since);
                     }
@@ -252,11 +311,17 @@ impl Job {
                     fs::create_dir_all(&i.folder).map_err(|e| e.to_string())?;
                     let n = fs::copy(file, i.path()).map_err(|e| e.to_string())?;
                     (i.size, i.probed) = (Some(n), true);
-                    i.segs = vec![Seg { next: n, stop: Some(n), ..Default::default() }];
+                    i.segs = vec![Seg {
+                        next: n,
+                        stop: Some(n),
+                        ..Default::default()
+                    }];
                     return Ok(true);
                 }
                 validate_http_response(&r, Some((0, None)), None)?;
-                if r.header("Content-Type").is_some_and(crate::stream::is_manifest_type) {
+                if r.header("Content-Type")
+                    .is_some_and(crate::stream::is_manifest_type)
+                {
                     drop(r);
                     self.info().stream = true;
                     return crate::stream::download::run(self, agent, global);
@@ -266,8 +331,14 @@ impl Job {
                 // (and the Site Grabber's pages) keep their ordinary file behavior.
                 let video_page = {
                     let i = self.info();
-                    let html = |name: &str| matches!(crate::core::ext(name).as_str(), "html" | "htm" | "xhtml");
-                    !i.plain && !i.page && !html(&i.name) && !html(&url_name(&i.url)) && is_page(r.header("Content-Type"))
+                    let html = |name: &str| {
+                        matches!(crate::core::ext(name).as_str(), "html" | "htm" | "xhtml")
+                    };
+                    !i.plain
+                        && !i.page
+                        && !html(&i.name)
+                        && !html(&url_name(&i.url))
+                        && is_page(r.header("Content-Type"))
                 };
                 if video_page {
                     drop(r);
@@ -275,7 +346,12 @@ impl Job {
                     return crate::ytdlp::run(self, agent, global);
                 }
                 // the server's cookies go along on the other connections
-                let set: Vec<String> = r.all("Set-Cookie").iter().filter_map(|c| c.split(';').next()).map(|c| c.trim().to_string()).collect();
+                let set: Vec<String> = r
+                    .all("Set-Cookie")
+                    .iter()
+                    .filter_map(|c| c.split(';').next())
+                    .map(|c| c.trim().to_string())
+                    .collect();
                 if !set.is_empty() && r.get_url() == url {
                     let mut i = self.info();
                     i.cookies = merge_cookies(&i.cookies, &set);
@@ -287,9 +363,16 @@ impl Job {
             if i.name.is_empty() {
                 i.name = unique_name(&i.folder, &p.name, &|_| false);
             }
-            if !i.segs.is_empty() && i.done() > 0 && (i.size != p.size || i.ranges != p.ranges
-                || (!i.etag.is_empty() && !p.etag.is_empty() && i.etag != p.etag)
-                || (!i.modified.is_empty() && !p.modified.is_empty() && i.modified != p.modified && !self.ignore_date.load(Relaxed))) {
+            if !i.segs.is_empty()
+                && i.done() > 0
+                && (i.size != p.size
+                    || i.ranges != p.ranges
+                    || (!i.etag.is_empty() && !p.etag.is_empty() && i.etag != p.etag)
+                    || (!i.modified.is_empty()
+                        && !p.modified.is_empty()
+                        && i.modified != p.modified
+                        && !self.ignore_date.load(Relaxed)))
+            {
                 return Err(CHANGED.into());
             }
             (i.size, i.ranges, i.probed) = (p.size, p.ranges, true);
@@ -310,16 +393,25 @@ impl Job {
             }
             let part = i.part();
             if !i.segs.is_empty() && !valid_layout(&i.segs, i.size) {
-                return Err("Saved download ranges are invalid. Restart the download to recover.".into());
+                return Err(
+                    "Saved download ranges are invalid. Restart the download to recover.".into(),
+                );
             }
-            if i.ranges && i.done() > 0 && part.exists()
-                && fs::metadata(&part).map_err(|e| e.to_string())?.len() < i.segs.iter().map(|s| s.next).max().unwrap_or(0) {
+            if i.ranges
+                && i.done() > 0
+                && part.exists()
+                && fs::metadata(&part).map_err(|e| e.to_string())?.len()
+                    < i.segs.iter().map(|s| s.next).max().unwrap_or(0)
+            {
                 return Err("The partial download is shorter than its saved progress".into());
             }
             // Servers without Range support can't resume, so they always start over.
             if i.segs.is_empty() || !i.ranges || !part.exists() {
                 // One segment for the whole file; more connections split it as they open.
-                i.segs = vec![Seg { stop: i.size, ..Default::default() }];
+                i.segs = vec![Seg {
+                    stop: i.size,
+                    ..Default::default()
+                }];
                 let f = File::create(&part).map_err(|e| e.to_string())?;
                 // NTFS fills the gap with zeros before a write far into a preallocated file, which stalls
                 // the connections that start in the middle of a big file; a sparse file skips that
@@ -347,7 +439,8 @@ impl Job {
             let mut started = false;
             self.caps.lock().unwrap().clear();
             loop {
-                let (done, live): (Vec<_>, Vec<_>) = hs.into_iter().partition(|(h, _)| h.is_finished());
+                let (done, live): (Vec<_>, Vec<_>) =
+                    hs.into_iter().partition(|(h, _)| h.is_finished());
                 hs = live;
                 for (h, net) in done {
                     if let Some(e) = h.join().unwrap_or(Some("worker panicked".into())) {
@@ -366,11 +459,25 @@ impl Job {
                 for (net, lane_agent) in &lanes {
                     let n = hs.iter().filter(|(_, l)| l == net).count();
                     // fewer once the server turned connections away (`worker`)
-                    let max = self.caps.lock().unwrap().get(net).copied().unwrap_or(max).min(max);
+                    let max = self
+                        .caps
+                        .lock()
+                        .unwrap()
+                        .get(net)
+                        .copied()
+                        .unwrap_or(max)
+                        .min(max);
                     let want = if n == 0 {
                         // its first connection, unless it gave up a moment ago
-                        usize::from(gave_up.get(net).is_none_or(|t| t.elapsed() >= LANE_COOLDOWN))
-                    } else if n < max && grown.get(net).is_none_or(|t| t.elapsed() >= RAMP_EVERY) && self.ramp_ok(global, net) {
+                        usize::from(
+                            gave_up
+                                .get(net)
+                                .is_none_or(|t| t.elapsed() >= LANE_COOLDOWN),
+                        )
+                    } else if n < max
+                        && grown.get(net).is_none_or(|t| t.elapsed() >= RAMP_EVERY)
+                        && self.ramp_ok(global, net)
+                    {
                         (n * 2).min(max) - n
                     } else {
                         0
@@ -378,9 +485,16 @@ impl Job {
                     for _ in 0..want {
                         let Some(k) = self.claim(net) else { break };
                         // the first request's body becomes the first connection on its network
-                        let pre = if *net == first_net { first.take() } else { None };
+                        let pre = if *net == first_net {
+                            first.take()
+                        } else {
+                            None
+                        };
                         let (a, l) = (lane_agent.clone(), net.clone());
-                        hs.push((sc.spawn(move || self.worker(k, part, (a, l), global, pre, n > 0)), net.clone()));
+                        hs.push((
+                            sc.spawn(move || self.worker(k, part, (a, l), global, pre, n > 0)),
+                            net.clone(),
+                        ));
                         grown.insert(net.clone(), Instant::now());
                         started = true;
                     }
@@ -390,8 +504,15 @@ impl Job {
                 }
                 if hs.is_empty() && (started || first.is_none()) {
                     // nothing left to claim, or every network has given up for now
-                    let waiting = lanes.iter().any(|(net, _)| gave_up.get(net).is_some_and(|t| t.elapsed() < LANE_COOLDOWN));
-                    if !waiting || self.info().segs.iter().all(Seg::done) || lanes.iter().all(|(net, _)| gave_up.contains_key(net)) {
+                    let waiting = lanes.iter().any(|(net, _)| {
+                        gave_up
+                            .get(net)
+                            .is_some_and(|t| t.elapsed() < LANE_COOLDOWN)
+                    });
+                    if !waiting
+                        || self.info().segs.iter().all(Seg::done)
+                        || lanes.iter().all(|(net, _)| gave_up.contains_key(net))
+                    {
                         break;
                     }
                 }
@@ -403,37 +524,77 @@ impl Job {
             // temporary directory is on another drive
             let (size, len, dest) = {
                 let i = self.info();
-                (i.size, i.segs.iter().map(|s| s.next).max().unwrap_or(0), i.path())
+                (
+                    i.size,
+                    i.segs.iter().map(|s| s.next).max().unwrap_or(0),
+                    i.path(),
+                )
             };
             if size.is_none() {
-                OpenOptions::new().write(true).open(part).and_then(|f| f.set_len(len)).map_err(|e| e.to_string())?;
+                OpenOptions::new()
+                    .write(true)
+                    .open(part)
+                    .and_then(|f| f.set_len(len))
+                    .map_err(|e| e.to_string())?;
             }
             let output = self.info().media_output.clone();
             if matches!(output.as_str(), "mp4" | "mkv") {
-                if sniff(part) != Some("ts") { return Err("The downloaded source is no longer a transport stream".into()); }
-                let ffmpeg = crate::media::toolchain().ok_or("Install FFmpeg and ffprobe to convert this transport stream")?;
+                if sniff(part) != Some("ts") {
+                    return Err("The downloaded source is no longer a transport stream".into());
+                }
+                let ffmpeg = crate::media::toolchain()
+                    .ok_or("Install FFmpeg and ffprobe to convert this transport stream")?;
                 let mut converted = dest.with_extension(&output);
                 if converted != dest && converted.exists() {
-                    let folder = converted.parent().unwrap_or(Path::new(".")).to_string_lossy();
-                    let name = unique_name(&folder, &converted.file_name().unwrap_or_default().to_string_lossy(), &|_| false);
+                    let folder = converted
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .to_string_lossy();
+                    let name = unique_name(
+                        &folder,
+                        &converted.file_name().unwrap_or_default().to_string_lossy(),
+                        &|_| false,
+                    );
                     converted = converted.with_file_name(name);
                 }
                 let stage = crate::media::Stage::new(&converted)?;
-                let result = crate::media::mux(self, &ffmpeg, part, None, stage.path(), &output, output == "mp4");
-                if self.stopping() { return Ok(false); }
+                let result = crate::media::mux(
+                    self,
+                    &ffmpeg,
+                    part,
+                    None,
+                    stage.path(),
+                    &output,
+                    output == "mp4",
+                );
+                if self.stopping() {
+                    return Ok(false);
+                }
                 result?;
                 stage.finish(&converted)?;
-                let size = fs::metadata(&converted).map_err(|err| err.to_string())?.len();
+                let size = fs::metadata(&converted)
+                    .map_err(|err| err.to_string())?
+                    .len();
                 let _ = fs::remove_file(part);
                 let mut info = self.info();
-                info.name = converted.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                info.name = converted
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 info.size = Some(size);
-                info.segs = vec![Seg { next: size, stop: Some(size), ..Default::default() }];
+                info.segs = vec![Seg {
+                    next: size,
+                    stop: Some(size),
+                    ..Default::default()
+                }];
                 return Ok(true);
             }
             if fs::rename(part, &dest).is_err() {
                 let copied = self.copy_out(part, &dest);
-                if self.stopping() && copied.is_err() { return Ok(false); }
+                if self.stopping() && copied.is_err() {
+                    return Ok(false);
+                }
                 copied?;
             }
         }
@@ -447,11 +608,16 @@ impl Job {
                 i.size = Some(i.done());
             }
             // "Set file creation date as provided by the server"
-            let date = chrono::DateTime::parse_from_rfc2822(&i.modified).ok().filter(|_| self.set_date.load(Relaxed));
+            let date = chrono::DateTime::parse_from_rfc2822(&i.modified)
+                .ok()
+                .filter(|_| self.set_date.load(Relaxed));
             if let (Some(t), Ok(f)) = (date, File::options().write(true).open(i.path())) {
                 let t = std::time::SystemTime::from(t);
                 #[cfg(windows)]
-                let _ = { use std::os::windows::fs::FileTimesExt; f.set_times(fs::FileTimes::new().set_modified(t).set_created(t)) };
+                let _ = {
+                    use std::os::windows::fs::FileTimesExt;
+                    f.set_times(fs::FileTimes::new().set_modified(t).set_created(t))
+                };
                 #[cfg(not(windows))]
                 let _ = f.set_times(fs::FileTimes::new().set_modified(t)); // no creation time to set
             }
@@ -463,7 +629,15 @@ impl Job {
         }
     }
 
-    fn worker(&self, mut k: usize, part: &Path, (agent, net): (Agent, String), global: &Limiter, mut pre: Option<Body>, extra: bool) -> Option<String> {
+    fn worker(
+        &self,
+        mut k: usize,
+        part: &Path,
+        (agent, net): (Agent, String),
+        global: &Limiter,
+        mut pre: Option<Body>,
+        extra: bool,
+    ) -> Option<String> {
         let mut fails = 0;
         loop {
             // a network that is gone (unplugged, unticked) hands its part back to the others
@@ -493,8 +667,14 @@ impl Job {
                 Ok(()) => {
                     let n = self.claim(&net)?;
                     (k, fails) = (n, 0)
-                },
-                Err(e) if e == NO_ANSWER_ERR || ((e.starts_with("HTTP 503") || e.starts_with("HTTP 429") || self.info().segs[k].next == before) && self.others_receiving(k, &net) > 0) => {
+                }
+                Err(e)
+                    if e == NO_ANSWER_ERR
+                        || ((e.starts_with("HTTP 503")
+                            || e.starts_with("HTTP 429")
+                            || self.info().segs[k].next == before)
+                            && self.others_receiving(k, &net) > 0) =>
+                {
                     // the server allows fewer connections than this (it says busy, or a new connection
                     // gets nothing: turned away, or left hanging until the read times out while the others
                     // receive): this one ends and hands its part back, and the network keeps to the
@@ -510,7 +690,11 @@ impl Job {
                     return None;
                 }
                 Err(e) => {
-                    fails = if self.info().segs[k].next > before { 1 } else { fails + 1 };
+                    fails = if self.info().segs[k].next > before {
+                        1
+                    } else {
+                        fails + 1
+                    };
                     {
                         // released before the wait, so the other connections can take it; another
                         // network gets the first go at it
@@ -542,7 +726,15 @@ impl Job {
         }
     }
 
-    fn fetch(&self, k: usize, part: &Path, agent: &Agent, global: &Limiter, pre: Option<Body>, extra: bool) -> Result<(), String> {
+    fn fetch(
+        &self,
+        k: usize,
+        part: &Path,
+        agent: &Agent,
+        global: &Limiter,
+        pre: Option<Body>,
+        extra: bool,
+    ) -> Result<(), String> {
         let (url, referrer, cookies, ranges, start, stop, back, headers) = {
             let mut i = self.info();
             let ranges = i.ranges;
@@ -555,33 +747,61 @@ impl Job {
             }
             s.info = "Connecting...".into();
             let (start, stop) = (s.next, s.stop);
-            let back = if ranges { (s.next - s.start).min(VERIFY) } else { 0 };
-            (i.url.clone(), i.referrer.clone(), i.cookies.clone(), ranges, start, stop, back, i.headers.clone())
+            let back = if ranges {
+                (s.next - s.start).min(VERIFY)
+            } else {
+                0
+            };
+            (
+                i.url.clone(),
+                i.referrer.clone(),
+                i.cookies.clone(),
+                ranges,
+                start,
+                stop,
+                back,
+                i.headers.clone(),
+            )
         };
         let from = start - back;
         let mut r = match pre.filter(|_| start == 0) {
             Some(r) => r,
             None if is_ftp(&url) => ftp_open(&url, from)?.2,
             None => {
-                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers).prefer_http1(extra && ranges);
+                let mut req = with_headers(request(agent, &url, &referrer, &cookies), &headers)
+                    .prefer_http1(extra && ranges);
                 if ranges {
-                    let range = stop.map_or(format!("bytes={from}-"), |e| format!("bytes={from}-{}", e - 1));
+                    let range = stop.map_or(format!("bytes={from}-"), |e| {
+                        format!("bytes={from}-{}", e - 1)
+                    });
                     req = req.set("Range", &range);
                     let etag = self.info().etag.clone();
-                    if etag.starts_with('"') { req = req.set("If-Range", &etag); }
+                    if etag.starts_with('"') {
+                        req = req.set("If-Range", &etag);
+                    }
                 }
-                let Some(resp) = self.answer(req)? else { return Ok(()) };
+                let Some(resp) = self.answer(req)? else {
+                    return Ok(());
+                };
                 let mut partial = ranges;
                 if ranges && resp.status() != 206 {
                     let mut info = self.info();
-                    if resp.status() == 200 && start == 0 && info.done() == 0 && info.segs.len() == 1 {
+                    if resp.status() == 200
+                        && start == 0
+                        && info.done() == 0
+                        && info.segs.len() == 1
+                    {
                         info.ranges = false;
                         partial = false;
                     } else {
                         return Err("server ignored the Range request".into());
                     }
                 }
-                validate_http_response(&resp, partial.then_some((from, stop.map(|end| end - 1))), self.info().size)?;
+                validate_http_response(
+                    &resp,
+                    partial.then_some((from, stop.map(|end| end - 1))),
+                    self.info().size,
+                )?;
                 // a page where the file was (an expired link, a login or error page): not written into the file
                 if is_page(resp.header("Content-Type")) && !self.info().page {
                     return Err("the server sends a web page instead of the file".into());
@@ -589,20 +809,34 @@ impl Job {
                 let lm = resp.header("Last-Modified").unwrap_or_default();
                 let etag = resp.header("ETag").unwrap_or_default();
                 let mut info = self.info();
-                if (!lm.is_empty() && !info.modified.is_empty() && lm != info.modified && !self.ignore_date.load(Relaxed))
-                    || (!etag.is_empty() && !info.etag.is_empty() && etag != info.etag) {
+                if (!lm.is_empty()
+                    && !info.modified.is_empty()
+                    && lm != info.modified
+                    && !self.ignore_date.load(Relaxed))
+                    || (!etag.is_empty() && !info.etag.is_empty() && etag != info.etag)
+                {
                     return Err(CHANGED.into());
                 }
-                if info.modified.is_empty() { info.modified = lm.into(); }
-                if info.etag.is_empty() { info.etag = etag.into(); }
+                if info.modified.is_empty() {
+                    info.modified = lm.into();
+                }
+                if info.etag.is_empty() {
+                    info.etag = etag.into();
+                }
                 resp.into_reader()
             }
         };
-        let mut f = OpenOptions::new().read(true).write(true).open(part).map_err(|e| e.to_string())?;
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(part)
+            .map_err(|e| e.to_string())?;
         if back > 0 {
             // NDM compares the re-fetched bytes with the file (0x565ef0, "Check w_e_of_cn failed!").
             let (mut old, mut new) = (vec![0; back as usize], vec![0; back as usize]);
-            f.seek(SeekFrom::Start(from)).and_then(|_| f.read_exact(&mut old)).map_err(|e| e.to_string())?;
+            f.seek(SeekFrom::Start(from))
+                .and_then(|_| f.read_exact(&mut old))
+                .map_err(|e| e.to_string())?;
             r.read_exact(&mut new).map_err(|e| e.to_string())?;
             if old != new {
                 return Err(CHANGED.into());
@@ -624,7 +858,11 @@ impl Job {
             let want = {
                 let i = self.info();
                 let s = &i.segs[k];
-                if s.stop.is_some() { CHUNK.min(s.left() as usize) } else { CHUNK }
+                if s.stop.is_some() {
+                    CHUNK.min(s.left() as usize)
+                } else {
+                    CHUNK
+                }
             };
             if want == 0 {
                 return Ok(());
@@ -656,7 +894,12 @@ impl Job {
                     (window, got) = (Instant::now(), 0);
                 }
             }
-            *self.net_bytes.lock().unwrap().entry(net.clone()).or_default() += n as u64;
+            *self
+                .net_bytes
+                .lock()
+                .unwrap()
+                .entry(net.clone())
+                .or_default() += n as u64;
             self.throttle(global, n);
         }
     }
@@ -664,7 +907,8 @@ impl Job {
     /// Count `n` received bytes and wait as the speed limits ask (app-wide per-file rate, this file's).
     pub(crate) fn throttle(&self, global: &Limiter, n: usize) {
         global.received.fetch_add(n as u64, Relaxed);
-        self.global_bucket.take_at(global.rate.load(Relaxed), n, &self.stop);
+        self.global_bucket
+            .take_at(global.rate.load(Relaxed), n, &self.stop);
         self.limiter.take(n, &self.stop);
     }
 
@@ -683,14 +927,18 @@ impl Job {
         loop {
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(r) => return r.map(Some),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err("the request failed".into()),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the request failed".into())
+                }
                 Err(_) if self.stopping() => return Ok(None),
                 Err(_) => {
                     // the other connections received meanwhile; or, alone, a server that has been sending (it
                     // may still count the connection just closed) gets twice as long
                     let done = self.info().done();
                     let waited = since.elapsed();
-                    if (waited >= NO_ANSWER && done > before) || (waited >= 2 * NO_ANSWER && done > 0) {
+                    if (waited >= NO_ANSWER && done > before)
+                        || (waited >= 2 * NO_ANSWER && done > 0)
+                    {
                         return Err(NO_ANSWER_ERR.into());
                     }
                 }
@@ -699,12 +947,24 @@ impl Job {
     }
 
     fn others_receiving(&self, k: usize, net: &str) -> usize {
-        self.info().segs.iter().enumerate().filter(|(j, s)| *j != k && s.owned && !s.done() && s.net == net && s.info.starts_with("Receiving")).count()
+        self.info()
+            .segs
+            .iter()
+            .enumerate()
+            .filter(|(j, s)| {
+                *j != k && s.owned && !s.done() && s.net == net && s.info.starts_with("Receiving")
+            })
+            .count()
     }
 
     /// Every open connection on `net` is receiving data and the speed limits leave room.
     fn ramp_ok(&self, global: &Limiter, net: &str) -> bool {
-        let busy = self.info().segs.iter().filter(|s| s.owned && s.net == net).all(|s| s.info.starts_with("Receiving"));
+        let busy = self
+            .info()
+            .segs
+            .iter()
+            .filter(|s| s.owned && s.net == net)
+            .all(|s| s.info.starts_with("Receiving"));
         let speed = self.speed();
         let full = |l: &Limiter| {
             let r = l.rate.load(Relaxed);
@@ -721,13 +981,21 @@ impl Job {
     /// `lanes`, or the default network alone when there are none.
     fn lanes_or(&self, agent: &Agent) -> Vec<(String, Agent)> {
         let l = self.lanes();
-        if l.is_empty() { vec![(String::new(), agent.clone())] } else { l }
+        if l.is_empty() {
+            vec![(String::new(), agent.clone())]
+        } else {
+            l
+        }
     }
 
     /// Is `net` still one of this download's networks? The default one ("") is while there are no others.
     fn lane_present(&self, net: &str) -> bool {
         let l = self.lanes.lock().unwrap();
-        if net.is_empty() { l.is_empty() } else { l.iter().any(|(n, _)| n == net) }
+        if net.is_empty() {
+            l.is_empty()
+        } else {
+            l.iter().any(|(n, _)| n == net)
+        }
     }
 
     /// Next segment for a connection on `net`: an unfinished one nobody owns (resume, or handed back),
@@ -736,7 +1004,11 @@ impl Job {
         let others = !net.is_empty() && self.lanes.lock().unwrap().iter().any(|(n, _)| n != net);
         let mut i = self.info();
         let free = |s: &Seg| !s.owned && !s.done();
-        let k = i.segs.iter().position(|s| free(s) && !(others && s.failed_on == net)).or_else(|| (!others).then(|| i.segs.iter().position(free)).flatten());
+        let k = i
+            .segs
+            .iter()
+            .position(|s| free(s) && !(others && s.failed_on == net))
+            .or_else(|| (!others).then(|| i.segs.iter().position(free)).flatten());
         if let Some(k) = k {
             i.segs[k].owned = true;
             return Some(k);
@@ -757,11 +1029,30 @@ impl Job {
             return None;
         }
         // this network's speed per connection: its fastest segment now, else none known
-        let mine = i.segs.iter().filter(|s| s.net == net && s.rate > 0.0).map(|s| s.rate).fold(0.0, f64::max);
-        let eta = |s: &Seg| if s.rate > 0.0 { s.left() as f64 / s.rate } else { 0.0 };
-        let timed = mine > 0.0 && i.segs.iter().filter(|s| s.owned && s.left() > 0).all(|s| s.rate > 0.0);
+        let mine = i
+            .segs
+            .iter()
+            .filter(|s| s.net == net && s.rate > 0.0)
+            .map(|s| s.rate)
+            .fold(0.0, f64::max);
+        let eta = |s: &Seg| {
+            if s.rate > 0.0 {
+                s.left() as f64 / s.rate
+            } else {
+                0.0
+            }
+        };
+        let timed = mine > 0.0
+            && i.segs
+                .iter()
+                .filter(|s| s.owned && s.left() > 0)
+                .all(|s| s.rate > 0.0);
         let (k, best) = if timed {
-            i.segs.iter().enumerate().filter(|(_, s)| s.left() > 0).max_by(|a, b| eta(a.1).total_cmp(&eta(b.1)))?
+            i.segs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.left() > 0)
+                .max_by(|a, b| eta(a.1).total_cmp(&eta(b.1)))?
         } else {
             i.segs.iter().enumerate().max_by_key(|(_, s)| s.left())?
         };
@@ -774,7 +1065,9 @@ impl Job {
             // a big part splits as always; a small one at the end only when the new connection would
             // clearly finish it first (it saves more than twice what a new request costs)
             let alone = left as f64 / best.rate;
-            if taken < MIN_STEAL || (left < 2 * MIN_SEG && alone < 2.0 * (STEAL_STARTUP + taken as f64 / mine)) {
+            if taken < MIN_STEAL
+                || (left < 2 * MIN_SEG && alone < 2.0 * (STEAL_STARTUP + taken as f64 / mine))
+            {
                 return None;
             }
             mid
@@ -785,7 +1078,13 @@ impl Job {
             next + left / 2
         };
         i.segs[k].stop = Some(mid);
-        i.segs.push(Seg { start: mid, next: mid, stop, owned: true, ..Default::default() });
+        i.segs.push(Seg {
+            start: mid,
+            next: mid,
+            stop,
+            owned: true,
+            ..Default::default()
+        });
         Some(i.segs.len() - 1)
     }
 }

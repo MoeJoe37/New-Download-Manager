@@ -24,7 +24,9 @@ pub(crate) fn serve(data: Arc<Vec<u8>>) -> String {
                         break;
                     }
                     let prefix = "range: bytes=";
-                    if h.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix)) {
+                    if h.get(..prefix.len())
+                        .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+                    {
                         let v = &h[prefix.len()..];
                         let (a, b) = v.trim().split_once('-').unwrap();
                         let a: usize = a.parse().unwrap();
@@ -39,7 +41,11 @@ pub(crate) fn serve(data: Arc<Vec<u8>>) -> String {
                 };
                 let _ = w.write_all(head.as_bytes());
                 // "/rslow..." paths trickle ~1.3 MB/s per connection, so extra connections pay off
-                let step = if path.starts_with("/rslow") { 64 * 1024 } else { body.len().max(1) };
+                let step = if path.starts_with("/rslow") {
+                    64 * 1024
+                } else {
+                    body.len().max(1)
+                };
                 for c in body.chunks(step) {
                     if w.write_all(c).is_err() {
                         break;
@@ -64,23 +70,45 @@ pub(crate) fn init(id: u32, scale: u32) -> Vec<u8> {
     let trak = mk(b"trak", &[&tkhd, &mk(b"mdia", &[&mdhd])]);
     let mvhd = mk(b"mvhd", &[&[0; 96], &(id + 1).to_be_bytes()]);
     let trex = mk(b"trex", &[&[0; 4], &id.to_be_bytes(), &[0; 12]]);
-    [mk(b"ftyp", &[b"iso6"]), mk(b"moov", &[&mvhd, &trak, &mk(b"mvex", &[&trex])])].concat()
+    [
+        mk(b"ftyp", &[b"iso6"]),
+        mk(b"moov", &[&mvhd, &trak, &mk(b"mvex", &[&trex])]),
+    ]
+    .concat()
 }
 pub(crate) fn frag(id: u32, t: u32, payload: u8) -> Vec<u8> {
-    let traf = mk(b"traf", &[&mk(b"tfhd", &[&[0; 4], &id.to_be_bytes()]), &mk(b"tfdt", &[&[0; 4], &t.to_be_bytes()])]);
-    [mk(b"styp", &[b"msdh"]), mk(b"moof", &[&traf]), mk(b"mdat", &[&[payload]])].concat()
+    let traf = mk(
+        b"traf",
+        &[
+            &mk(b"tfhd", &[&[0; 4], &id.to_be_bytes()]),
+            &mk(b"tfdt", &[&[0; 4], &t.to_be_bytes()]),
+        ],
+    );
+    [
+        mk(b"styp", &[b"msdh"]),
+        mk(b"moof", &[&traf]),
+        mk(b"mdat", &[&[payload]]),
+    ]
+    .concat()
 }
 
-pub(crate) fn localhost_tls(alpn: &[&[u8]]) -> (rustls::ServerConfig, rustls::pki_types::CertificateDer<'static>) {
+pub(crate) fn localhost_tls(
+    alpn: &[&[u8]],
+) -> (
+    rustls::ServerConfig,
+    rustls::pki_types::CertificateDer<'static>,
+) {
     let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let der = certificate.cert.der().clone();
     let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der());
-    let mut tls = rustls::ServerConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(vec![der.clone()], key.into())
-        .unwrap();
+    let mut tls = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![der.clone()], key.into())
+    .unwrap();
     tls.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
     (tls, der)
 }

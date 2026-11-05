@@ -1,4 +1,6 @@
-use crate::stream::{BufWriter, File, HashMap, Part, Path, PathBuf, Read, VecDeque, Write, fs, remux};
+use crate::stream::{
+    fs, remux, BufWriter, File, HashMap, Part, Path, PathBuf, Read, VecDeque, Write,
+};
 
 /// Joins a video file and an audio file (a site's separate streams, fetched by yt-dlp without ffmpeg)
 /// into `out`: fragmented MP4 into one MP4, WebM into one WebM. Ok(false): not a pair NDM can join
@@ -19,12 +21,19 @@ pub fn join_files(video: &Path, audio: &Path, out: &Path) -> Result<bool, String
         }))
     }
     use remux::{Kind, Regroup};
-    let webm = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("webm"));
+    let webm = |p: &Path| {
+        p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("webm"))
+    };
     if webm(video) != webm(audio) {
         return Ok(false);
     }
     if webm(video) {
-        return remux::webm_merge(&mut Regroup::new(chunks(video)?, Kind::Webm), &mut Regroup::new(chunks(audio)?, Kind::Webm), out);
+        return remux::webm_merge(
+            &mut Regroup::new(chunks(video)?, Kind::Webm),
+            &mut Regroup::new(chunks(audio)?, Kind::Webm),
+            out,
+        );
     }
     let timed = |p: &Path| chunks(p).map(|c| Regroup::new(c, Kind::Mp4).map(|u| (u, 0.0)));
     let mut base = f64::INFINITY;
@@ -40,7 +49,11 @@ pub fn join_files(video: &Path, audio: &Path, out: &Path) -> Result<bool, String
 }
 
 /// A track's pieces on disk with their timeline shift; a whole file is re-cut into fragments first.
-pub(super) fn timed<'a>(whole: bool, parts: &'a [Part], file: &'a dyn Fn(usize) -> PathBuf) -> Box<dyn Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a> {
+pub(super) fn timed<'a>(
+    whole: bool,
+    parts: &'a [Part],
+    file: &'a dyn Fn(usize) -> PathBuf,
+) -> Box<dyn Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a> {
     let on_disk = (0..parts.len()).filter(move |k| file(*k).exists());
     let read = move |k: usize| fs::read(file(k)).map_err(|e| e.to_string());
     if whole {
@@ -52,7 +65,9 @@ pub(super) fn timed<'a>(whole: bool, parts: &'a [Part], file: &'a dyn Fn(usize) 
                 _ => runs.push((&parts[k].url, parts[k].shift, vec![k])),
             }
         }
-        Box::new(runs.into_iter().flat_map(move |(_, shift, ks)| remux::Regroup::new(ks.into_iter().map(read), remux::Kind::Mp4).map(move |u| (u, shift))))
+        Box::new(runs.into_iter().flat_map(move |(_, shift, ks)| {
+            remux::Regroup::new(ks.into_iter().map(read), remux::Kind::Mp4).map(move |u| (u, shift))
+        }))
     } else {
         Box::new(on_disk.map(move |k| (read(k), parts[k].shift)))
     }
@@ -61,7 +76,11 @@ pub(super) fn timed<'a>(whole: bool, parts: &'a [Part], file: &'a dyn Fn(usize) 
 pub(super) fn tfdt_of(d: &[u8], moof: Bx) -> Option<u64> {
     let b = find(d, moof, &[b"traf", b"tfdt"])?;
     let at = b.1 + 4;
-    Some(if d[b.1] == 1 { u64::from_be_bytes(d.get(at..at + 8)?.try_into().ok()?) } else { be32(d, at) as u64 })
+    Some(if d[b.1] == 1 {
+        u64::from_be_bytes(d.get(at..at + 8)?.try_into().ok()?)
+    } else {
+        be32(d, at) as u64
+    })
 }
 
 /// When a track's first fragment (moved by its piece's shift) is presented, in seconds.
@@ -70,10 +89,18 @@ pub(super) fn first_time(it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)
     for (p, shift) in it.take(64) {
         let p = p.ok()?;
         let top = boxes(&p, 0, p.len());
-        if let Some(s) = top.iter().find(|b| &b.3 == b"moov").and_then(|m| traks(&p, *m).first().map(|t| t.2)) {
+        if let Some(s) = top
+            .iter()
+            .find(|b| &b.3 == b"moov")
+            .and_then(|m| traks(&p, *m).first().map(|t| t.2))
+        {
             scale = s;
         }
-        if let Some(t) = top.iter().find(|b| &b.3 == b"moof").and_then(|m| tfdt_of(&p, *m)) {
+        if let Some(t) = top
+            .iter()
+            .find(|b| &b.3 == b"moof")
+            .and_then(|m| tfdt_of(&p, *m))
+        {
             return (scale > 0.0).then(|| t as f64 / scale + shift);
         }
     }
@@ -83,7 +110,10 @@ pub(super) fn first_time(it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)
 /// fMP4 pieces with every fragment's decode time moved by its piece's shift less `base` (seconds).
 /// Initialization pieces after the first are left out.
 // ponytail: the first period's codec settings serve every period; ad breaks with other codecs need a re-encode
-pub(super) fn retime<'a>(it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a, base: f64) -> impl Iterator<Item = Result<Vec<u8>, String>> + 'a {
+pub(super) fn retime<'a>(
+    it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)> + 'a,
+    base: f64,
+) -> impl Iterator<Item = Result<Vec<u8>, String>> + 'a {
     let (mut scale, mut first) = (0.0, true);
     it.map(move |(p, shift)| {
         let p = p?;
@@ -103,7 +133,11 @@ pub(super) fn retime<'a>(it: impl Iterator<Item = (Result<Vec<u8>, String>, f64)
                 b"ftyp" if !first => {}
                 b"moof" => {
                     let delta = ((shift - base) * scale).round() as i64;
-                    out.extend(if delta == 0 { raw.to_vec() } else { moof_shift(raw, delta) });
+                    out.extend(if delta == 0 {
+                        raw.to_vec()
+                    } else {
+                        moof_shift(raw, delta)
+                    });
                 }
                 _ => out.extend_from_slice(raw),
             }
@@ -133,9 +167,20 @@ fn moof_shift(m: &[u8], delta: i64) -> Vec<u8> {
                 continue;
             }
             let (v1, at) = (m[x.1] == 1, x.1 + 4);
-            let old = if v1 { u64::from_be_bytes(m[at..at + 8].try_into().unwrap()) } else { be32(m, at) as u64 };
+            let old = if v1 {
+                u64::from_be_bytes(m[at..at + 8].try_into().unwrap())
+            } else {
+                be32(m, at) as u64
+            };
             let new = (old as i64).saturating_add(delta).max(0) as u64;
-            traf.extend(if !v1 && new <= u32::MAX as u64 { mkbox(b"tfdt", &[&m[x.1..x.1 + 4], &(new as u32).to_be_bytes()[..]].concat()) } else { mkbox(b"tfdt", &[&[1, 0, 0, 0][..], &new.to_be_bytes()].concat()) });
+            traf.extend(if !v1 && new <= u32::MAX as u64 {
+                mkbox(
+                    b"tfdt",
+                    &[&m[x.1..x.1 + 4], &(new as u32).to_be_bytes()[..]].concat(),
+                )
+            } else {
+                mkbox(b"tfdt", &[&[1, 0, 0, 0][..], &new.to_be_bytes()].concat())
+            });
         }
         body.extend(mkbox(b"traf", &traf));
     }
@@ -143,7 +188,12 @@ fn moof_shift(m: &[u8], delta: i64) -> Vec<u8> {
     let grew = out.len() as i64 - m.len() as i64;
     if grew != 0 {
         let o = boxes(&out, 0, out.len())[0];
-        let runs: Vec<Bx> = boxes(&out, o.1, o.2).into_iter().filter(|b| &b.3 == b"traf").flat_map(|t| boxes(&out, t.1, t.2)).filter(|b| &b.3 == b"trun").collect();
+        let runs: Vec<Bx> = boxes(&out, o.1, o.2)
+            .into_iter()
+            .filter(|b| &b.3 == b"traf")
+            .flat_map(|t| boxes(&out, t.1, t.2))
+            .filter(|b| &b.3 == b"trun")
+            .collect();
         for r in runs {
             if be32(&out, r.1) & 1 != 0 {
                 let at = r.1 + 8;
@@ -164,7 +214,12 @@ pub(crate) fn boxes(d: &[u8], from: usize, to: usize) -> Vec<Bx> {
         let size = be32(d, at) as usize;
         let t: [u8; 4] = d[at + 4..at + 8].try_into().unwrap();
         let (pay, end) = match size {
-            1 if at + 16 <= to => (at + 16, at.saturating_add(u64::from_be_bytes(d[at + 8..at + 16].try_into().unwrap()) as usize)),
+            1 if at + 16 <= to => (
+                at + 16,
+                at.saturating_add(
+                    u64::from_be_bytes(d[at + 8..at + 16].try_into().unwrap()) as usize
+                ),
+            ),
             0 => (at + 8, to),
             s => (at + 8, at + s),
         };
@@ -178,7 +233,9 @@ pub(crate) fn boxes(d: &[u8], from: usize, to: usize) -> Vec<Bx> {
 }
 
 pub(crate) fn find(d: &[u8], b: Bx, path: &[&[u8; 4]]) -> Option<Bx> {
-    path.iter().try_fold(b, |b, p| boxes(d, b.1, b.2).into_iter().find(|c| &c.3 == *p))
+    path.iter().try_fold(b, |b, p| {
+        boxes(d, b.1, b.2).into_iter().find(|c| &c.3 == *p)
+    })
 }
 
 pub(super) fn be32(d: &[u8], at: usize) -> u32 {
@@ -216,7 +273,11 @@ impl<I: Iterator<Item = Result<Vec<u8>, String>>> Src<I> {
                 let id = be32(d, find(d, traf, &[b"tfhd"])?.1 + 4);
                 let tfdt = find(d, traf, &[b"tfdt"])?;
                 let at = tfdt.1 + 4;
-                let t = if d[tfdt.1] == 1 { u64::from_be_bytes(d[at..at + 8].try_into().unwrap()) } else { be32(d, at) as u64 };
+                let t = if d[tfdt.1] == 1 {
+                    u64::from_be_bytes(d[at..at + 8].try_into().unwrap())
+                } else {
+                    be32(d, at) as u64
+                };
                 Some(t as f64 / self.scale.get(self.ids.get(&id).unwrap_or(&id))?)
             });
             let time = time.or(self.frags.back().map(|f| f.0)).unwrap_or(0.0);
@@ -242,7 +303,10 @@ impl<I: Iterator<Item = Result<Vec<u8>, String>>> Src<I> {
         let (_, a, b) = self.frags.pop_front().unwrap();
         let mut f = self.data[a..b].to_vec();
         if let Some(moof) = boxes(&f, 0, f.len()).first().copied() {
-            for traf in boxes(&f, moof.1, moof.2).into_iter().filter(|x| &x.3 == b"traf") {
+            for traf in boxes(&f, moof.1, moof.2)
+                .into_iter()
+                .filter(|x| &x.3 == b"traf")
+            {
                 if let Some(tfhd) = find(&f, traf, &[b"tfhd"]) {
                     let at = tfhd.1 + 4;
                     if let Some(new) = self.ids.get(&be32(&f, at)) {
@@ -262,7 +326,11 @@ pub(super) fn traks(d: &[u8], moov: Bx) -> Vec<(Bx, u32, f64)> {
         .filter_map(|t| {
             let tkhd = find(d, t, &[b"tkhd"])?;
             let mdhd = find(d, t, &[b"mdia", b"mdhd"])?;
-            Some((t, be32(d, field(d, tkhd, 8, 16)), be32(d, field(d, mdhd, 8, 16)) as f64))
+            Some((
+                t,
+                be32(d, field(d, tkhd, 8, 16)),
+                be32(d, field(d, mdhd, 8, 16)) as f64,
+            ))
         })
         .collect()
 }
@@ -270,9 +338,25 @@ pub(super) fn traks(d: &[u8], moov: Bx) -> Vec<(Bx, u32, f64)> {
 /// Mix a fragmented-MP4 audio track into fragmented-MP4 video: one moov with both tracks (audio
 /// renumbered), then the moof+mdat fragments interleaved by decode time. Ok(false) = not fragmented
 /// MP4 (nothing written).
-pub(super) fn mux_mp4<'a>(v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a), a: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a), out: &Path) -> Result<bool, String> {
-    let mut vs = Src { pieces: v, data: Vec::new(), frags: VecDeque::new(), scale: HashMap::new(), ids: HashMap::new() };
-    let mut au = Src { pieces: a, data: Vec::new(), frags: VecDeque::new(), scale: HashMap::new(), ids: HashMap::new() };
+pub(super) fn mux_mp4<'a>(
+    v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a),
+    a: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String>> + 'a),
+    out: &Path,
+) -> Result<bool, String> {
+    let mut vs = Src {
+        pieces: v,
+        data: Vec::new(),
+        frags: VecDeque::new(),
+        scale: HashMap::new(),
+        ids: HashMap::new(),
+    };
+    let mut au = Src {
+        pieces: a,
+        data: Vec::new(),
+        frags: VecDeque::new(),
+        scale: HashMap::new(),
+        ids: HashMap::new(),
+    };
     for s in [&mut vs, &mut au] {
         s.data = match s.pieces.next() {
             Some(p) => p?,
@@ -280,7 +364,9 @@ pub(super) fn mux_mp4<'a>(v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String
         };
     }
     let moov_of = |d: &[u8]| boxes(d, 0, d.len()).into_iter().find(|b| &b.3 == b"moov");
-    let (Some(vm), Some(am)) = (moov_of(&vs.data), moov_of(&au.data)) else { return Ok(false) };
+    let (Some(vm), Some(am)) = (moov_of(&vs.data), moov_of(&au.data)) else {
+        return Ok(false);
+    };
     let (vd, ad) = (&vs.data, &au.data);
     let vt = traks(vd, vm);
     let mut next = vt.iter().map(|t| t.1).max().unwrap_or(0) + 1;
@@ -334,7 +420,11 @@ pub(super) fn mux_mp4<'a>(v: &'a mut (dyn Iterator<Item = Result<Vec<u8>, String
             body.extend(mkbox(b"mvex", &trex));
         }
     }
-    let ftyp = boxes(vd, 0, vd.len()).into_iter().find(|b| &b.3 == b"ftyp").map(|b| vd[b.0..b.2].to_vec()).unwrap_or_default();
+    let ftyp = boxes(vd, 0, vd.len())
+        .into_iter()
+        .find(|b| &b.3 == b"ftyp")
+        .map(|b| vd[b.0..b.2].to_vec())
+        .unwrap_or_default();
     vs.scan();
     au.scan();
     let mut w = BufWriter::new(File::create(out).map_err(|e| e.to_string())?);

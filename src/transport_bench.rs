@@ -67,7 +67,11 @@ fn with_server<T>(
     delay: Duration,
     run: impl FnOnce(&str, &reqwest::blocking::Client, &reqwest::blocking::Client) -> T,
 ) -> (T, usize) {
-    let protocols: &[&[u8]] = if h2_only { &[b"h2"] } else { &[b"h2", b"http/1.1"] };
+    let protocols: &[&[u8]] = if h2_only {
+        &[b"h2"]
+    } else {
+        &[b"h2", b"http/1.1"]
+    };
     let (tls, der) = crate::test_support::localhost_tls(protocols);
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -204,13 +208,16 @@ fn http_protocol_benchmark() {
             let (median, connections) = trials[2];
             println!("{workload}: {} {:.1} ms median, {connections} TLS connections (4 x 48 KiB, 5 trials)",
                 if split { "HTTP/2 plus extra HTTP/1.1" } else { "HTTP/2 only" }, median.as_secs_f64() * 1000.0);
-            println!("NDM_BENCH {}", serde_json::json!({
-                "case": if split { "https_split" } else { "https_http2" },
-                "workload": workload, "bytes": 4 * CHUNK, "trials": 5,
-                "median_seconds": median.as_secs_f64(),
-                "bytes_per_second": (4 * CHUNK) as f64 / median.as_secs_f64(),
-                "tls_connections": connections,
-            }));
+            println!(
+                "NDM_BENCH {}",
+                serde_json::json!({
+                    "case": if split { "https_split" } else { "https_http2" },
+                    "workload": workload, "bytes": 4 * CHUNK, "trials": 5,
+                    "median_seconds": median.as_secs_f64(),
+                    "bytes_per_second": (4 * CHUNK) as f64 / median.as_secs_f64(),
+                    "tls_connections": connections,
+                })
+            );
             if !split {
                 assert_eq!(connections, 1);
             }

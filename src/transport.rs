@@ -3,9 +3,9 @@
 pub(crate) mod auth;
 pub(crate) mod client;
 
-use self::client::{call_with, tls_client};
 #[cfg(test)]
 use self::client::client_builder;
+use self::client::{call_with, tls_client};
 use std::collections::HashSet;
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -43,12 +43,16 @@ impl Agent {
     }
 
     pub(crate) fn with_http1_hosts(mut self, hosts: &str) -> Self {
-        self.http1_hosts = hosts.split_whitespace().filter_map(|host| url::Host::parse(host).ok()).collect();
+        self.http1_hosts = hosts
+            .split_whitespace()
+            .filter_map(|host| url::Host::parse(host).ok())
+            .collect();
         self
     }
 
     fn http1_only(&self, url: &Url) -> bool {
-        url.host().is_some_and(|host| self.http1_hosts.iter().any(|entry| entry == &host))
+        url.host()
+            .is_some_and(|host| self.http1_hosts.iter().any(|entry| entry == &host))
     }
 
     fn for_url(&self, url: &str) -> Self {
@@ -387,12 +391,20 @@ mod tests {
         let config = Arc::new(config);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         // Userinfo selects the HTTP/1.1 transport, as do authenticated proxy routes.
-        let url = format!("https://user:pass@localhost:{}/file", listener.local_addr().unwrap().port());
+        let url = format!(
+            "https://user:pass@localhost:{}/file",
+            listener.local_addr().unwrap().port()
+        );
         let server = std::thread::spawn(move || {
             for index in 0..2 {
                 let (socket, _) = listener.accept().unwrap();
-                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config.clone()).unwrap(), socket);
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut tls = rustls::StreamOwned::new(
+                    rustls::ServerConnection::new(config.clone()).unwrap(),
+                    socket,
+                );
                 let mut headers = BufReader::new(&mut tls);
                 let mut line = String::new();
                 let read = headers.read_line(&mut line);
@@ -402,14 +414,23 @@ mod tests {
                 }
                 assert!(read.is_ok() && line.starts_with("GET /file HTTP/1.1"));
                 while headers.read_line(&mut String::new()).is_ok_and(|n| n > 2) {}
-                tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc").unwrap();
+                tls.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+                )
+                .unwrap();
                 tls.flush().unwrap();
             }
         });
         let default = client::agent("", "");
         assert!(call(request(&default, &url, "", "")).is_err());
         let trusted = client::agent_with_tls("", "", client::tls_config(&[der]));
-        assert_eq!(call(request(&trusted, &url, "", "")).unwrap().into_string().unwrap(), "abc");
+        assert_eq!(
+            call(request(&trusted, &url, "", ""))
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            "abc"
+        );
         server.join().unwrap();
     }
 
@@ -432,7 +453,10 @@ mod tests {
     fn publisher_request_refuses_a_plain_http_route() {
         let agent = client::agent("", "");
         let request = request(&agent, "http://127.0.0.1:1/", "", "").https_only();
-        assert_eq!(call(request).err().as_deref(), Some("An HTTPS-only request was redirected to an insecure address"));
+        assert_eq!(
+            call(request).err().as_deref(),
+            Some("An HTTPS-only request was redirected to an insecure address")
+        );
     }
 
     #[test]

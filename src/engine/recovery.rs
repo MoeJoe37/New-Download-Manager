@@ -1,5 +1,5 @@
 //! Recovery choices derived from the existing saved error text. Download records keep their format.
-use super::{CHANGED, Info, Status};
+use super::{Info, Status, CHANGED};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecoveryAction {
@@ -17,27 +17,49 @@ impl RecoveryAction {
         if info.fed {
             return Self::RefreshAddress;
         }
-        let Status::Error(error) = &info.status else { return Self::Retry };
+        let Status::Error(error) = &info.status else {
+            return Self::Retry;
+        };
         let lower = error.to_ascii_lowercase();
-        if error == CHANGED || lower.contains("saved download ranges are invalid")
-            || lower.contains("partial download is shorter") {
+        if error == CHANGED
+            || lower.contains("saved download ranges are invalid")
+            || lower.contains("partial download is shorter")
+        {
             return Self::Restart;
         }
         if has_status(&lower, "407") || lower.contains("proxy authentication") {
             return Self::ProxySettings;
         }
-        if has_status(&lower, "401") || lower.contains("login required") || lower.contains("authentication required") {
+        if has_status(&lower, "401")
+            || lower.contains("login required")
+            || lower.contains("authentication required")
+        {
             return Self::Credentials;
         }
-        if lower.contains("set yt-dlp") || lower.contains("requires ffmpeg") || lower.contains("needs ffmpeg")
-            || lower.contains("could not join video and audio") {
+        if lower.contains("set yt-dlp")
+            || lower.contains("requires ffmpeg")
+            || lower.contains("needs ffmpeg")
+            || lower.contains("could not join video and audio")
+        {
             return Self::MediaTools;
         }
-        if ["403", "404", "410"].iter().any(|code| has_status(&lower, code)) || lower.contains("expired") {
+        if ["403", "404", "410"]
+            .iter()
+            .any(|code| has_status(&lower, code))
+            || lower.contains("expired")
+        {
             return Self::RefreshAddress;
         }
-        if ["no space left", "disk full", "permission denied", "access is denied", "read-only file system"]
-            .iter().any(|text| lower.contains(text)) {
+        if [
+            "no space left",
+            "disk full",
+            "permission denied",
+            "access is denied",
+            "read-only file system",
+        ]
+        .iter()
+        .any(|text| lower.contains(text))
+        {
             return Self::OpenFolder;
         }
         Self::Retry
@@ -69,7 +91,9 @@ impl RecoveryAction {
 }
 
 fn has_status(message: &str, code: &str) -> bool {
-    message.split_ascii_whitespace().any(|word| word.trim_matches(['[', ']', '(', ')', ':', ',']) == code)
+    message
+        .split_ascii_whitespace()
+        .any(|word| word.trim_matches(['[', ']', '(', ')', ':', ',']) == code)
 }
 
 #[test]
@@ -91,5 +115,8 @@ fn recovery_keeps_identity_changes_separate_from_retry_and_proxy_authentication(
         assert_eq!(RecoveryAction::for_download(&info), action, "{message}");
     }
     info.fed = true;
-    assert_eq!(RecoveryAction::for_download(&info), RecoveryAction::RefreshAddress);
+    assert_eq!(
+        RecoveryAction::for_download(&info),
+        RecoveryAction::RefreshAddress
+    );
 }

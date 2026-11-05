@@ -1,4 +1,7 @@
-use crate::engine::{Arc, Body, BufRead, BufReader, Duration, Mutex, Read, TcpStream, Write, b64, pct_decode, strip_ci};
+use crate::engine::{
+    b64, pct_decode, strip_ci, Arc, Body, BufRead, BufReader, Duration, Mutex, Read, TcpStream,
+    Write,
+};
 use crate::transport::client::UA;
 
 pub(super) fn is_ftp(url: &str) -> bool {
@@ -20,7 +23,9 @@ impl Read for Ftp {
 /// Send `cmd` (none for the greeting) and read the reply, skipping multi-line `123-` parts.
 fn ftp_cmd(c: &mut BufReader<TcpStream>, cmd: &str) -> Result<(u32, String), String> {
     if !cmd.is_empty() {
-        c.get_mut().write_all(format!("{cmd}\r\n").as_bytes()).map_err(|e| e.to_string())?;
+        c.get_mut()
+            .write_all(format!("{cmd}\r\n").as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     let mut line = String::new();
     loop {
@@ -28,7 +33,10 @@ fn ftp_cmd(c: &mut BufReader<TcpStream>, cmd: &str) -> Result<(u32, String), Str
         if c.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
             return Err("FTP connection closed".into());
         }
-        if let (Some(code), Some(b' ')) = (line.get(..3).and_then(|x| x.parse().ok()), line.as_bytes().get(3)) {
+        if let (Some(code), Some(b' ')) = (
+            line.get(..3).and_then(|x| x.parse().ok()),
+            line.as_bytes().get(3),
+        ) {
             return Ok((code, line[4..].trim().to_string()));
         }
     }
@@ -43,7 +51,10 @@ pub struct FtpCfg {
 }
 
 // ponytail: one global, as the options are app-wide; per-job copies if downloads ever need their own
-pub static FTP: Mutex<FtpCfg> = Mutex::new(FtpCfg { pasv: true, route: None });
+pub static FTP: Mutex<FtpCfg> = Mutex::new(FtpCfg {
+    pasv: true,
+    route: None,
+});
 
 /// Log in (anonymous unless the URL has a login), binary mode, SIZE, passive (or active, PORT) data
 /// connection, REST `from`, RETR. Returns (size, resumable, data). Through an FTP proxy the login is
@@ -56,23 +67,45 @@ pub(super) fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body)
         return ftp_http(url, from, &route);
     }
     let u = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let host = u.host_str().ok_or("no host")?.trim_matches(['[', ']']).to_string();
+    let host = u
+        .host_str()
+        .ok_or("no host")?
+        .trim_matches(['[', ']'])
+        .to_string();
     let port = u.port().unwrap_or(21);
-    let fp = route.strip_prefix("ftp://").and_then(|_| url::Url::parse(&route).ok());
+    let fp = route
+        .strip_prefix("ftp://")
+        .and_then(|_| url::Url::parse(&route).ok());
     let socks = if fp.is_none() { route.as_str() } else { "" };
     let s = match &fp {
-        Some(p) => crate::net::connect("", p.host_str().unwrap_or_default(), p.port().unwrap_or(21)),
+        Some(p) => {
+            crate::net::connect("", p.host_str().unwrap_or_default(), p.port().unwrap_or(21))
+        }
         None => crate::net::connect(socks, &host, port),
     }
     .map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
     let mut c = BufReader::new(s);
-    let ok = |r: (u32, String), class: u32| if r.0 / 100 == class { Ok(r) } else { Err(format!("FTP {} {}", r.0, r.1)) };
+    let ok = |r: (u32, String), class: u32| {
+        if r.0 / 100 == class {
+            Ok(r)
+        } else {
+            Err(format!("FTP {} {}", r.0, r.1))
+        }
+    };
     ok(ftp_cmd(&mut c, "")?, 2)?;
-    let mut user = if u.username().is_empty() { "anonymous".into() } else { pct_decode(u.username()) };
+    let mut user = if u.username().is_empty() {
+        "anonymous".into()
+    } else {
+        pct_decode(u.username())
+    };
     let mut acct = String::new();
     if let Some(p) = &fp {
-        user = format!("{user}@{host}{}", u.port().map_or(String::new(), |p| format!(":{p}")));
+        user = format!(
+            "{user}@{host}{}",
+            u.port().map_or(String::new(), |p| format!(":{p}"))
+        );
         if !p.username().is_empty() {
             user = format!("{user} {}", pct_decode(p.username()));
         }
@@ -80,7 +113,10 @@ pub(super) fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body)
     }
     let mut r = ftp_cmd(&mut c, &format!("USER {user}"))?;
     if r.0 == 331 {
-        r = ftp_cmd(&mut c, &format!("PASS {}", u.password().map_or("ndm@".into(), pct_decode)))?;
+        r = ftp_cmd(
+            &mut c,
+            &format!("PASS {}", u.password().map_or("ndm@".into(), pct_decode)),
+        )?;
     }
     if r.0 == 332 {
         r = ftp_cmd(&mut c, &format!("ACCT {acct}"))?;
@@ -89,14 +125,19 @@ pub(super) fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body)
     ok(ftp_cmd(&mut c, "TYPE I")?, 2)?;
     let path = pct_decode(u.path());
     let size = ftp_cmd(&mut c, &format!("SIZE {path}"))?;
-    let size = Some(size).filter(|r| r.0 == 213).and_then(|r| r.1.parse().ok());
+    let size = Some(size)
+        .filter(|r| r.0 == 213)
+        .and_then(|r| r.1.parse().ok());
     let mut listen = None;
     let mut data = None;
     // a SOCKS server can't take the server's PORT connection
     if cfg.pasv || !socks.is_empty() {
         // 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2): the port; the address is the server's own
         let (_, pasv) = ok(ftp_cmd(&mut c, "PASV")?, 2)?;
-        let n: Vec<u16> = pasv.split(|ch: char| !ch.is_ascii_digit()).filter_map(|x| x.parse().ok()).collect();
+        let n: Vec<u16> = pasv
+            .split(|ch: char| !ch.is_ascii_digit())
+            .filter_map(|x| x.parse().ok())
+            .collect();
         let dport = match n[..] {
             [.., p1, p2] if n.len() >= 6 => p1 * 256 + p2,
             _ => return Err(format!("FTP {pasv}")),
@@ -113,8 +154,14 @@ pub(super) fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body)
         // active mode: the server connects back to us (PORT h1,h2,h3,h4,p1,p2)
         let me = c.get_ref().local_addr().map_err(|e| e.to_string())?;
         let l = std::net::TcpListener::bind((me.ip(), 0)).map_err(|e| e.to_string())?;
-        let (ip, port) = (me.ip().to_string().replace('.', ","), l.local_addr().map_err(|e| e.to_string())?.port());
-        ok(ftp_cmd(&mut c, &format!("PORT {ip},{},{}", port / 256, port % 256))?, 2)?;
+        let (ip, port) = (
+            me.ip().to_string().replace('.', ","),
+            l.local_addr().map_err(|e| e.to_string())?.port(),
+        );
+        ok(
+            ftp_cmd(&mut c, &format!("PORT {ip},{},{}", port / 256, port % 256))?,
+            2,
+        )?;
         listen = Some(l);
     }
     let ranges = ftp_cmd(&mut c, &format!("REST {from}"))?.0 == 350;
@@ -127,21 +174,43 @@ pub(super) fn ftp_open(url: &str, from: u64) -> Result<(Option<u64>, bool, Body)
         (None, Some(l)) => l.accept().map_err(|e| e.to_string())?.0,
         _ => unreachable!(),
     };
-    data.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
-    Ok((size, ranges && size.is_some(), Box::new(Ftp { data, _ctl: c })))
+    data.set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    Ok((
+        size,
+        ranges && size.is_some(),
+        Box::new(Ftp { data, _ctl: c }),
+    ))
 }
 
 /// An ftp:// address fetched by an HTTP proxy: `GET ftp://… HTTP/1.0` (1.0, so the reply is never
 /// chunked) with `Range: bytes=from-`. Returns (size, resumable, body) like `ftp_open`.
-pub(super) fn ftp_http(url: &str, from: u64, proxy: &str) -> Result<(Option<u64>, bool, Body), String> {
+pub(super) fn ftp_http(
+    url: &str,
+    from: u64,
+    proxy: &str,
+) -> Result<(Option<u64>, bool, Body), String> {
     let p = url::Url::parse(proxy).map_err(|e| e.to_string())?;
     let u = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let s = crate::net::connect("", p.host_str().unwrap_or_default(), p.port_or_known_default().unwrap_or(8080)).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(Duration::from_secs(30))).map_err(|e| e.to_string())?;
-    let host = u.host_str().unwrap_or_default().to_string() + &u.port().map_or(String::new(), |p| format!(":{p}"));
-    let mut head = format!("GET {url} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: {UA}\r\nRange: bytes={from}-\r\n");
+    let s = crate::net::connect(
+        "",
+        p.host_str().unwrap_or_default(),
+        p.port_or_known_default().unwrap_or(8080),
+    )
+    .map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    let host = u.host_str().unwrap_or_default().to_string()
+        + &u.port().map_or(String::new(), |p| format!(":{p}"));
+    let mut head = format!(
+        "GET {url} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: {UA}\r\nRange: bytes={from}-\r\n"
+    );
     if !p.username().is_empty() {
-        let login = format!("{}:{}", pct_decode(p.username()), p.password().map(pct_decode).unwrap_or_default());
+        let login = format!(
+            "{}:{}",
+            pct_decode(p.username()),
+            p.password().map(pct_decode).unwrap_or_default()
+        );
         head += &format!("Proxy-Authorization: Basic {}\r\n", b64(login.as_bytes()));
     }
     head += "Connection: close\r\n\r\n";
@@ -150,7 +219,10 @@ pub(super) fn ftp_http(url: &str, from: u64, proxy: &str) -> Result<(Option<u64>
     let mut line = String::new();
     r.read_line(&mut line).map_err(|e| e.to_string())?;
     let mut status = line.trim_end().splitn(3, ' ').skip(1);
-    let code: u32 = status.next().and_then(|c| c.parse().ok()).ok_or_else(|| format!("bad reply from the proxy: {}", line.trim()))?;
+    let code: u32 = status
+        .next()
+        .and_then(|c| c.parse().ok())
+        .ok_or_else(|| format!("bad reply from the proxy: {}", line.trim()))?;
     let reason = status.next().unwrap_or_default().to_string();
     let (mut length, mut range) = (None, None);
     loop {
@@ -158,12 +230,17 @@ pub(super) fn ftp_http(url: &str, from: u64, proxy: &str) -> Result<(Option<u64>
         if r.read_line(&mut line).map_err(|e| e.to_string())? == 0 || line.trim().is_empty() {
             break;
         }
-        let Some((k, v)) = line.split_once(':') else { continue };
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
         let v = v.trim();
         if k.eq_ignore_ascii_case("Content-Length") {
             length = v.parse::<u64>().ok();
         } else if k.eq_ignore_ascii_case("Content-Range") {
-            range = v.rsplit('/').next().and_then(|t| t.trim().parse::<u64>().ok());
+            range = v
+                .rsplit('/')
+                .next()
+                .and_then(|t| t.trim().parse::<u64>().ok());
         }
     }
     match code {

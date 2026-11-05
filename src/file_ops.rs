@@ -21,9 +21,16 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     let mut name = path.as_os_str().to_os_string();
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_nanos();
-    name.push(format!(".{}.{}.{}.tmp", std::process::id(), stamp, SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    name.push(format!(
+        ".{}.{}.{}.tmp",
+        std::process::id(),
+        stamp,
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     let temp = std::path::PathBuf::from(name);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -39,7 +46,12 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         drop(file);
         std::fs::rename(&temp, path)?;
         #[cfg(unix)]
-        std::fs::File::open(path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?.sync_all()?;
+        std::fs::File::open(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?
+        .sync_all()?;
         Ok(())
     })();
     if result.is_err() {

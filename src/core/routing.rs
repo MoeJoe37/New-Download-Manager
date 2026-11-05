@@ -1,5 +1,5 @@
+use crate::core::{engine, Core, Deserialize, Login, Relaxed, Serialize, Settings};
 use crate::transport;
-use crate::core::{Core, Deserialize, Login, Relaxed, Serialize, Settings, engine};
 
 /// "Use advanced browser integration": Windows' proxy for http points here (see `apply_integration`).
 pub const PROXY_PORT: u16 = 9615;
@@ -37,11 +37,24 @@ pub struct AdvProxy {
 /// `scheme://user:pass@host:port`; `host` may already carry ":port" and a scheme prefix.
 fn proxy_url(scheme: &str, host: &str, port: &str, user: &str, pass: &str) -> String {
     let host = host.trim();
-    let host = host.split_once("://").map_or(host, |(_, h)| h).trim_end_matches('/');
-    let enc = |s: &str| percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string();
-    let auth = if user.is_empty() { String::new() } else { format!("{}:{}@", enc(user), enc(pass)) };
+    let host = host
+        .split_once("://")
+        .map_or(host, |(_, h)| h)
+        .trim_end_matches('/');
+    let enc = |s: &str| {
+        percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    };
+    let auth = if user.is_empty() {
+        String::new()
+    } else {
+        format!("{}:{}@", enc(user), enc(pass))
+    };
     let port = port.trim();
-    if port.is_empty() || host.contains(':') { format!("{scheme}://{auth}{host}") } else { format!("{scheme}://{auth}{host}:{port}") }
+    if port.is_empty() || host.contains(':') {
+        format!("{scheme}://{auth}{host}")
+    } else {
+        format!("{scheme}://{auth}{host}:{port}")
+    }
 }
 
 pub(super) fn pac_route(pac: &str, url: &str) -> String {
@@ -54,7 +67,10 @@ pub(super) fn pac_route(pac: &str, url: &str) -> String {
 
 /// The host matches one of the space separated patterns ("10.*", "intranet", "*.corp.com").
 fn bypassed(patterns: &str, host: &str) -> bool {
-    !host.is_empty() && patterns.split_whitespace().any(|p| crate::grabber::mask_match(p, host) || host.starts_with(p))
+    !host.is_empty()
+        && patterns
+            .split_whitespace()
+            .any(|p| crate::grabber::mask_match(p, host) || host.starts_with(p))
 }
 
 impl Settings {
@@ -64,22 +80,36 @@ impl Settings {
     ///, or Windows' settings.
     pub fn proxy_for(&self, url: &str) -> String {
         let u = url::Url::parse(url).ok();
-        let (scheme, host) = (u.as_ref().map_or("", |u| u.scheme()), u.as_ref().and_then(|u| u.host_str()).unwrap_or(""));
+        let (scheme, host) = (
+            u.as_ref().map_or("", |u| u.scheme()),
+            u.as_ref().and_then(|u| u.host_str()).unwrap_or(""),
+        );
         match self.proxy_mode {
             // PAC: Windows' WinHTTP runs FindProxyForURL; the first proxy it names is used
             2 => pac_route(&self.pac_url, url),
             1 => {
                 // NDM's own downloads don't go through NDM's proxy
-                let (on, server, bypass) = self.saved_proxy.clone().unwrap_or_else(crate::win::system_proxy);
+                let (on, server, bypass) = self
+                    .saved_proxy
+                    .clone()
+                    .unwrap_or_else(crate::win::system_proxy);
                 if !on || bypassed(&bypass.replace(';', " ").replace("<local>", ""), host) {
                     return String::new();
                 }
                 // "host:port" for all, or "http=h:p;https=h:p;socks=h:p"
-                let pick = |k: &str| server.split(';').find_map(|p| p.strip_prefix(&format!("{k}="))).map(str::to_string);
+                let pick = |k: &str| {
+                    server
+                        .split(';')
+                        .find_map(|p| p.strip_prefix(&format!("{k}=")))
+                        .map(str::to_string)
+                };
                 if !server.contains('=') {
                     return proxy_url("http", server.trim(), "", "", "");
                 }
-                pick(scheme).map(|hp| proxy_url("http", &hp, "", "", "")).or_else(|| pick("socks").map(|hp| proxy_url("socks5h", &hp, "", "", ""))).unwrap_or_default()
+                pick(scheme)
+                    .map(|hp| proxy_url("http", &hp, "", "", ""))
+                    .or_else(|| pick("socks").map(|hp| proxy_url("socks5h", &hp, "", "", "")))
+                    .unwrap_or_default()
             }
             3 => {
                 if self.proxy_bypass_on && bypassed(&self.proxy_bypass, host) {
@@ -90,15 +120,41 @@ impl Settings {
                     return proxy_url("ftp", &a.ftp_host, &a.ftp_port, &a.ftp_user, &a.ftp_pass);
                 }
                 if scheme == "https" && a.https_on && !a.https_host.trim().is_empty() {
-                    return proxy_url("http", &a.https_host, &a.https_port, &a.https_user, &a.https_pass);
+                    return proxy_url(
+                        "http",
+                        &a.https_host,
+                        &a.https_port,
+                        &a.https_user,
+                        &a.https_pass,
+                    );
                 }
-                let ticked = (scheme == "http" && self.proxy_http) || (scheme == "https" && self.proxy_https) || (scheme == "ftp" && self.proxy_ftp);
+                let ticked = (scheme == "http" && self.proxy_http)
+                    || (scheme == "https" && self.proxy_https)
+                    || (scheme == "ftp" && self.proxy_ftp);
                 if ticked && !self.proxy_host.trim().is_empty() {
-                    return proxy_url("http", &self.proxy_host, &self.proxy_port, &self.proxy_user, &self.proxy_pass);
+                    return proxy_url(
+                        "http",
+                        &self.proxy_host,
+                        &self.proxy_port,
+                        &self.proxy_user,
+                        &self.proxy_pass,
+                    );
                 }
                 if a.socks_on && !a.socks_host.trim().is_empty() {
-                    let scheme = if !a.socks5 { "socks4" } else if a.local_dns { "socks5" } else { "socks5h" };
-                    return proxy_url(scheme, &a.socks_host, &a.socks_port, &a.socks_user, &a.socks_pass);
+                    let scheme = if !a.socks5 {
+                        "socks4"
+                    } else if a.local_dns {
+                        "socks5"
+                    } else {
+                        "socks5h"
+                    };
+                    return proxy_url(
+                        scheme,
+                        &a.socks_host,
+                        &a.socks_port,
+                        &a.socks_user,
+                        &a.socks_pass,
+                    );
                 }
                 String::new()
             }
@@ -108,16 +164,32 @@ impl Settings {
 
     /// Several networks for this download: only http(s) that goes direct, since a proxy has one way out.
     pub fn use_lanes(&self, url: &str) -> bool {
-        self.multi_net && !url.trim().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("ftp://")) && self.proxy_for(url).is_empty()
+        self.multi_net
+            && !url
+                .trim()
+                .get(..6)
+                .is_some_and(|p| p.eq_ignore_ascii_case("ftp://"))
+            && self.proxy_for(url).is_empty()
     }
 
     /// Adds the saved site login to a URL that has none. A site matches its host and subdomains.
     pub fn with_login(&self, url: &str) -> String {
-        let Ok(mut u) = url::Url::parse(url.trim()) else { return url.trim().into() };
+        let Ok(mut u) = url::Url::parse(url.trim()) else {
+            return url.trim().into();
+        };
         let host = u.host_str().unwrap_or_default().to_ascii_lowercase();
-        let site = |l: &Login| l.site.trim().trim_start_matches("http://").trim_start_matches("https://").trim_end_matches('/').to_ascii_lowercase();
+        let site = |l: &Login| {
+            l.site
+                .trim()
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
+                .to_ascii_lowercase()
+        };
         if u.username().is_empty() {
-            if let Some(l) = self.logins.iter().find(|l| !site(l).is_empty() && (host == site(l) || host.ends_with(&format!(".{}", site(l))))) {
+            if let Some(l) = self.logins.iter().find(|l| {
+                !site(l).is_empty() && (host == site(l) || host.ends_with(&format!(".{}", site(l))))
+            }) {
                 let _ = u.set_username(&l.user);
                 let _ = u.set_password(Some(&l.pass));
             }
@@ -131,10 +203,21 @@ impl Core {
     pub fn agent(&self, url: &str) -> transport::Agent {
         let (proxy, ua, use_routes, http1_hosts) = {
             let s = self.settings();
-            (s.proxy_for(url), s.user_agent.clone(), s.proxy_mode != 0, s.http1_hosts.clone())
+            (
+                s.proxy_for(url),
+                s.user_agent.clone(),
+                s.proxy_mode != 0,
+                s.http1_hosts.clone(),
+            )
         };
         let proxy = crate::net::agent_proxy(&proxy);
-        let mut agent = self.agents.lock().unwrap().entry(proxy.clone()).or_insert_with(|| transport::client::agent(&proxy, &ua).with_http1_hosts(&http1_hosts)).clone();
+        let mut agent = self
+            .agents
+            .lock()
+            .unwrap()
+            .entry(proxy.clone())
+            .or_insert_with(|| transport::client::agent(&proxy, &ua).with_http1_hosts(&http1_hosts))
+            .clone();
         if use_routes {
             agent.routes = engine::ftp::FTP.lock().unwrap().route.clone();
         }
@@ -156,15 +239,25 @@ impl Core {
         if !on || !crate::net::nic_supported() {
             return vec![];
         }
-        let nets: Vec<String> = crate::win::nics().into_iter().map(|n| n.name).filter(|n| !off.contains(n)).collect();
+        let nets: Vec<String> = crate::win::nics()
+            .into_iter()
+            .map(|n| n.name)
+            .filter(|n| !off.contains(n))
+            .collect();
         if nets.len() < least {
             return vec![];
         }
         let mut agents = self.agents.lock().unwrap();
         nets.into_iter()
             .map(|n| {
-                let proxy = crate::net::local_proxy(&format!("nic://{}", percent_encoding::utf8_percent_encode(&n, percent_encoding::NON_ALPHANUMERIC)));
-                let a = agents.entry(proxy.clone()).or_insert_with(|| transport::client::agent(&proxy, &ua)).clone();
+                let proxy = crate::net::local_proxy(&format!(
+                    "nic://{}",
+                    percent_encoding::utf8_percent_encode(&n, percent_encoding::NON_ALPHANUMERIC)
+                ));
+                let a = agents
+                    .entry(proxy.clone())
+                    .or_insert_with(|| transport::client::agent(&proxy, &ua))
+                    .clone();
                 (n, a)
             })
             .collect()
@@ -174,7 +267,11 @@ impl Core {
     /// Networks window): each spread download gets the ones there now, and one that wasn't spread is
     /// once a second network appears. Checked about every second.
     pub(super) fn tick_lanes(&self) {
-        for job in self.jobs().into_iter().filter(|j| j.running() && j.multi_ok.load(Relaxed)) {
+        for job in self
+            .jobs()
+            .into_iter()
+            .filter(|j| j.running() && j.multi_ok.load(Relaxed))
+        {
             let url = job.info().url.clone();
             let spread = !job.lanes.lock().unwrap().is_empty();
             let now = self.lanes_from(&url, if spread { 1 } else { 2 });
@@ -197,11 +294,20 @@ impl Core {
                 let old = crate::win::system_proxy();
                 let mut server = vec![format!("http=127.0.0.1:{PROXY_PORT}")];
                 if old.0 && old.1.contains('=') {
-                    server.extend(old.1.split(';').filter(|p| !p.trim().is_empty() && !p.starts_with("http=")).map(String::from));
+                    server.extend(
+                        old.1
+                            .split(';')
+                            .filter(|p| !p.trim().is_empty() && !p.starts_with("http="))
+                            .map(String::from),
+                    );
                 } else if old.0 && !old.1.trim().is_empty() {
                     server.extend(["https", "ftp"].map(|k| format!("{k}={}", old.1.trim())));
                 }
-                let bypass = if old.0 && !old.2.is_empty() { old.2.clone() } else { "<local>".into() };
+                let bypass = if old.0 && !old.2.is_empty() {
+                    old.2.clone()
+                } else {
+                    "<local>".into()
+                };
                 crate::win::set_system_proxy(true, &server.join(";"), &bypass);
                 s.saved_proxy = Some(old);
             }

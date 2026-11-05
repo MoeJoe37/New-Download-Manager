@@ -6,20 +6,22 @@
 //! Resuming re-fetches the 64 bytes before the resume point and checks them against the file.
 //! ftp:// downloads go through a small passive-mode client (`ftp_open`), segmented with REST.
 pub(crate) mod ftp;
+mod job;
+pub(crate) mod names;
+#[cfg(test)]
+mod performance_tests;
 pub(crate) mod probe;
 pub(crate) mod range;
-pub(crate) mod names;
-mod job;
 pub(crate) mod recovery;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod performance_tests;
 
 use self::ftp::{ftp_open, is_ftp};
 use self::names::{disposition_name, media_name, mime_ext, sanitize, sniff, unique_name, url_name};
-use self::probe::{Probe, is_page, probe_of};
-use self::range::{content_range, permanent_error, retry_delay, valid_layout, validate_http_response};
+use self::probe::{is_page, probe_of, Probe};
+use self::range::{
+    content_range, permanent_error, retry_delay, valid_layout, validate_http_response,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -175,11 +177,27 @@ impl Info {
     }
     pub fn done(&self) -> u64 {
         if self.status == Status::Complete {
-            return self.size.unwrap_or_else(|| self.segs.iter().map(|s| s.next.saturating_sub(s.start)).fold(0, u64::saturating_add));
+            return self.size.unwrap_or_else(|| {
+                self.segs
+                    .iter()
+                    .map(|s| s.next.saturating_sub(s.start))
+                    .fold(0, u64::saturating_add)
+            });
         }
         match self.size {
-            Some(s) if !self.segs.is_empty() => s - self.segs.iter().map(Seg::left).fold(0, u64::saturating_add).min(s),
-            _ => self.segs.iter().map(|s| s.next.saturating_sub(s.start)).fold(0, u64::saturating_add),
+            Some(s) if !self.segs.is_empty() => {
+                s - self
+                    .segs
+                    .iter()
+                    .map(Seg::left)
+                    .fold(0, u64::saturating_add)
+                    .min(s)
+            }
+            _ => self
+                .segs
+                .iter()
+                .map(|s| s.next.saturating_sub(s.start))
+                .fold(0, u64::saturating_add),
         }
     }
 }
@@ -205,7 +223,8 @@ impl Limiter {
         let until = {
             let mut next = self.next.lock().unwrap();
             let now = Instant::now();
-            let t = next.filter(|t| *t > now).unwrap_or(now) + Duration::from_secs_f64(n as f64 / rate as f64);
+            let t = next.filter(|t| *t > now).unwrap_or(now)
+                + Duration::from_secs_f64(n as f64 / rate as f64);
             *next = Some(t);
             t
         };
@@ -248,7 +267,7 @@ pub struct Job {
 
 type Body = Box<dyn Read + Send>;
 
-use crate::transport::{call, request, Agent, Request, Response};
+use crate::transport::auth::{b64, pct_decode, strip_ci};
 #[cfg(test)]
 use crate::transport::client::agent;
-use crate::transport::auth::{b64, pct_decode, strip_ci};
+use crate::transport::{call, request, Agent, Request, Response};

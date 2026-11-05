@@ -1,15 +1,22 @@
-use super::*;
-use super::fmp4::{be32, boxes, find, join_files, mkbox, tfdt_of, traks, Bx};
 use super::download::with_post;
+use super::fmp4::{be32, boxes, find, join_files, mkbox, tfdt_of, traks, Bx};
+use super::*;
 use crate::test_support::{frag, init, mk};
-
 
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::sync::Arc;
 
-fn fake<'a>(files: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Result<(String, String), String> + 'a {
-    move |u: &str| files.iter().find(|f| f.0 == u).map(|f| (u.to_string(), f.1.to_string())).ok_or(format!("404 {u}"))
+fn fake<'a>(
+    files: &'a [(&'a str, &'a str)],
+) -> impl Fn(&str) -> Result<(String, String), String> + 'a {
+    move |u: &str| {
+        files
+            .iter()
+            .find(|f| f.0 == u)
+            .map(|f| (u.to_string(), f.1.to_string()))
+            .ok_or(format!("404 {u}"))
+    }
 }
 
 #[test]
@@ -24,12 +31,22 @@ fn hls_master_audio_keys_ranges() {
     assert_eq!((t[0].ext.as_str(), t[1].ext.as_str()), ("mp4", "aac"));
     assert_eq!(t[0].init.as_ref().unwrap().url, "http://h/hi/init.mp4");
     let p = &t[0].parts;
-    assert_eq!((p[0].url.as_str(), p[0].key.is_none()), ("http://h/hi/seg1.m4s", true));
+    assert_eq!(
+        (p[0].url.as_str(), p[0].key.is_none()),
+        ("http://h/hi/seg1.m4s", true)
+    );
     assert_eq!(p[1].range, Some((0, 99)));
     assert_eq!(p[2].range, Some((100, 149)));
-    assert_eq!(p[2].key, Some(("http://h/k".into(), 9u128.to_be_bytes())), "IV = media sequence number");
+    assert_eq!(
+        p[2].key,
+        Some(("http://h/k".into(), 9u128.to_be_bytes())),
+        "IV = media sequence number"
+    );
     assert_eq!(t[1].parts[0].url, "http://h/au/a1.aac");
-    let drm = [("http://h/d.m3u8", "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\nx.ts\n")];
+    let drm = [(
+        "http://h/d.m3u8",
+        "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\nx.ts\n",
+    )];
     assert_eq!(plan(&fake(&drm), "http://h/d.m3u8").unwrap_err(), PROTECTED);
 }
 
@@ -43,13 +60,34 @@ fn dash_periods_join() {
     let t = dash("http://h/x.mpd", mpd, 0.0).unwrap();
     assert_eq!(t.len(), 1);
     let urls: Vec<&str> = t[0].parts.iter().map(|p| p.url.as_str()).collect();
-    assert_eq!(urls, ["http://h/a/1.m4s", "http://h/a/2.m4s", "http://h/b/init.mp4", "http://h/b/1.m4s", "http://h/b/2.m4s"]);
-    assert_eq!((t[0].parts[0].shift, t[0].parts[3].shift), (0.0, 4.0 - 90.0));
+    assert_eq!(
+        urls,
+        [
+            "http://h/a/1.m4s",
+            "http://h/a/2.m4s",
+            "http://h/b/init.mp4",
+            "http://h/b/1.m4s",
+            "http://h/b/2.m4s"
+        ]
+    );
+    assert_eq!(
+        (t[0].parts[0].shift, t[0].parts[3].shift),
+        (0.0, 4.0 - 90.0)
+    );
     // a period whose pieces carry on the same numbering: the shared piece is kept once
-    let same = mpd.replace("b/init.mp4", "a/init.mp4").replace("b/$Number$", "a/$Number$").replace(r#"duration="2000" presentationTimeOffset"#, r#"duration="2000" startNumber="2" presentationTimeOffset"#);
+    let same = mpd
+        .replace("b/init.mp4", "a/init.mp4")
+        .replace("b/$Number$", "a/$Number$")
+        .replace(
+            r#"duration="2000" presentationTimeOffset"#,
+            r#"duration="2000" startNumber="2" presentationTimeOffset"#,
+        );
     let t = dash("http://h/x.mpd", &same, 0.0).unwrap();
     let urls: Vec<&str> = t[0].parts.iter().map(|p| p.url.as_str()).collect();
-    assert_eq!(urls, ["http://h/a/1.m4s", "http://h/a/2.m4s", "http://h/a/3.m4s"]);
+    assert_eq!(
+        urls,
+        ["http://h/a/1.m4s", "http://h/a/2.m4s", "http://h/a/3.m4s"]
+    );
 }
 
 #[test]
@@ -57,45 +95,117 @@ fn segmentbase_periods_keep_their_shift() {
     // two periods, one whole file each, fetched in two byte ranges: each file's fragments get its own shift
     let dir = std::env::temp_dir().join(format!("ndm_sb_{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    let file = |m: &[u8]| [mkbox(b"ftyp", b"iso6"), mkbox(b"moov", b""), mkbox(b"moof", b""), mkbox(b"mdat", m)].concat();
+    let file = |m: &[u8]| {
+        [
+            mkbox(b"ftyp", b"iso6"),
+            mkbox(b"moov", b""),
+            mkbox(b"moof", b""),
+            mkbox(b"mdat", m),
+        ]
+        .concat()
+    };
     let (a, b) = (file(b"A"), file(b"B"));
-    let pieces = [(&a[..10], "a", 1.0), (&a[10..], "a", 1.0), (&b[..10], "b", 9.0), (&b[10..], "b", 9.0)];
-    let parts: Vec<Part> = pieces.iter().map(|(_, u, s)| Part { url: u.to_string(), range: None, key: None, seq: 0, shift: *s }).collect();
+    let pieces = [
+        (&a[..10], "a", 1.0),
+        (&a[10..], "a", 1.0),
+        (&b[..10], "b", 9.0),
+        (&b[10..], "b", 9.0),
+    ];
+    let parts: Vec<Part> = pieces
+        .iter()
+        .map(|(_, u, s)| Part {
+            url: u.to_string(),
+            range: None,
+            key: None,
+            seq: 0,
+            shift: *s,
+        })
+        .collect();
     for (k, (bytes, ..)) in pieces.iter().enumerate() {
         fs::write(dir.join(k.to_string()), bytes).unwrap();
     }
     let f = |k: usize| dir.join(k.to_string());
-    let out: Vec<(Vec<u8>, f64)> = timed(true, &parts, &f).map(|(u, s)| (u.unwrap(), s)).collect();
+    let out: Vec<(Vec<u8>, f64)> = timed(true, &parts, &f)
+        .map(|(u, s)| (u.unwrap(), s))
+        .collect();
     let _ = fs::remove_dir_all(&dir);
-    let shift_of = |m: &[u8]| out.iter().find(|(u, _)| u.windows(5).any(|w| w == [b"mdat", m].concat())).map(|x| x.1);
+    let shift_of = |m: &[u8]| {
+        out.iter()
+            .find(|(u, _)| u.windows(5).any(|w| w == [b"mdat", m].concat()))
+            .map(|x| x.1)
+    };
     assert_eq!((shift_of(b"A"), shift_of(b"B")), (Some(1.0), Some(9.0)));
 }
 
 #[test]
 fn retime_moves_fragments() {
-    let mdhd = mkbox(b"mdhd", &[&[0u8; 12][..], &1000u32.to_be_bytes(), &[0; 4]].concat());
-    let init = [mkbox(b"ftyp", b"iso6"), mkbox(b"moov", &mkbox(b"trak", &[mkbox(b"tkhd", &[0u8; 24]), mkbox(b"mdia", &mdhd)].concat()))].concat();
+    let mdhd = mkbox(
+        b"mdhd",
+        &[&[0u8; 12][..], &1000u32.to_be_bytes(), &[0; 4]].concat(),
+    );
+    let init = [
+        mkbox(b"ftyp", b"iso6"),
+        mkbox(
+            b"moov",
+            &mkbox(
+                b"trak",
+                &[mkbox(b"tkhd", &[0u8; 24]), mkbox(b"mdia", &mdhd)].concat(),
+            ),
+        ),
+    ]
+    .concat();
     let frag = |t: u32| {
-        let trun = mkbox(b"trun", &[&[0, 0, 0, 1][..], &1u32.to_be_bytes(), &77i32.to_be_bytes()].concat());
-        let traf = mkbox(b"traf", &[mkbox(b"tfhd", &[0, 0, 0, 0, 0, 0, 0, 1]), mkbox(b"tfdt", &[&[0u8; 4][..], &t.to_be_bytes()].concat()), trun].concat());
+        let trun = mkbox(
+            b"trun",
+            &[&[0, 0, 0, 1][..], &1u32.to_be_bytes(), &77i32.to_be_bytes()].concat(),
+        );
+        let traf = mkbox(
+            b"traf",
+            &[
+                mkbox(b"tfhd", &[0, 0, 0, 0, 0, 0, 0, 1]),
+                mkbox(b"tfdt", &[&[0u8; 4][..], &t.to_be_bytes()].concat()),
+                trun,
+            ]
+            .concat(),
+        );
         [mkbox(b"moof", &traf), mkbox(b"mdat", b"x")].concat()
     };
     // period 1 starts at media time 90 s; period 2 (its own init) lands 5,000,000 s later
-    let items: Vec<(Result<Vec<u8>, String>, f64)> = vec![(Ok(init.clone()), -86.0), (Ok(frag(90_000)), -86.0), (Ok(init), 5_000_004.0), (Ok(frag(2000)), 5_000_004.0)];
+    let items: Vec<(Result<Vec<u8>, String>, f64)> = vec![
+        (Ok(init.clone()), -86.0),
+        (Ok(frag(90_000)), -86.0),
+        (Ok(init), 5_000_004.0),
+        (Ok(frag(2000)), 5_000_004.0),
+    ];
     let base = first_time(items.clone().into_iter()).unwrap();
     assert_eq!(base, 4.0);
-    let out = retime(items.into_iter(), base).map(Result::unwrap).collect::<Vec<_>>().concat();
+    let out = retime(items.into_iter(), base)
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .concat();
     let top = boxes(&out, 0, out.len());
-    assert_eq!(top.iter().filter(|b| &b.3 == b"moov").count(), 1, "later init pieces left out");
+    assert_eq!(
+        top.iter().filter(|b| &b.3 == b"moov").count(),
+        1,
+        "later init pieces left out"
+    );
     let moofs: Vec<Bx> = top.iter().filter(|b| &b.3 == b"moof").copied().collect();
     assert_eq!(tfdt_of(&out, moofs[0]), Some(0));
     assert_eq!(tfdt_of(&out, moofs[1]), Some(5_000_002_000));
-    assert_eq!(out[find(&out, moofs[1], &[b"traf", b"tfdt"]).unwrap().1], 1, "version 1 for a 64-bit time");
+    assert_eq!(
+        out[find(&out, moofs[1], &[b"traf", b"tfdt"]).unwrap().1],
+        1,
+        "version 1 for a 64-bit time"
+    );
     let off = |m: Bx| {
         let r = find(&out, m, &[b"traf", b"trun"]).unwrap();
         i32::from_be_bytes(out[r.1 + 8..r.1 + 12].try_into().unwrap())
     };
-    assert_eq!((off(moofs[0]), off(moofs[1])), (77, 81), "data offsets follow the bigger moof");
+    assert_eq!(
+        (off(moofs[0]), off(moofs[1])),
+        (77, 81),
+        "data offsets follow the bigger moof"
+    );
 }
 
 #[test]
@@ -106,7 +216,10 @@ fn dash_live_window() {
  </Representation></AdaptationSet></Period></MPD>"#;
     // 21 s in: pieces 0..=9 are finished; the 6 s window holds the last three
     let t = dash("http://h/l.mpd", mpd, 1_767_225_600.0 + 21.0).unwrap();
-    assert_eq!(t[0].parts.iter().map(|p| p.seq).collect::<Vec<_>>(), [17, 18, 19]);
+    assert_eq!(
+        t[0].parts.iter().map(|p| p.seq).collect::<Vec<_>>(),
+        [17, 18, 19]
+    );
     assert_eq!(t[0].parts[2].url, "http://h/19.m4s");
     assert!(t[0].live && t[0].dash && t[0].target == 2.0 && t[0].src == "http://h/l.mpd");
     let t = dash("http://h/l.mpd", mpd, 1_767_225_600.0 + 1.0).unwrap();
@@ -128,7 +241,12 @@ fn dash_live_follows_until_static() {
                 let mut line = String::new();
                 r.read_line(&mut line).unwrap();
                 while r.read_line(&mut String::new()).unwrap_or(0) > 2 {}
-                let path = line.split(' ').nth(1).unwrap_or("").trim_start_matches('/').to_string();
+                let path = line
+                    .split(' ')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim_start_matches('/')
+                    .to_string();
                 let body = if path == "live.mpd" {
                     let n = fetches.fetch_add(1, Relaxed);
                     let (ty, t0) = match n {
@@ -136,25 +254,44 @@ fn dash_live_follows_until_static() {
                         1 => ("dynamic", 1000),
                         _ => ("static", 2000),
                     };
-                    format!(r#"<MPD type="{ty}" minimumUpdatePeriod="PT1S"><Period><AdaptationSet mimeType="video/mp4"><Representation id="v" bandwidth="1"><SegmentTemplate timescale="1000" initialization="init.mp4" media="seg$Time$.m4s"><SegmentTimeline><S t="{t0}" d="1000" r="2"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#)
+                    format!(
+                        r#"<MPD type="{ty}" minimumUpdatePeriod="PT1S"><Period><AdaptationSet mimeType="video/mp4"><Representation id="v" bandwidth="1"><SegmentTemplate timescale="1000" initialization="init.mp4" media="seg$Time$.m4s"><SegmentTimeline><S t="{t0}" d="1000" r="2"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#
+                    )
                 } else {
                     path
                 };
-                let _ = (&s).write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                let _ = (&s).write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
             });
         }
     });
     let dir = std::env::temp_dir().join(format!("ndm-test-dash-live-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(engine::Info { url: format!("{base}live.mpd"), folder: dir.display().to_string(), conns: 2, ..Default::default() });
-    j.start(transport::client::agent("", ""), Arc::new(Limiter::default()));
+    let j = Job::new(engine::Info {
+        url: format!("{base}live.mpd"),
+        folder: dir.display().to_string(),
+        conns: 2,
+        ..Default::default()
+    });
+    j.start(
+        transport::client::agent("", ""),
+        Arc::new(Limiter::default()),
+    );
     while j.running() {
         thread::sleep(Duration::from_millis(20));
     }
     let i = j.info().clone();
     assert_eq!(i.status, Status::Complete);
     assert_eq!(i.name, "live.mp4");
-    assert_eq!(fs::read_to_string(i.path()).unwrap(), "init.mp4seg0.m4sseg1000.m4sseg2000.m4sseg3000.m4sseg4000.m4s");
+    assert_eq!(
+        fs::read_to_string(i.path()).unwrap(),
+        "init.mp4seg0.m4sseg1000.m4sseg2000.m4sseg3000.m4sseg4000.m4s"
+    );
     assert_eq!(fetches.load(Relaxed), 3);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -180,9 +317,19 @@ fn dash_templates() {
  </Period>
 </MPD>"#;
     let t = plan(&fake(&[("http://h/x/s.mpd", mpd)]), "http://h/x/s.mpd").unwrap();
-    assert_eq!(t[0].init.as_ref().unwrap().url, "http://h/x/media/v2/init.mp4");
+    assert_eq!(
+        t[0].init.as_ref().unwrap().url,
+        "http://h/x/media/v2/init.mp4"
+    );
     let v: Vec<&str> = t[0].parts.iter().map(|p| p.url.as_str()).collect();
-    assert_eq!(v, ["http://h/x/media/v2/005.m4s", "http://h/x/media/v2/006.m4s", "http://h/x/media/v2/007.m4s"]);
+    assert_eq!(
+        v,
+        [
+            "http://h/x/media/v2/005.m4s",
+            "http://h/x/media/v2/006.m4s",
+            "http://h/x/media/v2/007.m4s"
+        ]
+    );
     assert_eq!(t[1].parts.len(), 5, "ceil(9.5 s / 2 s)");
     assert_eq!(t[1].parts[1].url, "http://h/x/media/a-2.m4s");
     assert_eq!((t[0].ext.as_str(), t[1].ext.as_str()), ("mp4", "m4a"));
@@ -192,7 +339,11 @@ fn dash_templates() {
 
 #[test]
 fn mux_interleaves_fragments() {
-    let v = [init(1, 1000), frag(1, 0, b'v'), [frag(1, 2000, b'w'), frag(1, 4000, b'x')].concat()];
+    let v = [
+        init(1, 1000),
+        frag(1, 0, b'v'),
+        [frag(1, 2000, b'w'), frag(1, 4000, b'x')].concat(),
+    ];
     let a = [init(1, 48000), frag(1, 0, b'a'), frag(1, 96000, b'b')];
     let out = std::env::temp_dir().join(format!("ndm-mux-{}.mp4", std::process::id()));
     assert!(mux_mp4(&mut v.into_iter().map(Ok), &mut a.into_iter().map(Ok), &out).unwrap());
@@ -206,9 +357,17 @@ fn mux_interleaves_fragments() {
     assert_eq!(boxes(&d, mvex.1, mvex.2).len(), 2, "two trex");
     let mvhd = find(&d, moov, &[b"mvhd"]).unwrap();
     assert_eq!(be32(&d, mvhd.2 - 4), 3);
-    let order: Vec<u8> = top.iter().filter(|b| &b.3 == b"mdat").map(|b| d[b.1]).collect();
+    let order: Vec<u8> = top
+        .iter()
+        .filter(|b| &b.3 == b"mdat")
+        .map(|b| d[b.1])
+        .collect();
     assert_eq!(order, *b"vawbx");
-    let tfhd_ids: Vec<u32> = top.iter().filter(|b| &b.3 == b"moof").map(|b| be32(&d, find(&d, *b, &[b"traf", b"tfhd"]).unwrap().1 + 4)).collect();
+    let tfhd_ids: Vec<u32> = top
+        .iter()
+        .filter(|b| &b.3 == b"moof")
+        .map(|b| be32(&d, find(&d, *b, &[b"traf", b"tfhd"]).unwrap().1 + 4))
+        .collect();
     assert_eq!(tfhd_ids, [1, 2, 1, 2, 1]);
     assert!(!top.iter().any(|b| &b.3 == b"styp"));
 }
@@ -221,19 +380,33 @@ fn processing_shows_progress() {
     let out = dir.join("out.bin");
     let job = Job::new(crate::engine::Info::default());
     let seen = Mutex::new(Vec::new());
-    let r = with_post(&job, "Joining the pieces...", std::slice::from_ref(&out), 1000, || {
-        for k in 1..=4 {
-            fs::write(&out, vec![0u8; k * 250]).unwrap();
-            thread::sleep(Duration::from_millis(400));
-            seen.lock().unwrap().push(job.info().post.clone());
-        }
-        7
-    });
+    let r = with_post(
+        &job,
+        "Joining the pieces...",
+        std::slice::from_ref(&out),
+        1000,
+        || {
+            for k in 1..=4 {
+                fs::write(&out, vec![0u8; k * 250]).unwrap();
+                thread::sleep(Duration::from_millis(400));
+                seen.lock().unwrap().push(job.info().post.clone());
+            }
+            7
+        },
+    );
     assert_eq!(r, 7);
     let seen = seen.into_inner().unwrap();
-    assert!(seen.iter().all(|p| p.as_ref().is_some_and(|(l, _)| l == "Joining the pieces...")), "{seen:?}");
+    assert!(
+        seen.iter().all(|p| p
+            .as_ref()
+            .is_some_and(|(l, _)| l == "Joining the pieces...")),
+        "{seen:?}"
+    );
     let fr: Vec<f32> = seen.iter().map(|p| p.as_ref().unwrap().1).collect();
-    assert!(fr[0] >= 0.2 && fr[0] <= 0.3 && fr[2] >= 0.7 && fr[3] <= 0.99, "{fr:?}");
+    assert!(
+        fr[0] >= 0.2 && fr[0] <= 0.3 && fr[2] >= 0.7 && fr[3] <= 0.99,
+        "{fr:?}"
+    );
     assert!(job.info().post.is_none(), "cleared when done");
     let _ = fs::remove_dir_all(&dir);
 }
@@ -244,9 +417,19 @@ fn joins_whole_files() {
     let dir = std::env::temp_dir().join(format!("ndm-join-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let sidx = mk(b"sidx", &[&[0; 12]]);
-    let v = [init(1, 1000), sidx.clone(), frag(1, 0, b'v'), frag(1, 2000, b'w')].concat();
+    let v = [
+        init(1, 1000),
+        sidx.clone(),
+        frag(1, 0, b'v'),
+        frag(1, 2000, b'w'),
+    ]
+    .concat();
     let a = [init(1, 48000), sidx, frag(1, 0, b'a'), frag(1, 96000, b'b')].concat();
-    let (vp, ap, out) = (dir.join("x.f137.mp4"), dir.join("x.f140.m4a"), dir.join("x.mp4"));
+    let (vp, ap, out) = (
+        dir.join("x.f137.mp4"),
+        dir.join("x.f140.m4a"),
+        dir.join("x.mp4"),
+    );
     fs::write(&vp, v).unwrap();
     fs::write(&ap, a).unwrap();
     assert!(join_files(&vp, &ap, &out).unwrap());
@@ -254,7 +437,11 @@ fn joins_whole_files() {
     let top = boxes(&d, 0, d.len());
     let moov = top.iter().find(|b| &b.3 == b"moov").copied().unwrap();
     assert_eq!(traks(&d, moov).len(), 2);
-    let order: Vec<u8> = top.iter().filter(|b| &b.3 == b"mdat").map(|b| d[b.1]).collect();
+    let order: Vec<u8> = top
+        .iter()
+        .filter(|b| &b.3 == b"mdat")
+        .map(|b| d[b.1])
+        .collect();
     assert_eq!(order, *b"vawb");
     // a webm with an mp4 isn't a pair
     assert!(!join_files(&vp, &dir.join("x.webm"), &out).unwrap());
@@ -273,7 +460,12 @@ fn serve(files: Vec<(&'static str, Vec<u8>)>) -> String {
                 let mut line = String::new();
                 r.read_line(&mut line).unwrap();
                 while r.read_line(&mut String::new()).unwrap_or(0) > 2 {}
-                let path = line.split(' ').nth(1).unwrap_or("").trim_start_matches('/').to_string();
+                let path = line
+                    .split(' ')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim_start_matches('/')
+                    .to_string();
                 let mut w = &s;
                 match files.iter().find(|f| f.0 == path) {
                     Some((_, body)) => {
@@ -294,7 +486,12 @@ fn serve(files: Vec<(&'static str, Vec<u8>)>) -> String {
 /// (NIST SP 800-38A F.2.1 vector).
 #[test]
 fn hls_download_decrypts_and_joins() {
-    let hex = |s: &str| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+    let hex = |s: &str| {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>()
+    };
     let key = hex("2b7e151628aed2a6abf7158809cf4f3c");
     let plain = hex("6bc1bee22e409f96e93d7e117393172a");
     let list = "#EXTM3U\n#EXTINF:2,\ns1.ts\n#EXTINF:2,\ns2.ts\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\",IV=0x000102030405060708090a0b0c0d0e0f\n#EXTINF:2,\ns3.ts\n#EXT-X-ENDLIST\n";
@@ -307,15 +504,26 @@ fn hls_download_decrypts_and_joins() {
     ]);
     let dir = std::env::temp_dir().join(format!("ndm-test-hls-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let j = Job::new(engine::Info { url: format!("{base}v.m3u8"), folder: dir.display().to_string(), conns: 2, ..Default::default() });
-    j.start(transport::client::agent("", ""), Arc::new(Limiter::default()));
+    let j = Job::new(engine::Info {
+        url: format!("{base}v.m3u8"),
+        folder: dir.display().to_string(),
+        conns: 2,
+        ..Default::default()
+    });
+    j.start(
+        transport::client::agent("", ""),
+        Arc::new(Limiter::default()),
+    );
     while j.running() {
         thread::sleep(Duration::from_millis(20));
     }
     let i = j.info().clone();
     assert_eq!(i.status, Status::Complete);
     assert_eq!(i.name, "v.ts");
-    assert_eq!(fs::read(i.path()).unwrap(), [vec![1; 70_000], vec![2; 5], plain].concat());
+    assert_eq!(
+        fs::read(i.path()).unwrap(),
+        [vec![1; 70_000], vec![2; 5], plain].concat()
+    );
     assert!(!i.part().exists(), "pieces removed");
     let _ = fs::remove_dir_all(&dir);
 }
@@ -346,7 +554,10 @@ fn live_playlist_by_content_type() {
                     }
                     ("application/vnd.apple.mpegurl", b.into_bytes())
                 } else {
-                    ("video/mp2t", path.trim_start_matches('/').repeat(3).into_bytes())
+                    (
+                        "video/mp2t",
+                        path.trim_start_matches('/').repeat(3).into_bytes(),
+                    )
                 };
                 let mut w = &s;
                 let _ = w.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes());
@@ -356,10 +567,24 @@ fn live_playlist_by_content_type() {
     });
     let dir = std::env::temp_dir().join(format!("ndm-test-live-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let p = engine::probe::probe(&transport::client::agent("", ""), &format!("{base}play"), "", "").unwrap();
+    let p = engine::probe::probe(
+        &transport::client::agent("", ""),
+        &format!("{base}play"),
+        "",
+        "",
+    )
+    .unwrap();
     assert!(p.stream && p.name == "play.mp4", "{}", p.name);
-    let j = Job::new(engine::Info { url: format!("{base}play"), folder: dir.display().to_string(), conns: 2, ..Default::default() });
-    j.start(transport::client::agent("", ""), Arc::new(Limiter::default()));
+    let j = Job::new(engine::Info {
+        url: format!("{base}play"),
+        folder: dir.display().to_string(),
+        conns: 2,
+        ..Default::default()
+    });
+    j.start(
+        transport::client::agent("", ""),
+        Arc::new(Limiter::default()),
+    );
     while j.running() {
         thread::sleep(Duration::from_millis(20));
     }
@@ -367,7 +592,13 @@ fn live_playlist_by_content_type() {
     assert_eq!(i.status, Status::Complete);
     assert!(i.stream);
     assert_eq!(i.name, "play.ts", "not MPEG-TS data, so kept as it is");
-    assert_eq!(fs::read_to_string(i.path()).unwrap(), "s5.tss5.tss5.tss6.tss6.tss6.tss7.tss7.tss7.ts");
-    assert!(fetches.load(Relaxed) >= 5, "the live playlist was fetched again");
+    assert_eq!(
+        fs::read_to_string(i.path()).unwrap(),
+        "s5.tss5.tss5.tss6.tss6.tss6.tss7.tss7.tss7.ts"
+    );
+    assert!(
+        fetches.load(Relaxed) >= 5,
+        "the live playlist was fetched again"
+    );
     let _ = fs::remove_dir_all(&dir);
 }

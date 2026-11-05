@@ -1,57 +1,64 @@
-mod display;
-mod downloads;
-mod download_list;
 mod browser_setup;
-mod shell;
-mod grabber_window;
+mod display;
+mod download_list;
+mod downloads;
 mod events;
+mod grabber_window;
+mod shell;
 
-use self::display::{human, human_os, rate, time_left, size3, size3_os, pct2, date};
-use self::downloads::{with_login, join_login, clipboard, links, discard, DUPL};
+use self::browser_setup::{extension_dir, extension_page, integration, GUIDES};
+use self::dialogs::scheduler::sched_time;
+use self::display::{date, human, human_os, pct2, rate, size3, size3_os, time_left};
 #[cfg(test)]
 use self::downloads::split_login;
-use self::browser_setup::{extension_page, GUIDES, integration, extension_dir};
-use self::shell::{virus_args, explore, open_folder_of, open_url, open_with};
-use self::grabber_window::{GRAB_MENU, GRAB_TB, GRAB_STEPS, GrabCmd};
+use self::downloads::{clipboard, discard, join_login, links, with_login, DUPL};
 #[cfg(test)]
 use self::events::no_zoom;
 #[cfg(all(test, not(windows)))]
 use self::events::{close_action, Close};
-use self::dialogs::scheduler::sched_time;
+use self::grabber_window::{GrabCmd, GRAB_MENU, GRAB_STEPS, GRAB_TB};
+use self::shell::{explore, open_folder_of, open_url, open_with, virus_args};
 mod dialogs;
 mod help;
 pub(crate) mod resources;
 mod window;
 
-use self::resources::{app_icon, DARK_DLG, help_logo, tray_picture, texture, Toolbar, TB_ICONS, TB_BUTTONS, TB_BUILTIN, toolbars_dir, toolbar_sets, cat_icon_sets, cat_icon_files, tb_picture, ALL_CJK, LIST_FONT, style, Res, segoe, DARK_TREE, DARK_MENU_HOT, BAR};
-use self::window::table::{Col, COLS, Row};
-use self::window::categories::{Which, Cat};
-use self::window::menu::{menu_layout};
+use self::resources::{
+    app_icon, cat_icon_files, cat_icon_sets, help_logo, segoe, style, tb_picture, texture,
+    toolbar_sets, toolbars_dir, tray_picture, Res, Toolbar, ALL_CJK, BAR, DARK_DLG, DARK_MENU_HOT,
+    DARK_TREE, LIST_FONT, TB_BUILTIN, TB_BUTTONS, TB_ICONS,
+};
+use self::window::categories::{Cat, Which};
+use self::window::menu::menu_layout;
+use self::window::table::{Col, Row, COLS};
 
-use crate::i18n::{tr, tr_os};
-use crate::startup::{tray_start, PAINTED, TITLE};
-use crate::{core, dlu, engine, grabber, i18n, net, stream, win, ytdlp};
-#[cfg(target_os = "macos")]
-use crate::mac_capture;
 use self::dialogs::{Dialog, PlaylistPicker, ProbeSlot};
 use self::help::{help, help_body, take_help_request};
-use crate::core::{Core, browser_bridge::Incoming, settings::Settings, settings::GENERAL};
+use crate::core::{browser_bridge::Incoming, settings::Settings, settings::GENERAL, Core};
 use crate::diagnostics::{crash_diagnostics, issue_text};
-use crate::update::{check_update, install_update, Release, UPDATE_REPO};
-use crate::engine::{Info, probe::Probe, Status};
+use crate::engine::{probe::Probe, Info, Status};
 use crate::file_ops::copy_dir;
-use eframe::egui::{self, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
+use crate::i18n::{tr, tr_os};
+#[cfg(target_os = "macos")]
+use crate::mac_capture;
+use crate::startup::{tray_start, PAINTED, TITLE};
+use crate::update::{check_update, install_update, Release, UPDATE_REPO};
+use crate::{core, dlu, engine, grabber, i18n, net, stream, win, ytdlp};
+use eframe::egui::{
+    self, Align, Align2, Color32, FontId, Key, Layout, Rect, RichText, Sense, Vec2,
+    ViewportBuilder, ViewportCommand, ViewportId,
+};
 use egui_extras::{Column, TableBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder};
-#[cfg(windows)]
-use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+#[cfg(windows)]
+use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
+use tray_icon::{TrayIcon, TrayIconBuilder};
 
 /// The Linux tray icon is up (its GTK thread owns it): closing the window hides it instead of quitting.
 static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -157,14 +164,16 @@ impl App {
             let on = core.settings().adv_integration;
             core.apply_integration(on);
         }
-        let dark =core.settings().dark_support && win::system_dark();
+        let dark = core.settings().dark_support && win::system_dark();
         *LIST_FONT.lock().unwrap() = core.settings().list_font.clone();
         i18n::load(&core.settings().language.clone());
         dlu::NDM_STYLE.store(core.settings().ndm_style, Relaxed);
         style(ctx, dark);
         let hwnd = Arc::new(AtomicIsize::new(0));
         let (tx, rx) = channel();
-        if let Some(inc) = core::browser_bridge::cli_args(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        if let Some(inc) =
+            core::browser_bridge::cli_args(&std::env::args().skip(1).collect::<Vec<_>>())
+        {
             let _ = tx.send(inc);
         }
         let c = ctx.clone();
@@ -181,7 +190,10 @@ impl App {
         let mut app = Self::build(ctx, core, hwnd, rx, tray, dark);
         #[cfg(target_os = "macos")]
         if let Err(error) = mac_capture::restore() {
-            app.open(Dialog::Info { title: "Restore macOS web proxy".into(), text: error });
+            app.open(Dialog::Info {
+                title: "Restore macOS web proxy".into(),
+                text: error,
+            });
         }
         if app.core.settings().tips_startup && !tray_start() {
             let text = app.next_tip();
@@ -202,8 +214,12 @@ impl App {
     }
 
     fn build(
-        ctx: &egui::Context, core: Arc<Core>, hwnd: Arc<AtomicIsize>, rx: Receiver<Incoming>,
-        tray: Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)>, dark: bool,
+        ctx: &egui::Context,
+        core: Arc<Core>,
+        hwnd: Arc<AtomicIsize>,
+        rx: Receiver<Incoming>,
+        tray: Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)>,
+        dark: bool,
     ) -> App {
         let expanded = core.settings().expanded.iter().cloned().collect();
         App {
@@ -258,11 +274,19 @@ impl App {
 
     /// Check for a new version in the background (Quick Update, template 182).
     fn check_updates(&mut self, ctx: &egui::Context, quiet: bool) {
-        if self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::Update { .. } | Dialog::NewVersion { .. })) {
+        if self
+            .dialogs
+            .iter()
+            .any(|(_, d)| matches!(d, Dialog::Update { .. } | Dialog::NewVersion { .. }))
+        {
             return;
         }
         let slot: Arc<Mutex<Option<Result<Option<Release>, String>>>> = Arc::default();
-        let (s, agent, c) = (slot.clone(), self.core.agent("https://api.github.com/"), ctx.clone());
+        let (s, agent, c) = (
+            slot.clone(),
+            self.core.agent("https://api.github.com/"),
+            ctx.clone(),
+        );
         std::thread::spawn(move || {
             *s.lock().unwrap() = Some(check_update(&agent));
             c.request_repaint();
@@ -272,11 +296,25 @@ impl App {
 
     /// Downloads -> Set yt-dlp: NDM's own copy, downloaded (or brought up to date) on a thread.
     fn set_ytdlp(&mut self, ctx: &egui::Context) {
-        if self.dialogs.iter().any(|(_, d)| matches!(d, Dialog::YtDlp { .. })) {
+        if self
+            .dialogs
+            .iter()
+            .any(|(_, d)| matches!(d, Dialog::YtDlp { .. }))
+        {
             return;
         }
-        let (got, total, done) = (Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(Mutex::new(None)));
-        let (agent, g, t, d, c) = (self.core.agent("https://github.com/"), got.clone(), total.clone(), done.clone(), ctx.clone());
+        let (got, total, done) = (
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            Arc::new(Mutex::new(None)),
+        );
+        let (agent, g, t, d, c) = (
+            self.core.agent("https://github.com/"),
+            got.clone(),
+            total.clone(),
+            done.clone(),
+            ctx.clone(),
+        );
         let core = self.core.clone();
         std::thread::spawn(move || {
             let r = ytdlp::install::install(&agent, &g, &t, true);
@@ -303,21 +341,44 @@ impl App {
         // browsers installed since the list was saved are added ticked, like NDM's detection (296)
         for (name, exe) in win::installed_browsers() {
             if !s.browsers.iter().any(|b| b.exe.eq_ignore_ascii_case(&exe)) {
-                s.browsers.push(core::settings::Browser { name, exe, on: true });
+                s.browsers.push(core::settings::Browser {
+                    name,
+                    exe,
+                    on: true,
+                });
             }
         }
-        self.open(Dialog::Options { tab, s: Box::new(s) });
+        self.open(Dialog::Options {
+            tab,
+            s: Box::new(s),
+        });
     }
 
     fn new_queue(&mut self, files: Vec<u64>) {
-        let n = self.core.settings().queues.iter().map(|q| q.id).max().unwrap_or(0) + 1;
-        self.open(Dialog::QueueName { name: i18n::trf("Queue # %ld", &[&n]), files });
+        let n = self
+            .core
+            .settings()
+            .queues
+            .iter()
+            .map(|q| q.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.open(Dialog::QueueName {
+            name: i18n::trf("Queue # %ld", &[&n]),
+            files,
+        });
     }
 
     fn open_scheduler(&mut self, tab: u8) {
         let s = self.core.settings().clone();
         let queue = s.queues[0].clone();
-        self.open(Dialog::Scheduler { tab, queue, qsel: None, error: String::new() });
+        self.open(Dialog::Scheduler {
+            tab,
+            queue,
+            qsel: None,
+            error: String::new(),
+        });
     }
 
     /// The next tip (MFC GetNextTipString: wraps at the end), or NDM's message when there is no tips file.
@@ -336,9 +397,22 @@ impl App {
 
     fn move_in_queue(&self, id: u64, dir: i32) {
         let mut jobs = self.core.jobs.lock().unwrap();
-        let Some(q) = jobs.iter().find(|j| j.info().id == id).map(|j| j.info().queue) else { return };
-        let queued: Vec<usize> = (0..jobs.len()).filter(|k| { let i = jobs[*k].info(); i.queued && i.queue == q }).collect();
-        let Some(p) = queued.iter().position(|k| jobs[*k].info().id == id) else { return };
+        let Some(q) = jobs
+            .iter()
+            .find(|j| j.info().id == id)
+            .map(|j| j.info().queue)
+        else {
+            return;
+        };
+        let queued: Vec<usize> = (0..jobs.len())
+            .filter(|k| {
+                let i = jobs[*k].info();
+                i.queued && i.queue == q
+            })
+            .collect();
+        let Some(p) = queued.iter().position(|k| jobs[*k].info().id == id) else {
+            return;
+        };
         let q = p as i32 + dir;
         if q >= 0 && (q as usize) < queued.len() {
             jobs.swap(queued[p], queued[q as usize]);
@@ -348,8 +422,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::window::table::find_hit;
+    use super::*;
 
     #[cfg(not(windows))]
     #[test]
@@ -363,9 +437,28 @@ mod tests {
     #[test]
     fn ui_never_zooms() {
         let ctx = egui::Context::default();
-        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
-        let wheel = egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta: egui::vec2(0.0, 5.0), modifiers: egui::Modifiers::COMMAND };
-        let input = egui::RawInput { modifiers: egui::Modifiers::COMMAND, events: vec![key(Key::Plus), key(Key::Equals), wheel, egui::Event::Zoom(1.5)], ..Default::default() };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 5.0),
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let input = egui::RawInput {
+            modifiers: egui::Modifiers::COMMAND,
+            events: vec![
+                key(Key::Plus),
+                key(Key::Equals),
+                wheel,
+                egui::Event::Zoom(1.5),
+            ],
+            ..Default::default()
+        };
         for _ in 0..3 {
             let _ = ctx.run(input.clone(), no_zoom);
         }
@@ -395,9 +488,15 @@ mod tests {
     #[test]
     fn login_fields() {
         let (u, l, p) = split_login("http://me:p%20w@h.com/a.zip");
-        assert_eq!((u.as_str(), l.as_str(), p.as_str()), ("http://h.com/a.zip", "me", "p w"));
+        assert_eq!(
+            (u.as_str(), l.as_str(), p.as_str()),
+            ("http://h.com/a.zip", "me", "p w")
+        );
         assert_eq!(join_login(&u, &l, &p), "http://me:p%20w@h.com/a.zip");
-        assert_eq!(join_login("http://h.com/a.zip", "", "x"), "http://h.com/a.zip");
+        assert_eq!(
+            join_login("http://h.com/a.zip", "", "x"),
+            "http://h.com/a.zip"
+        );
         assert_eq!(split_login("not a url").0, "not a url");
     }
 }

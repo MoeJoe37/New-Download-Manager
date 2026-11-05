@@ -1,6 +1,6 @@
-use crate::app::{Core, Path, Rect, Status, channel, extension_dir};
 use super::*;
 use crate::app::resources::apply_style;
+use crate::app::{channel, extension_dir, Core, Path, Rect, Status};
 use std::fmt::Write;
 
 #[test]
@@ -13,9 +13,17 @@ fn dialog_snapshots() {
         (1, "stopped.zip", Status::Stopped),
         (2, "failed.zip", Status::Error("Connection closed".into())),
         (3, "complete.zip", Status::Complete),
-    ].map(|(id, name, status)| Info {
-        id, name: name.into(), status, url: url(), folder: "/downloads".into(), size: Some(1024),
-        added: 1_700_000_000, last_try: 1_700_000_100, ..Default::default()
+    ]
+    .map(|(id, name, status)| Info {
+        id,
+        name: name.into(),
+        status,
+        url: url(),
+        folder: "/downloads".into(),
+        size: Some(1024),
+        added: 1_700_000_000,
+        last_try: 1_700_000_100,
+        ..Default::default()
     });
     let core = Core::for_dialog_snapshots(store.join("state.json"), items.to_vec());
     i18n::load("");
@@ -203,28 +211,47 @@ fn dialog_snapshots() {
         ctx.options_mut(|options| options.warn_on_id_clash = false);
         let mut fonts = egui::FontDefinitions::default();
         for family in ["segoe", "list"] {
-            fonts.families.insert(egui::FontFamily::Name(family.into()), fonts.families[&egui::FontFamily::Proportional].clone());
+            fonts.families.insert(
+                egui::FontFamily::Name(family.into()),
+                fonts.families[&egui::FontFamily::Proportional].clone(),
+            );
         }
         ctx.set_fonts(fonts);
         apply_style(&ctx, false);
         let (_, rx) = channel();
         let mut app = App::build(&ctx, core.clone(), Arc::default(), rx, None, false);
         let (title, fixed, size) = app.dialog_frame(&dialog);
-        writeln!(snapshot, "{name} {:?} {:.1}x{:.1}", i18n::tr_os(&title), size.x, size.y).unwrap();
-        let output = ctx.run(egui::RawInput {
-            time: Some(0.0),
-            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
-            ..Default::default()
-        }, |ctx| {
-            egui::CentralPanel::default().frame(dialog_panel_frame(ctx, &dialog, fixed)).show(ctx, |ui| {
-                app.dialog_body(ctx, ui, &mut dialog);
-            });
-        });
+        writeln!(
+            snapshot,
+            "{name} {:?} {:.1}x{:.1}",
+            i18n::tr_os(&title),
+            size.x,
+            size.y
+        )
+        .unwrap();
+        let output = ctx.run(
+            egui::RawInput {
+                time: Some(0.0),
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(dialog_panel_frame(ctx, &dialog, fixed))
+                    .show(ctx, |ui| {
+                        app.dialog_body(ctx, ui, &mut dialog);
+                    });
+            },
+        );
         // Keep the position of machine-dependent text while ignoring its content width.
         let variable_text = match name {
-            "Integrate" => extension_dir().map(|path| (path.display().to_string(), "<extension directory>")),
+            "Integrate" => {
+                extension_dir().map(|path| (path.display().to_string(), "<extension directory>"))
+            }
             "FileProps" => Some((win::type_name("zip"), "<system file type>")),
-            "About" | "NewVersion" => Some((env!("CARGO_PKG_VERSION").into(), "<installed version>")),
+            "About" | "NewVersion" => {
+                Some((env!("CARGO_PKG_VERSION").into(), "<installed version>"))
+            }
             _ => None,
         };
         for entry in output.shapes {
@@ -240,10 +267,17 @@ fn dialog_snapshots() {
     } else {
         let expected = std::fs::read_to_string(&path).unwrap();
         if expected != snapshot {
-            let line = expected.lines().zip(snapshot.lines()).position(|(a, b)| a != b)
+            let line = expected
+                .lines()
+                .zip(snapshot.lines())
+                .position(|(a, b)| a != b)
                 .unwrap_or_else(|| expected.lines().count().min(snapshot.lines().count()));
-            panic!("Dialog snapshot changed at line {}\nexpected {:?}\nactual   {:?}",
-                line + 1, expected.lines().nth(line), snapshot.lines().nth(line));
+            panic!(
+                "Dialog snapshot changed at line {}\nexpected {:?}\nactual   {:?}",
+                line + 1,
+                expected.lines().nth(line),
+                snapshot.lines().nth(line)
+            );
         }
     }
 }
@@ -252,7 +286,9 @@ fn write_shape(out: &mut String, shape: &egui::Shape, variable: Option<&(String,
     let kind = match shape {
         egui::Shape::Noop => return,
         egui::Shape::Vec(shapes) => {
-            for shape in shapes { write_shape(out, shape, variable); }
+            for shape in shapes {
+                write_shape(out, shape, variable);
+            }
             return;
         }
         egui::Shape::Text(_) => "text",
@@ -271,12 +307,26 @@ fn write_shape(out: &mut String, shape: &egui::Shape, variable: Option<&(String,
     if let (egui::Shape::Text(text), Some((value, placeholder))) = (shape, variable) {
         let label = text.galley.text();
         if !value.is_empty() && label.contains(value.as_str()) {
-            writeln!(out, "  {kind} {:.1},{:.1} {:?}",
-                half(rect.min.x), half(rect.min.y), label.replace(value.as_str(), placeholder)).unwrap();
+            writeln!(
+                out,
+                "  {kind} {:.1},{:.1} {:?}",
+                half(rect.min.x),
+                half(rect.min.y),
+                label.replace(value.as_str(), placeholder)
+            )
+            .unwrap();
             return;
         }
     }
-    write!(out, "  {kind} {:.1},{:.1} {:.1},{:.1}", half(rect.min.x), half(rect.min.y), half(rect.max.x), half(rect.max.y)).unwrap();
+    write!(
+        out,
+        "  {kind} {:.1},{:.1} {:.1},{:.1}",
+        half(rect.min.x),
+        half(rect.min.y),
+        half(rect.max.x),
+        half(rect.max.y)
+    )
+    .unwrap();
     if let egui::Shape::Text(text) = shape {
         write!(out, " {:?}", text.galley.text()).unwrap();
     }

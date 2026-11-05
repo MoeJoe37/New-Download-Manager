@@ -10,36 +10,54 @@ use std::sync::{Mutex, OnceLock};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
-use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{
+    define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
+};
 // NSFilenamesPboardType: what winit's main window takes (files), so NDM hands those on
 #[allow(deprecated)]
 use objc2_app_kit::{
-    NSBitmapImageRep, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace, NSDragOperation, NSEvent, NSFilenamesPboardType, NSFloatingWindowLevel, NSGraphicsContext, NSImage, NSPanel, NSPasteboard,
-    NSPasteboardTypeString, NSPasteboardTypeURL, NSResponder, NSScreen, NSView, NSWindowCollectionBehavior, NSWindowStyleMask, NSBackingStoreType, NSWorkspace,
+    NSBackingStoreType, NSBitmapImageRep, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace,
+    NSDragOperation, NSEvent, NSFilenamesPboardType, NSFloatingWindowLevel, NSGraphicsContext,
+    NSImage, NSPanel, NSPasteboard, NSPasteboardTypeString, NSPasteboardTypeURL, NSResponder,
+    NSScreen, NSView, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSObject, NSPoint, NSRect, NSSize, NSString, NSUInteger};
 
 #[path = "platform/macos/desktop.rs"]
 mod desktop;
-#[path = "platform/macos/network.rs"]
-mod network;
 #[path = "platform/macos/drag_drop.rs"]
 mod drag_drop;
+#[path = "platform/macos/network.rs"]
+mod network;
 
-pub use self::desktop::{install_desktop_entry, installed_browsers, native_host, register_host, set_autostart};
-pub use self::network::{nics, ras_connected, ras_dial, ras_entries, ras_hangup_all, ras_save, system_proxy};
-pub use self::drag_drop::{accept_drops, drop_target, drop_target_visible, show_main, take_drops, take_show};
+pub use self::desktop::{
+    install_desktop_entry, installed_browsers, native_host, register_host, set_autostart,
+};
+pub use self::drag_drop::{
+    accept_drops, drop_target, drop_target_visible, show_main, take_drops, take_show,
+};
+pub use self::network::{
+    nics, ras_connected, ras_dial, ras_entries, ras_hangup_all, ras_save, system_proxy,
+};
 
 pub type Rgba = (usize, usize, Vec<u8>);
 pub use crate::posix::{clip_seq, decimal_sep, is_host_launch, pac_proxy, running};
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| ".".into())
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ".".into())
 }
 
 /// A program's output, None when it can't run or fails.
 fn output(program: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    let o = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
@@ -49,7 +67,12 @@ fn applescript(lines: &[&str]) -> Option<String> {
     for l in lines {
         c.args(["-e", l]);
     }
-    let o = c.stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    let o = c
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
@@ -75,30 +98,48 @@ pub fn keep_hidden(_window: isize, _on: bool) {}
 
 /// The Finder's picture for a file type ("/" = a folder), 32 pixels.
 pub fn shell_icon(ext: &str, folder: bool) -> Option<Rgba> {
-    let kind = if folder { "public.folder" } else if ext.is_empty() { "public.data" } else { ext };
-    #[allow(deprecated)] // iconForContentType needs UniformTypeIdentifiers; this takes extensions and UTIs
+    let kind = if folder {
+        "public.folder"
+    } else if ext.is_empty() {
+        "public.data"
+    } else {
+        ext
+    };
+    #[allow(deprecated)]
+    // iconForContentType needs UniformTypeIdentifiers; this takes extensions and UTIs
     let img = NSWorkspace::sharedWorkspace().iconForFileType(&NSString::from_str(kind));
     image_rgba(&img, 32)
 }
 
 /// A program's icon (an .app, or the app bundle a program sits in).
 pub fn exe_icon(path: &Path) -> Option<Rgba> {
-    let app = path.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).unwrap_or(path);
+    let app = path
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .unwrap_or(path);
     if !app.exists() {
         return None;
     }
-    let img = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&app.to_string_lossy()));
+    let img =
+        NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&app.to_string_lossy()));
     image_rgba(&img, 32)
 }
 
 /// An NSImage drawn at `px` x `px` pixels, as straight (not premultiplied) RGBA rows from the top.
 fn image_rgba(img: &NSImage, px: usize) -> Option<Rgba> {
-    let rep = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(NSBitmapImageRep::alloc(), std::ptr::null_mut(), px as isize, px as isize, 8, 4, true, false, NSDeviceRGBColorSpace, (px * 4) as isize, 32) }?;
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(NSBitmapImageRep::alloc(), std::ptr::null_mut(), px as isize, px as isize, 8, 4, true, false, NSDeviceRGBColorSpace, (px * 4) as isize, 32)
+    }?;
     let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
     NSGraphicsContext::saveGraphicsState_class();
     NSGraphicsContext::setCurrentContext(Some(&ctx));
     let all = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(px as f64, px as f64));
-    img.drawInRect_fromRect_operation_fraction(all, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), NSCompositingOperation::Copy, 1.0);
+    img.drawInRect_fromRect_operation_fraction(
+        all,
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+        NSCompositingOperation::Copy,
+        1.0,
+    );
     ctx.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();
     let data = rep.bitmapData();
@@ -111,7 +152,12 @@ fn image_rgba(img: &NSImage, px: usize) -> Option<Rgba> {
     for y in 0..px {
         for p in bytes[y * row..y * row + px * 4].as_chunks::<4>().0 {
             let a = p[3] as u32;
-            let un = |c: u8| (c as u32 * 255 + a / 2).checked_div(a).unwrap_or(0).min(255) as u8;
+            let un = |c: u8| {
+                (c as u32 * 255 + a / 2)
+                    .checked_div(a)
+                    .unwrap_or(0)
+                    .min(255) as u8
+            };
             out.extend([un(p[0]), un(p[1]), un(p[2]), p[3]]);
         }
     }
@@ -120,7 +166,9 @@ fn image_rgba(img: &NSImage, px: usize) -> Option<Rgba> {
 
 /// An NSImage of straight RGBA pixels, shown at `size` points.
 fn image_of((w, h, px): &Rgba, size: f64) -> Option<Retained<NSImage>> {
-    let rep = unsafe { NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(NSBitmapImageRep::alloc(), std::ptr::null_mut(), *w as isize, *h as isize, 8, 4, true, false, NSDeviceRGBColorSpace, (*w * 4) as isize, 32) }?;
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(NSBitmapImageRep::alloc(), std::ptr::null_mut(), *w as isize, *h as isize, 8, 4, true, false, NSDeviceRGBColorSpace, (*w * 4) as isize, 32)
+    }?;
     let data = rep.bitmapData();
     if data.is_null() || px.len() < w * h * 4 {
         return None;
@@ -128,7 +176,12 @@ fn image_of((w, h, px): &Rgba, size: f64) -> Option<Retained<NSImage>> {
     let row = rep.bytesPerRow() as usize;
     for y in 0..*h {
         let dst = unsafe { std::slice::from_raw_parts_mut(data.add(y * row), w * 4) };
-        for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(px[y * w * 4..(y + 1) * w * 4].as_chunks::<4>().0) {
+        for (d, s) in dst
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(px[y * w * 4..(y + 1) * w * 4].as_chunks::<4>().0)
+        {
             let a = s[3] as u32;
             let pre = |c: u8| ((c as u32 * a + 127) / 255) as u8;
             d.copy_from_slice(&[pre(s[0]), pre(s[1]), pre(s[2]), s[3]]);
@@ -171,7 +224,11 @@ pub fn dark_title(_hwnd: isize, _dark: bool) {}
 /// A sound file through afplay.
 pub fn play_sound(path: &str) {
     if Path::new(path).is_file() {
-        let _ = Command::new("afplay").arg(path).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        let _ = Command::new("afplay")
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
     }
 }
 
@@ -184,7 +241,8 @@ pub fn system_dark() -> bool {
             return dark;
         }
     }
-    let dark = output("defaults", &["read", "-g", "AppleInterfaceStyle"]).is_some_and(|s| s.trim().eq_ignore_ascii_case("dark"));
+    let dark = output("defaults", &["read", "-g", "AppleInterfaceStyle"])
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("dark"));
     *last = Some((std::time::Instant::now(), dark));
     dark
 }
@@ -198,7 +256,11 @@ pub fn system_dark() -> bool {
 /// When NDM can't start at all: an alert.
 pub fn fatal(title: &str, text: &str) {
     eprintln!("{text}");
-    let _ = applescript(&[&format!("display alert {} message {} as critical", quote(title), quote(text))]);
+    let _ = applescript(&[&format!(
+        "display alert {} message {} as critical",
+        quote(title),
+        quote(text)
+    )]);
 }
 
 /// "Exit NDM" / "Saving settings...": macOS shows nothing while the app saves (it takes a moment).
@@ -214,7 +276,11 @@ fn font_families() -> Vec<String> {
         .filter_map(|e| {
             let p = e.path();
             let ext = p.extension()?.to_str()?.to_ascii_lowercase();
-            ["ttf", "otf", "ttc"].contains(&ext.as_str()).then(|| p.file_stem()?.to_str().map(|s| s.split('-').next().unwrap_or(s).to_string()))?
+            ["ttf", "otf", "ttc"].contains(&ext.as_str()).then(|| {
+                p.file_stem()?
+                    .to_str()
+                    .map(|s| s.split('-').next().unwrap_or(s).to_string())
+            })?
         })
         .collect();
     names.sort_by_key(|n| n.to_lowercase());
@@ -223,16 +289,31 @@ fn font_families() -> Vec<String> {
 }
 
 fn font_dirs() -> Vec<PathBuf> {
-    vec!["/System/Library/Fonts".into(), "/System/Library/Fonts/Supplemental".into(), "/Library/Fonts".into(), home().join("Library/Fonts")]
+    vec![
+        "/System/Library/Fonts".into(),
+        "/System/Library/Fonts/Supplemental".into(),
+        "/Library/Fonts".into(),
+        home().join("Library/Fonts"),
+    ]
 }
 
 /// A font and its size, picked in two AppleScript choosers. Returns (face, size in logical px) like
 /// Windows' Font dialog; blocks like it.
 pub fn choose_font(_owner: isize, face: &str, px: f32) -> Option<(String, f32)> {
-    let list = font_families().iter().map(|f| quote(f)).collect::<Vec<_>>().join(", ");
-    let face = applescript(&[&format!("choose from list {{{list}}} with prompt \"Font\" default items {{{}}}", quote(face))]).filter(|f| f != "false" && !f.is_empty())?;
+    let list = font_families()
+        .iter()
+        .map(|f| quote(f))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let face = applescript(&[&format!(
+        "choose from list {{{list}}} with prompt \"Font\" default items {{{}}}",
+        quote(face)
+    )])
+    .filter(|f| f != "false" && !f.is_empty())?;
     let pt = (px * 72.0 / 96.0).round();
-    let size = applescript(&[&format!("text returned of (display dialog \"Size\" default answer \"{pt}\")")])?;
+    let size = applescript(&[&format!(
+        "text returned of (display dialog \"Size\" default answer \"{pt}\")"
+    )])?;
     let pt: f32 = size.trim().parse().ok().filter(|p: &f32| *p > 0.0)?;
     Some((face, pt * 96.0 / 72.0))
 }
@@ -241,19 +322,43 @@ pub fn choose_font(_owner: isize, face: &str, px: f32) -> Option<(String, f32)> 
 /// for: "sans-serif", "sans-serif:lang=ar" (a font with Arabic letters) and "DejaVu Sans" (symbols).
 pub fn font_file(face: &str) -> Option<PathBuf> {
     let candidates: &[&str] = match face {
-        "sans-serif" => &["/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf"],
-        "sans-serif:lang=ar" => &["/System/Library/Fonts/GeezaPro.ttc", "/System/Library/Fonts/Supplemental/GeezaPro.ttc", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"],
-        "DejaVu Sans" => &["/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "/Library/Fonts/Arial Unicode.ttf", "/System/Library/Fonts/Apple Symbols.ttf"],
+        "sans-serif" => &[
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/SFNS.ttf",
+        ],
+        "sans-serif:lang=ar" => &[
+            "/System/Library/Fonts/GeezaPro.ttc",
+            "/System/Library/Fonts/Supplemental/GeezaPro.ttc",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        ],
+        "DejaVu Sans" => &[
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/System/Library/Fonts/Apple Symbols.ttf",
+        ],
         _ => &[],
     };
     if let Some(f) = candidates.iter().map(PathBuf::from).find(|p| p.is_file()) {
         return Some(f);
     }
     let want = face.to_lowercase().replace(' ', "");
-    font_dirs().iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten().map(|e| e.path()).find(|p| {
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        ["ttf", "otf", "ttc"].contains(&ext.as_str()) && p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.to_lowercase().replace(' ', "") == want)
-    })
+    font_dirs()
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            ["ttf", "otf", "ttc"].contains(&ext.as_str())
+                && p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.to_lowercase().replace(' ', "") == want)
+        })
 }
 
 /// "Open with...": the system's program chooser, then the program opens the file.
@@ -261,7 +366,11 @@ pub fn open_with(path: &Path) {
     let p = path.to_path_buf();
     std::thread::spawn(move || {
         if let Some(app) = applescript(&["POSIX path of (choose application as alias)"]) {
-            let _ = Command::new("open").arg("-a").arg(app.trim()).arg(&p).spawn();
+            let _ = Command::new("open")
+                .arg("-a")
+                .arg(app.trim())
+                .arg(&p)
+                .spawn();
         }
     });
 }
@@ -273,7 +382,12 @@ pub fn show_in_folder(path: &Path) {
 
 /// Opens a file, folder or address with its default program.
 pub fn open(target: impl AsRef<std::ffi::OsStr>) {
-    let _ = Command::new("open").arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let _ = Command::new("open")
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 /// "Turn off computer when done": shut down (asks the open programs to quit first), or sleep.
@@ -293,13 +407,24 @@ fn file_type_icons() {
     for (ext, folder) in [("pdf", false), ("zip", false), ("", false), ("/", true)] {
         let (w, h, px) = shell_icon(ext, folder).unwrap_or_else(|| panic!("no icon for {ext:?}"));
         assert_eq!((w, h, px.len()), (32, 32, 32 * 32 * 4));
-        assert!(px.as_chunks::<4>().0.iter().filter(|p| p[3] > 200).count() > 100, "{ext:?}: mostly see-through");
+        assert!(
+            px.as_chunks::<4>().0.iter().filter(|p| p[3] > 200).count() > 100,
+            "{ext:?}: mostly see-through"
+        );
     }
-    assert!(exe_icon(Path::new("/System/Applications/TextEdit.app")).or_else(|| exe_icon(Path::new("/Applications/Safari.app"))).is_some());
+    assert!(exe_icon(Path::new("/System/Applications/TextEdit.app"))
+        .or_else(|| exe_icon(Path::new("/Applications/Safari.app")))
+        .is_some());
     // NDM's own picture survives the trip into an NSImage (the drop target) and back
     let red = (2, 2, [255u8, 0, 0, 255].repeat(4));
     let (_, _, px) = image_rgba(&image_of(&red, 2.0).unwrap(), 4).unwrap();
-    assert!(px.as_chunks::<4>().0.iter().all(|p| p[0] > 240 && p[1] < 16 && p[3] == 255), "{px:?}");
+    assert!(
+        px.as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| p[0] > 240 && p[1] < 16 && p[3] == 255),
+        "{px:?}"
+    );
 }
 
 // ---------- networks ----------

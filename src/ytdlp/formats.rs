@@ -1,8 +1,12 @@
-use crate::ytdlp::{Path, host_of, last_error, on_site, sanitize};
+use crate::ytdlp::{host_of, last_error, on_site, sanitize, Path};
 
 pub(super) fn selection_error(err: &str, quality: &str) -> String {
     let message = last_error(err);
-    if let Some(height) = quality.parse::<u32>().ok().filter(|_| message.contains("Requested format is not available")) {
+    if let Some(height) = quality
+        .parse::<u32>()
+        .ok()
+        .filter(|_| message.contains("Requested format is not available"))
+    {
         return crate::i18n::trf_os(
             "NDM could not verify a video format at or below %dp. Choose Best to download without a resolution limit.",
             &[&height],
@@ -29,9 +33,16 @@ pub(super) const PAIR: &str = "bv*[acodec=none][ext=mp4]+ba[vcodec=none][ext=m4a
 pub(super) fn formats(url: &str, ff: bool) -> String {
     let host = host_of(url);
     let both = if ff { MERGED } else { PAIR };
-    if ["tiktok.com", "douyin.com"].iter().any(|s| on_site(&host, s)) {
+    if ["tiktok.com", "douyin.com"]
+        .iter()
+        .any(|s| on_site(&host, s))
+    {
         format!("b[vcodec^=h264]/b[vcodec^=avc]/b/{both}")
-    } else if ff || ["youtube.com", "youtu.be"].iter().any(|s| on_site(&host, s)) {
+    } else if ff
+        || ["youtube.com", "youtu.be"]
+            .iter()
+            .any(|s| on_site(&host, s))
+    {
         both.to_string()
     } else {
         format!("{SINGLE}/{PAIR}")
@@ -45,7 +56,9 @@ pub(super) fn chosen(url: &str, ff: bool, quality: &str) -> String {
     if quality == "m4a" || quality == "mp3" {
         return "ba[ext=m4a]/ba/b".into();
     }
-    let Ok(h) = quality.parse::<u32>() else { return all };
+    let Ok(h) = quality.parse::<u32>() else {
+        return all;
+    };
     let cap = |alt: &str| {
         alt.split('+')
             .map(|part| {
@@ -59,7 +72,11 @@ pub(super) fn chosen(url: &str, ff: bool, quality: &str) -> String {
             .collect::<Vec<_>>()
             .join("+")
     };
-    let capped: Vec<String> = all.split('/').filter(|a| a.split('+').any(|p| !p.starts_with("ba"))).map(cap).collect();
+    let capped: Vec<String> = all
+        .split('/')
+        .filter(|a| a.split('+').any(|p| !p.starts_with("ba")))
+        .map(cap)
+        .collect();
     capped.join("/")
 }
 
@@ -67,8 +84,14 @@ pub(super) fn chosen(url: &str, ff: bool, quality: &str) -> String {
 /// named for its sound is an MP4 again.
 pub fn named(name: &str, quality: &str) -> String {
     let path = Path::new(name);
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "video".into());
-    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "video".into());
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     match quality {
         "mp3" | "m4a" => format!("{stem}.{quality}"),
         _ if ext == "mp3" || ext == "m4a" => format!("{stem}.mp4"),
@@ -91,8 +114,20 @@ pub(super) struct Stream {
 impl Stream {
     pub(super) fn of(f: &serde_json::Value) -> Option<Stream> {
         let text = |k: &str| f.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let size = f.get("filesize").and_then(|s| s.as_f64()).or_else(|| f.get("filesize_approx").and_then(|s| s.as_f64())).unwrap_or(0.0) as u64;
-        let headers = f.get("http_headers").and_then(|h| h.as_object()).map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default();
+        let size = f
+            .get("filesize")
+            .and_then(|s| s.as_f64())
+            .or_else(|| f.get("filesize_approx").and_then(|s| s.as_f64()))
+            .unwrap_or(0.0) as u64;
+        let headers = f
+            .get("http_headers")
+            .and_then(|h| h.as_object())
+            .map(|h| {
+                h.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
         // the stream's cookies (yt-dlp keeps them out of its headers: "name=value; Domain=...; Path=/; ...")
         let mut headers: Vec<(String, String)> = headers;
         let cookie = cookie_header(&text("cookies"));
@@ -108,19 +143,38 @@ impl Stream {
             && f.get("fragments").is_none_or(|v| v.is_null())
             && !f.get("is_live").and_then(|v| v.as_bool()).unwrap_or(false)
             && f.get("impersonate").is_none_or(|v| v.is_null())
-            && f.pointer("/downloader_options/impersonate").is_none_or(|v| v.is_null());
-        Some(Stream { id: f.get("format_id")?.as_str()?.to_string(), url, ext: text("ext"), size, headers, direct })
+            && f.pointer("/downloader_options/impersonate")
+                .is_none_or(|v| v.is_null());
+        Some(Stream {
+            id: f.get("format_id")?.as_str()?.to_string(),
+            url,
+            ext: text("ext"),
+            size,
+            headers,
+            direct,
+        })
     }
 }
 
 /// yt-dlp's cookie list for a stream ("a=1; Domain=.x.com; Path=/; Secure; Expires=...; b=2; ...") as a
 /// Cookie header ("a=1; b=2").
 pub(super) fn cookie_header(list: &str) -> String {
-    const ATTRS: [&str; 7] = ["domain", "path", "secure", "expires", "version", "httponly", "max-age"];
+    const ATTRS: [&str; 7] = [
+        "domain", "path", "secure", "expires", "version", "httponly", "max-age",
+    ];
     list.split(';')
         .map(str::trim)
         .filter(|p| !p.is_empty())
-        .filter(|p| !ATTRS.contains(&p.split('=').next().unwrap_or("").trim().to_ascii_lowercase().as_str()))
+        .filter(|p| {
+            !ATTRS.contains(
+                &p.split('=')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str(),
+            )
+        })
         .filter(|p| p.contains('='))
         .collect::<Vec<_>>()
         .join("; ")
@@ -128,7 +182,11 @@ pub(super) fn cookie_header(list: &str) -> String {
 
 /// What the look-up picked: the video and audio streams, or the one stream that has both.
 pub(super) fn picked(v: &serde_json::Value) -> Option<Vec<Stream>> {
-    match v.get("requested_formats").and_then(|r| r.as_array()).filter(|r| r.len() == 2) {
+    match v
+        .get("requested_formats")
+        .and_then(|r| r.as_array())
+        .filter(|r| r.len() == 2)
+    {
         Some(r) => r.iter().map(Stream::of).collect(),
         None => Some(vec![Stream::of(v)?]),
     }
@@ -138,7 +196,11 @@ pub(super) fn picked(v: &serde_json::Value) -> Option<Vec<Stream>> {
 pub(super) fn video_info(mut v: serde_json::Value) -> Result<serde_json::Value, String> {
     for _ in 0..16 {
         if let Some(entries) = v.get_mut("entries").and_then(|e| e.as_array_mut()) {
-            v = entries.iter_mut().find(|e| !e.is_null()).map(serde_json::Value::take).ok_or("yt-dlp found no video in this playlist")?;
+            v = entries
+                .iter_mut()
+                .find(|e| !e.is_null())
+                .map(serde_json::Value::take)
+                .ok_or("yt-dlp found no video in this playlist")?;
         } else {
             return Ok(v);
         }
@@ -148,6 +210,10 @@ pub(super) fn video_info(mut v: serde_json::Value) -> Result<serde_json::Value, 
 
 pub(super) fn video_name(v: &serde_json::Value) -> String {
     let title = v.get("title").and_then(|v| v.as_str()).unwrap_or("video");
-    let ext = v.get("ext").and_then(|v| v.as_str()).filter(|e| !e.is_empty()).unwrap_or("mp4");
+    let ext = v
+        .get("ext")
+        .and_then(|v| v.as_str())
+        .filter(|e| !e.is_empty())
+        .unwrap_or("mp4");
     sanitize(&format!("{title}.{ext}"))
 }

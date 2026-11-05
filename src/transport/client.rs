@@ -1,4 +1,6 @@
-use crate::transport::{Agent, Duration, HashSet, Mutex, OnceLock, Request, Response, Url, http_error, redact};
+use crate::transport::{
+    http_error, redact, Agent, Duration, HashSet, Mutex, OnceLock, Request, Response, Url,
+};
 use std::time::Instant;
 
 pub(crate) const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -11,9 +13,15 @@ struct DnsCache;
 impl ureq::Resolver for DnsCache {
     fn resolve(&self, netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
         use std::net::ToSocketAddrs;
-        static CACHE: Mutex<Vec<(String, Instant, Vec<std::net::SocketAddr>)>> = Mutex::new(Vec::new());
+        static CACHE: Mutex<Vec<(String, Instant, Vec<std::net::SocketAddr>)>> =
+            Mutex::new(Vec::new());
         const TTL: Duration = Duration::from_secs(60);
-        if let Some(hit) = CACHE.lock().unwrap().iter().find(|e| e.0 == netloc && e.1.elapsed() < TTL) {
+        if let Some(hit) = CACHE
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| e.0 == netloc && e.1.elapsed() < TTL)
+        {
             return Ok(hit.2.clone());
         }
         let mut addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
@@ -31,22 +39,29 @@ impl ureq::Resolver for DnsCache {
 /// (Windows' certificate store, the macOS keychain, the Linux CA files), so a certificate that antivirus
 /// HTTPS scanning or a company network installs on the system is trusted as the browser trusts it.
 /// `extra`: more, for the tests' local servers.
-pub(crate) fn tls_config(extra: &[rustls::pki_types::CertificateDer<'static>]) -> std::sync::Arc<rustls::ClientConfig> {
-    let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+pub(crate) fn tls_config(
+    extra: &[rustls::pki_types::CertificateDer<'static>],
+) -> std::sync::Arc<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
     let native = rustls_native_certs::load_native_certs();
     roots.add_parsable_certificates(native.certs);
     roots.add_parsable_certificates(extra.iter().cloned());
-    let config = rustls::ClientConfig::builder_with_provider(rustls::crypto::ring::default_provider().into())
-        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
-        .unwrap() // ring supports both
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let config = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::ring::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    .unwrap() // ring supports both
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     std::sync::Arc::new(config)
 }
 
 /// `tls_config`, read from the system once.
 fn tls() -> std::sync::Arc<rustls::ClientConfig> {
-    static TLS: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+    static TLS: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> =
+        std::sync::OnceLock::new();
     TLS.get_or_init(|| tls_config(&[])).clone()
 }
 
@@ -54,11 +69,20 @@ pub fn agent(proxy: &str, user_agent: &str) -> Agent {
     agent_with_tls(proxy, user_agent, tls())
 }
 
-pub(crate) fn agent_with_tls(proxy: &str, user_agent: &str, tls: std::sync::Arc<rustls::ClientConfig>) -> Agent {
-    let user_agent = if user_agent.trim().is_empty() { UA } else { user_agent.trim() };
+pub(crate) fn agent_with_tls(
+    proxy: &str,
+    user_agent: &str,
+    tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Agent {
+    let user_agent = if user_agent.trim().is_empty() {
+        UA
+    } else {
+        user_agent.trim()
+    };
     let proxy = proxy.trim();
-    let invalid = !proxy.is_empty() && (!url::Url::parse(proxy).is_ok_and(|url| url.host_str().is_some())
-        || ureq::Proxy::new(proxy).is_err());
+    let invalid = !proxy.is_empty()
+        && (!url::Url::parse(proxy).is_ok_and(|url| url.host_str().is_some())
+            || ureq::Proxy::new(proxy).is_err());
     let build = || {
         let mut builder = ureq::AgentBuilder::new()
             .try_proxy_from_env(false)
@@ -76,7 +100,13 @@ pub(crate) fn agent_with_tls(proxy: &str, user_agent: &str, tls: std::sync::Arc<
         }
         builder
     };
-    Agent::new(build().build(), build().redirects(0).build(), proxy, user_agent, invalid)
+    Agent::new(
+        build().build(),
+        build().redirects(0).build(),
+        proxy,
+        user_agent,
+        invalid,
+    )
 }
 
 pub(super) fn tls_client(http1_only: bool) -> Option<&'static reqwest::blocking::Client> {
@@ -85,11 +115,19 @@ pub(super) fn tls_client(http1_only: bool) -> Option<&'static reqwest::blocking:
     let cell = if http1_only { &HTTP1 } else { &AUTO };
     let builder = || {
         let builder = client_builder();
-        if http1_only { builder.http1_only() } else { builder }
+        if http1_only {
+            builder.http1_only()
+        } else {
+            builder
+        }
     };
     cell.get_or_init(|| {
-        builder().build().or_else(|_| builder().tls_built_in_native_certs(false).build()).ok()
-    }).as_ref()
+        builder()
+            .build()
+            .or_else(|_| builder().tls_built_in_native_certs(false).build())
+            .ok()
+    })
+    .as_ref()
 }
 
 pub(super) fn client_builder() -> reqwest::blocking::ClientBuilder {
@@ -125,10 +163,15 @@ pub(super) fn call_with<'a>(
             let negotiate = NEGOTIATE.get_or_init(Mutex::default);
             let force = agent.http1_only(&url);
             let origin = url.origin();
-            let prefer = request.prefer_http1 && !force && !negotiate.lock().unwrap().contains(&origin);
-            if let Some(client) = tls(force || prefer).or_else(|| prefer.then(|| tls(false)).flatten()) {
+            let prefer =
+                request.prefer_http1 && !force && !negotiate.lock().unwrap().contains(&origin);
+            if let Some(client) =
+                tls(force || prefer).or_else(|| prefer.then(|| tls(false)).flatten())
+            {
                 let send = |client: &reqwest::blocking::Client| {
-                    let mut req = client.get(url.clone()).header("User-Agent", &agent.user_agent);
+                    let mut req = client
+                        .get(url.clone())
+                        .header("User-Agent", &agent.user_agent);
                     for (key, value) in &headers {
                         req = req.header(key, value);
                     }
@@ -139,11 +182,19 @@ pub(super) fn call_with<'a>(
                     let rejected = match &received {
                         // No headers or bytes were returned. Exclude timeouts and local request errors.
                         Err(error) => !error.is_builder() && !error.is_timeout(),
-                        Ok(response) => response.status() == reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED,
+                        Ok(response) => {
+                            response.status() == reqwest::StatusCode::HTTP_VERSION_NOT_SUPPORTED
+                        }
                     };
-                    if let Some(auto) = rejected.then(|| tls(false)).flatten().filter(|auto| !std::ptr::eq(*auto, client)) {
+                    if let Some(auto) = rejected
+                        .then(|| tls(false))
+                        .flatten()
+                        .filter(|auto| !std::ptr::eq(*auto, client))
+                    {
                         received = send(auto);
-                        if received.as_ref().is_ok_and(|r| r.version() == reqwest::Version::HTTP_2 && r.status().is_success()) {
+                        if received.as_ref().is_ok_and(|r| {
+                            r.version() == reqwest::Version::HTTP_2 && r.status().is_success()
+                        }) {
                             negotiate.lock().unwrap().insert(origin);
                         }
                     }

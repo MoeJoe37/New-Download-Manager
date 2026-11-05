@@ -11,23 +11,23 @@ mod engine;
 mod file_ops;
 mod grabber;
 mod i18n;
-mod net;
+#[cfg(target_os = "macos")]
+mod mac_capture;
 mod media;
+mod net;
+#[cfg(unix)]
+mod posix;
 mod remux;
 mod startup;
 mod stream;
-mod transport;
 #[cfg(test)]
 mod test_support;
+mod transport;
 mod update;
-mod ytdlp;
-#[cfg(target_os = "macos")]
-mod mac_capture;
-#[cfg(unix)]
-mod posix;
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(target_os = "macos", path = "mac.rs")]
 mod win;
+mod ytdlp;
 
 fn main() -> eframe::Result {
     startup::start()

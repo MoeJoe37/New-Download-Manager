@@ -17,8 +17,17 @@ pub struct Regroup<'a> {
 }
 
 impl<'a> Regroup<'a> {
-    pub fn new(inner: impl Iterator<Item = Result<Vec<u8>, String>> + 'a, kind: Kind) -> Regroup<'a> {
-        Regroup { inner: Box::new(inner), kind, buf: Vec::new(), pos: 0, eof: false }
+    pub fn new(
+        inner: impl Iterator<Item = Result<Vec<u8>, String>> + 'a,
+        kind: Kind,
+    ) -> Regroup<'a> {
+        Regroup {
+            inner: Box::new(inner),
+            kind,
+            buf: Vec::new(),
+            pos: 0,
+            eof: false,
+        }
     }
 
     /// Ok(Some(end, last)) when a whole element starts at `pos`; None = more data needed.
@@ -54,7 +63,9 @@ impl<'a> Regroup<'a> {
                             return Some((e, true));
                         }
                         let (size, l, _) = vint(d, e + cl)?;
-                        e = (e + cl + l).checked_add(size as usize).filter(|end| *end <= d.len())?;
+                        e = (e + cl + l)
+                            .checked_add(size as usize)
+                            .filter(|end| *end <= d.len())?;
                     }
                 }
                 let end = (at + il + sl).checked_add(size as usize)?;

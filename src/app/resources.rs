@@ -1,4 +1,7 @@
-use crate::app::{App, Arc, Cat, Color32, FontId, HashMap, Mutex, Path, PathBuf, Relaxed, Vec2, Which, core, dlu, egui, i18n, win};
+use crate::app::{
+    core, dlu, egui, i18n, win, App, Arc, Cat, Color32, FontId, HashMap, Mutex, Path, PathBuf,
+    Relaxed, Vec2, Which,
+};
 
 pub(super) const DARK_DLG: Color32 = Color32::from_rgb(0x39, 0x39, 0x39);
 
@@ -14,7 +17,11 @@ pub(in crate::app) fn segoe(size: f32) -> FontId {
 }
 
 /// A texture made once and kept in egui's memory.
-pub(in crate::app) fn cached_texture(ctx: &egui::Context, name: &str, make: impl FnOnce() -> Option<win::Rgba>) -> Option<egui::TextureHandle> {
+pub(in crate::app) fn cached_texture(
+    ctx: &egui::Context,
+    name: &str,
+    make: impl FnOnce() -> Option<win::Rgba>,
+) -> Option<egui::TextureHandle> {
     let id = egui::Id::new(("tex", name));
     if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)) {
         return t;
@@ -30,21 +37,38 @@ pub(in crate::app) fn help_logo(ctx: &egui::Context) -> Option<egui::TextureHand
 
 /// The app's own icon (assets/ndm.png, 256 px with alpha; the .exe gets assets/ndm.ico via build.rs).
 pub(crate) fn app_icon() -> win::Rgba {
-    let i = eframe::icon_data::from_png_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ndm.png"))).expect("bundled icon");
+    let i = eframe::icon_data::from_png_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/ndm.png"
+    )))
+    .expect("bundled icon");
     (i.width as usize, i.height as usize, i.rgba)
 }
 
 /// Tray picture for View -> "NDM tray icon": 1 = 3D style (the app icon), 2 = Classic style (assets/ndm2d.png).
 pub(in crate::app) fn tray_picture(style: u8) -> Option<tray_icon::Icon> {
     let (w, h, rgba) = match style {
-        2 => eframe::icon_data::from_png_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/ndm2d.png"))).map(|i| (i.width as usize, i.height as usize, i.rgba)).ok()?,
+        2 => eframe::icon_data::from_png_bytes(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/ndm2d.png"
+        )))
+        .map(|i| (i.width as usize, i.height as usize, i.rgba))
+        .ok()?,
         _ => app_icon(),
     };
     tray_icon::Icon::from_rgba(rgba, w as u32, h as u32).ok()
 }
 
-pub(in crate::app) fn texture(ctx: &egui::Context, name: &str, (w, h, px): &win::Rgba) -> egui::TextureHandle {
-    ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([*w, *h], px), egui::TextureOptions::LINEAR)
+pub(in crate::app) fn texture(
+    ctx: &egui::Context,
+    name: &str,
+    (w, h, px): &win::Rgba,
+) -> egui::TextureHandle {
+    ctx.load_texture(
+        name,
+        egui::ColorImage::from_rgba_unmultiplied([*w, *h], px),
+        egui::TextureOptions::LINEAR,
+    )
 }
 
 /// NDM's toolbar strips (normal, hot, and a generated disabled one), 12 icons each.
@@ -71,13 +95,33 @@ pub(in crate::app) const TB_BUTTONS: [(&str, &str, &str); TB_ICONS] = [
     ("⏹", "Stop", "Stop downloading selected file(s)"),
     ("⏸", "Stop All", "Stop all downloads"),
     ("🗑", "Delete", "Remove selected file(s) from the list"),
-    ("✔", "Delete Co...", "Remove all completed files from the list"),
-    ("⚙", "Options", "Browsers/System integration, File types, Proxy, Passwords and others"),
+    (
+        "✔",
+        "Delete Co...",
+        "Remove all completed files from the list",
+    ),
+    (
+        "⚙",
+        "Options",
+        "Browsers/System integration, File types, Proxy, Passwords and others",
+    ),
     ("⏰", "Scheduler", "Scheduler and download queues"),
-    ("⏩", "Start Queue", "Start main download queue, or choose a queue to start from drop-down list"),
-    ("⏏", "Stop Queue", "Stop main download queue, or choose a queue to stop from drop-down list"),
+    (
+        "⏩",
+        "Start Queue",
+        "Start main download queue, or choose a queue to start from drop-down list",
+    ),
+    (
+        "⏏",
+        "Stop Queue",
+        "Stop main download queue, or choose a queue to stop from drop-down list",
+    ),
     ("🌐", "Grabber", "Run site grabber"),
-    ("✉", "Tell a Friend", "Write a letter to your friend about New Download Manager"),
+    (
+        "✉",
+        "Tell a Friend",
+        "Write a letter to your friend about New Download Manager",
+    ),
 ];
 
 /// NDM's own icons: glyphs of Windows' icon font (Segoe Fluent Icons; Segoe MDL2 Assets on Windows 10),
@@ -85,11 +129,26 @@ pub(in crate::app) const TB_BUTTONS: [(&str, &str, &str); TB_ICONS] = [
 fn icon_font() -> Option<&'static ab_glyph::FontVec> {
     static FONT: std::sync::OnceLock<Option<ab_glyph::FontVec>> = std::sync::OnceLock::new();
     #[cfg(not(windows))]
-    return FONT.get_or_init(|| ab_glyph::FontVec::try_from_vec(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/linux/MaterialIcons-Regular.ttf")).to_vec()).ok()).as_ref();
+    return FONT
+        .get_or_init(|| {
+            ab_glyph::FontVec::try_from_vec(
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/assets/linux/MaterialIcons-Regular.ttf"
+                ))
+                .to_vec(),
+            )
+            .ok()
+        })
+        .as_ref();
     #[cfg(windows)]
     FONT.get_or_init(|| {
-        let dir = Path::new(&std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into())).join("Fonts");
-        ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()).and_then(|b| ab_glyph::FontVec::try_from_vec(b).ok())
+        let dir = Path::new(&std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+            .join("Fonts");
+        ["SegoeIcons.ttf", "segmdl2.ttf"]
+            .iter()
+            .find_map(|f| std::fs::read(dir.join(f)).ok())
+            .and_then(|b| ab_glyph::FontVec::try_from_vec(b).ok())
     })
     .as_ref()
 }
@@ -147,20 +206,40 @@ fn icon_cp(cp: u32) -> u32 {
 }
 
 /// A strip of `cells` (glyph code point, colour) side by side, each cell `cw` x `ch` px with the glyph `px` high.
-pub(in crate::app) fn glyph_strip(cells: &[(u32, [u8; 3])], cw: usize, ch: usize, px: f32) -> Option<win::Rgba> {
+pub(in crate::app) fn glyph_strip(
+    cells: &[(u32, [u8; 3])],
+    cw: usize,
+    ch: usize,
+    px: f32,
+) -> Option<win::Rgba> {
     use ab_glyph::Font;
     let font = icon_font()?;
     let (w, mut out) = (cw * cells.len(), vec![0u8; cw * cells.len() * ch * 4]);
     for (k, (cp, rgb)) in cells.iter().enumerate() {
         let id = font.glyph_id(char::from_u32(icon_cp(*cp))?);
-        let Some(g) = font.outline_glyph(id.with_scale(font.pt_to_px_scale(px * 0.75).unwrap_or(ab_glyph::PxScale::from(px)))) else { continue };
+        let Some(g) = font.outline_glyph(
+            id.with_scale(
+                font.pt_to_px_scale(px * 0.75)
+                    .unwrap_or(ab_glyph::PxScale::from(px)),
+            ),
+        ) else {
+            continue;
+        };
         let b = g.px_bounds();
-        let (ox, oy) = ((k * cw) as f32 + (cw as f32 - b.width()) / 2.0, (ch as f32 - b.height()) / 2.0);
+        let (ox, oy) = (
+            (k * cw) as f32 + (cw as f32 - b.width()) / 2.0,
+            (ch as f32 - b.height()) / 2.0,
+        );
         g.draw(|x, y, c| {
             let (x, y) = ((ox + x as f32) as usize, (oy + y as f32) as usize);
             if x < w && y < ch {
                 let i = (y * w + x) * 4;
-                out[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], (c.min(1.0) * 255.0) as u8]);
+                out[i..i + 4].copy_from_slice(&[
+                    rgb[0],
+                    rgb[1],
+                    rgb[2],
+                    (c.min(1.0) * 255.0) as u8,
+                ]);
             }
         });
     }
@@ -179,22 +258,35 @@ fn lighter((w, h, mut px): win::Rgba) -> win::Rgba {
 
 /// The toolbar's icons, in `TB_BUTTONS` order: (Segoe icon code point, colour).
 const TB_GLYPHS: [(u32, [u8; 3]); TB_ICONS] = [
-    (0xE710, [46, 158, 79]),   // Add URL
-    (0xE768, [30, 136, 229]),  // Resume
-    (0xE71A, [229, 57, 53]),   // Stop
-    (0xE769, [251, 140, 0]),   // Stop All
-    (0xE74D, [211, 47, 47]),   // Delete
-    (0xE930, [0, 137, 123]),   // Delete Completed
-    (0xE713, [126, 87, 194]),  // Options
-    (0xE823, [245, 124, 0]),   // Scheduler
-    (0xF5B0, [67, 160, 71]),   // Start Queue
-    (0xE81D, [198, 40, 40]),   // Stop Queue
-    (0xE774, [3, 155, 229]),   // Grabber
-    (0xE715, [142, 36, 170]),  // Tell a Friend
+    (0xE710, [46, 158, 79]),  // Add URL
+    (0xE768, [30, 136, 229]), // Resume
+    (0xE71A, [229, 57, 53]),  // Stop
+    (0xE769, [251, 140, 0]),  // Stop All
+    (0xE74D, [211, 47, 47]),  // Delete
+    (0xE930, [0, 137, 123]),  // Delete Completed
+    (0xE713, [126, 87, 194]), // Options
+    (0xE823, [245, 124, 0]),  // Scheduler
+    (0xF5B0, [67, 160, 71]),  // Start Queue
+    (0xE81D, [198, 40, 40]),  // Stop Queue
+    (0xE774, [3, 155, 229]),  // Grabber
+    (0xE715, [142, 36, 170]), // Tell a Friend
 ];
 
 /// A custom toolbar's file name for each button (`<name>.png`, `<name>-hot.png`, `<name>-disabled.png`).
-const TB_FILES: [&str; TB_ICONS] = ["add-url", "resume", "stop", "stop-all", "delete", "delete-completed", "options", "scheduler", "start-queue", "stop-queue", "grabber", "tell-a-friend"];
+const TB_FILES: [&str; TB_ICONS] = [
+    "add-url",
+    "resume",
+    "stop",
+    "stop-all",
+    "delete",
+    "delete-completed",
+    "options",
+    "scheduler",
+    "start-queue",
+    "stop-queue",
+    "grabber",
+    "tell-a-friend",
+];
 
 /// The built-in toolbar's name (`Settings::tb_skin`).
 pub(in crate::app) const TB_BUILTIN: &str = "Neon";
@@ -210,7 +302,11 @@ pub(in crate::app) fn toolbar_sets() -> Vec<String> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| TB_FILES.iter().any(|f| e.path().join(format!("{f}.png")).is_file()))
+        .filter(|e| {
+            TB_FILES
+                .iter()
+                .any(|f| e.path().join(format!("{f}.png")).is_file())
+        })
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     sets.sort_by_key(|s| s.to_lowercase());
@@ -228,7 +324,17 @@ pub(in crate::app) fn cat_icon_sets() -> Vec<String> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten().any(|f| f.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("png"))))
+        .filter(|e| {
+            std::fs::read_dir(e.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|f| {
+                    f.path()
+                        .extension()
+                        .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+                })
+        })
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     sets.sort_by_key(|s| s.to_lowercase());
@@ -237,7 +343,13 @@ pub(in crate::app) fn cat_icon_sets() -> Vec<String> {
 
 /// A category icon set's file names for a tree item, most specific first (README, Custom category icons).
 pub(in crate::app) fn cat_icon_files(v: &Cat, running: bool) -> Vec<String> {
-    let slug = |c: &str| c.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join("-");
+    let slug = |c: &str| {
+        c.trim()
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-")
+    };
     match v {
         Cat::Files(Which::All, None) => vec!["all-downloads".into()],
         Cat::Files(Which::Unfinished, None) => vec!["unfinished".into()],
@@ -256,7 +368,10 @@ pub(in crate::app) fn tb_picture(file: &Path, cw: usize, ch: usize) -> Option<wi
     let img = image::open(file).ok()?.into_rgba8();
     let (w, h) = (img.width().max(1) as f32, img.height().max(1) as f32);
     let k = (cw as f32 / w).min(ch as f32 / h);
-    let (nw, nh) = (((w * k).round() as u32).clamp(1, cw as u32), ((h * k).round() as u32).clamp(1, ch as u32));
+    let (nw, nh) = (
+        ((w * k).round() as u32).clamp(1, cw as u32),
+        ((h * k).round() as u32).clamp(1, ch as u32),
+    );
     let img = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Lanczos3);
     let mut out = vec![0u8; cw * ch * 4];
     let (ox, oy) = ((cw - nw as usize) / 2, (ch - nh as usize) / 2);
@@ -301,13 +416,21 @@ impl Toolbar {
         let px = |v: f32| ((v * scale).round() as usize).max(8);
         let mut sizes = [vec![], vec![]];
         // cells as the toolbar draws them: 56 x 42 px large, 32 x 32 px small (at 100%)
-        for (si, (cw, ch, glyph)) in [(px(56.0), px(42.0), 34.0 * scale), (px(32.0), px(32.0), 24.0 * scale)].into_iter().enumerate() {
+        for (si, (cw, ch, glyph)) in [
+            (px(56.0), px(42.0), 34.0 * scale),
+            (px(32.0), px(32.0), 24.0 * scale),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             for k in 0..TB_ICONS {
                 let file = |suffix: &str| {
                     let d = dir.as_ref()?;
                     let name = format!("{}{suffix}.png", TB_FILES[k]);
                     // a small/ folder holds pictures drawn for the small buttons
-                    let f = Some(d.join("small").join(&name)).filter(|f| si == 1 && f.is_file()).unwrap_or_else(|| d.join(&name));
+                    let f = Some(d.join("small").join(&name))
+                        .filter(|f| si == 1 && f.is_file())
+                        .unwrap_or_else(|| d.join(&name));
                     tb_picture(&f, cw, ch)
                 };
                 let pics = match file("") {
@@ -317,13 +440,18 @@ impl Toolbar {
                         Some(([n, hot, off], false))
                     }
                     // NDM Style: lighter, smaller line icons
-                    None if ndm => glyph_strip(&[(TB_GLYPHS[k].0, [255; 3])], cw, ch, glyph * 0.78).map(|g| ([g.clone(), g.clone(), g], true)),
-                    None => glyph_strip(&[TB_GLYPHS[k]], cw, ch, glyph).map(|g| ([g.clone(), lighter(g.clone()), grayed(g)], false)),
+                    None if ndm => glyph_strip(&[(TB_GLYPHS[k].0, [255; 3])], cw, ch, glyph * 0.78)
+                        .map(|g| ([g.clone(), g.clone(), g], true)),
+                    None => glyph_strip(&[TB_GLYPHS[k]], cw, ch, glyph)
+                        .map(|g| ([g.clone(), lighter(g.clone()), grayed(g)], false)),
                 };
                 sizes[si].push(pics.map(|(p, tint)| {
                     let [a, b, c] = p;
                     let t = |n: usize, b: &win::Rgba| texture(ctx, &format!("tb{si}_{k}_{n}"), b);
-                    TbPics { pics: [t(0, &a), t(1, &b), t(2, &c)], tint }
+                    TbPics {
+                        pics: [t(0, &a), t(1, &b), t(2, &c)],
+                        tint,
+                    }
                 }));
             }
         }
@@ -332,9 +460,24 @@ impl Toolbar {
     }
 
     /// Button `k`'s picture for a state, and the colour to draw it in.
-    pub(super) fn pic(&self, small: bool, k: usize, enabled: bool, hot: bool, dark: bool) -> Option<(egui::TextureId, Color32)> {
-        let p = if small { &self.small } else { &self.large }.get(k)?.as_ref()?;
-        let state = if !enabled { 2 } else if hot { 1 } else { 0 };
+    pub(super) fn pic(
+        &self,
+        small: bool,
+        k: usize,
+        enabled: bool,
+        hot: bool,
+        dark: bool,
+    ) -> Option<(egui::TextureId, Color32)> {
+        let p = if small { &self.small } else { &self.large }
+            .get(k)?
+            .as_ref()?;
+        let state = if !enabled {
+            2
+        } else if hot {
+            1
+        } else {
+            0
+        };
         let tint = if !p.tint {
             Color32::WHITE
         } else {
@@ -359,17 +502,27 @@ impl Toolbar {
 /// text white, disabled 0x808080; tree 0x202020 (0x437df0); menu 0x202020, hot item 0x505050 (0x4ff150).
 /// Edit fields are drawn by Windows' DarkMode_CFD theme, not 25,25,25 is an estimate.
 /// Set when the Language menu was first opened: `style` then loads the CJK fonts the language names need.
-pub(in crate::app) static ALL_CJK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(in crate::app) static ALL_CJK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// The list font's face (View -> Font), read by `style`.
 pub(in crate::app) static LIST_FONT: Mutex<String> = Mutex::new(String::new());
 
 fn load_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    for (name, file) in [("tahoma", r"C:\Windows\Fonts\tahoma.ttf"), ("segoe", r"C:\Windows\Fonts\segoeui.ttf")] {
+    for (name, file) in [
+        ("tahoma", r"C:\Windows\Fonts\tahoma.ttf"),
+        ("segoe", r"C:\Windows\Fonts\segoeui.ttf"),
+    ] {
         if let Ok(b) = std::fs::read(file) {
-            fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
-            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, name.into());
+            fonts
+                .font_data
+                .insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Proportional)
+                .unwrap()
+                .insert(0, name.into());
             break;
         }
     }
@@ -379,11 +532,23 @@ fn load_fonts(ctx: &egui::Context) {
     #[cfg(not(windows))]
     {
         let mut seen = vec![];
-        for (name, face) in [("sys", "sans-serif"), ("sys_ar", "sans-serif:lang=ar"), ("sys_fb", "DejaVu Sans")] {
-            let Some(f) = win::font_file(face).filter(|f| !seen.contains(f)) else { continue };
+        for (name, face) in [
+            ("sys", "sans-serif"),
+            ("sys_ar", "sans-serif:lang=ar"),
+            ("sys_fb", "DejaVu Sans"),
+        ] {
+            let Some(f) = win::font_file(face).filter(|f| !seen.contains(f)) else {
+                continue;
+            };
             if let Ok(b) = std::fs::read(&f) {
-                fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
-                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push(name.into());
+                fonts
+                    .font_data
+                    .insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .push(name.into());
                 seen.push(f);
             }
         }
@@ -398,25 +563,60 @@ fn load_fonts(ctx: &egui::Context) {
         _ => "",
     };
     // once the Language menu was opened: Chinese (both scripts) and Korean for the language names
-    let (zh, ko) = if ALL_CJK.load(Relaxed) { (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\malgun.ttf") } else { ("", "") };
-    for (name, file) in [("segoe_fb", r"C:\Windows\Fonts\segoeui.ttf"), ("nirmala", r"C:\Windows\Fonts\Nirmala.ttf"), ("cjk", cjk), ("zh", zh), ("ko", ko)] {
+    let (zh, ko) = if ALL_CJK.load(Relaxed) {
+        (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\malgun.ttf")
+    } else {
+        ("", "")
+    };
+    for (name, file) in [
+        ("segoe_fb", r"C:\Windows\Fonts\segoeui.ttf"),
+        ("nirmala", r"C:\Windows\Fonts\Nirmala.ttf"),
+        ("cjk", cjk),
+        ("zh", zh),
+        ("ko", ko),
+    ] {
         if let Ok(b) = std::fs::read(file) {
-            fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
-            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push(name.into());
+            fonts
+                .font_data
+                .insert(name.into(), Arc::new(egui::FontData::from_owned(b)));
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Proportional)
+                .unwrap()
+                .push(name.into());
         }
     }
     // NDM's main window (menu bar, toolbar labels, tree, list) uses the system font, Segoe UI 9pt
-    let mut ui_fam: Vec<String> = fonts.font_data.contains_key("segoe_fb").then(|| "segoe_fb".to_string()).into_iter().collect();
-    ui_fam.extend(fonts.families[&egui::FontFamily::Proportional].iter().filter(|f| *f != "segoe_fb").cloned());
-    fonts.families.insert(egui::FontFamily::Name("segoe".into()), ui_fam);
+    let mut ui_fam: Vec<String> = fonts
+        .font_data
+        .contains_key("segoe_fb")
+        .then(|| "segoe_fb".to_string())
+        .into_iter()
+        .collect();
+    ui_fam.extend(
+        fonts.families[&egui::FontFamily::Proportional]
+            .iter()
+            .filter(|f| *f != "segoe_fb")
+            .cloned(),
+    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("segoe".into()), ui_fam);
     // the download list: the chosen face first, the usual fallbacks after it
     let mut list_fam = fonts.families[&egui::FontFamily::Proportional].clone();
     let face = LIST_FONT.lock().unwrap().clone();
-    if let Some(b) = win::font_file(&face).filter(|_| !face.is_empty()).and_then(|f| std::fs::read(f).ok()) {
-        fonts.font_data.insert("list".into(), Arc::new(egui::FontData::from_owned(b)));
+    if let Some(b) = win::font_file(&face)
+        .filter(|_| !face.is_empty())
+        .and_then(|f| std::fs::read(f).ok())
+    {
+        fonts
+            .font_data
+            .insert("list".into(), Arc::new(egui::FontData::from_owned(b)));
         list_fam.insert(0, "list".into());
     }
-    fonts.families.insert(egui::FontFamily::Name("list".into()), list_fam);
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("list".into()), list_fam);
     ctx.set_fonts(fonts);
 }
 
@@ -426,41 +626,98 @@ pub(in crate::app) fn style(ctx: &egui::Context, dark: bool) {
 }
 
 pub(in crate::app) fn apply_style(ctx: &egui::Context, dark: bool) {
-    ctx.set_theme(if dark { egui::ThemePreference::Dark } else { egui::ThemePreference::Light });
+    ctx.set_theme(if dark {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    });
     // both themes are set up: NDM keeps most dialogs light while the main window is dark (`dialog`)
     for dark in [false, true] {
         let (text, chrome, field) = if dark {
             (Color32::WHITE, DARK_DLG, Color32::from_rgb(25, 25, 25))
         } else {
-            (Color32::BLACK, Color32::from_rgb(240, 240, 240), Color32::WHITE)
+            (
+                Color32::BLACK,
+                Color32::from_rgb(240, 240, 240),
+                Color32::WHITE,
+            )
         };
-        let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        let mut v = if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
         (v.panel_fill, v.window_fill, v.extreme_bg_color) = (chrome, chrome, field);
-        v.faint_bg_color = if dark { Color32::from_gray(30) } else { Color32::from_gray(248) };
+        v.faint_bg_color = if dark {
+            Color32::from_gray(30)
+        } else {
+            Color32::from_gray(248)
+        };
         v.override_text_color = Some(text);
         v.window_corner_radius = egui::CornerRadius::ZERO;
         v.menu_corner_radius = egui::CornerRadius::ZERO;
         v.window_shadow = egui::Shadow::NONE;
-        v.popup_shadow = egui::Shadow { offset: [2, 2], blur: 4, spread: 0, color: Color32::from_black_alpha(60) };
-        v.selection.bg_fill = if dark { Color32::from_gray(77) } else { Color32::from_rgb(204, 232, 255) };
+        v.popup_shadow = egui::Shadow {
+            offset: [2, 2],
+            blur: 4,
+            spread: 0,
+            color: Color32::from_black_alpha(60),
+        };
+        v.selection.bg_fill = if dark {
+            Color32::from_gray(77)
+        } else {
+            Color32::from_rgb(204, 232, 255)
+        };
         v.selection.stroke = egui::Stroke::new(1.0_f32, text);
-        v.hyperlink_color = if dark { Color32::from_rgb(96, 170, 255) } else { BAR };
+        v.hyperlink_color = if dark {
+            Color32::from_rgb(96, 170, 255)
+        } else {
+            BAR
+        };
         let w = &mut v.widgets;
         let states: [(&mut egui::style::WidgetVisuals, Color32, Color32); 5] = if dark {
             [
                 (&mut w.noninteractive, chrome, Color32::from_gray(70)),
-                (&mut w.inactive, Color32::from_gray(51), Color32::from_gray(155)),
-                (&mut w.hovered, Color32::from_gray(69), Color32::from_gray(155)),
-                (&mut w.active, Color32::from_gray(85), Color32::from_gray(180)),
+                (
+                    &mut w.inactive,
+                    Color32::from_gray(51),
+                    Color32::from_gray(155),
+                ),
+                (
+                    &mut w.hovered,
+                    Color32::from_gray(69),
+                    Color32::from_gray(155),
+                ),
+                (
+                    &mut w.active,
+                    Color32::from_gray(85),
+                    Color32::from_gray(180),
+                ),
                 (&mut w.open, Color32::from_gray(69), Color32::from_gray(155)),
             ]
         } else {
             [
                 (&mut w.noninteractive, chrome, Color32::from_gray(200)),
-                (&mut w.inactive, Color32::from_rgb(225, 225, 225), Color32::from_rgb(173, 173, 173)),
-                (&mut w.hovered, Color32::from_rgb(229, 241, 251), Color32::from_rgb(0, 120, 215)),
-                (&mut w.active, Color32::from_rgb(204, 228, 247), Color32::from_rgb(0, 84, 153)),
-                (&mut w.open, Color32::from_rgb(204, 228, 247), Color32::from_rgb(0, 84, 153)),
+                (
+                    &mut w.inactive,
+                    Color32::from_rgb(225, 225, 225),
+                    Color32::from_rgb(173, 173, 173),
+                ),
+                (
+                    &mut w.hovered,
+                    Color32::from_rgb(229, 241, 251),
+                    Color32::from_rgb(0, 120, 215),
+                ),
+                (
+                    &mut w.active,
+                    Color32::from_rgb(204, 228, 247),
+                    Color32::from_rgb(0, 84, 153),
+                ),
+                (
+                    &mut w.open,
+                    Color32::from_rgb(204, 228, 247),
+                    Color32::from_rgb(0, 84, 153),
+                ),
             ]
         };
         for (wv, fill, stroke) in states {
@@ -473,7 +730,14 @@ pub(in crate::app) fn apply_style(ctx: &egui::Context, dark: bool) {
         if dlu::ndm() {
             ndm_visuals(&mut v, dark);
         }
-        ctx.set_visuals_of(if dark { egui::Theme::Dark } else { egui::Theme::Light }, v);
+        ctx.set_visuals_of(
+            if dark {
+                egui::Theme::Dark
+            } else {
+                egui::Theme::Light
+            },
+            v,
+        );
     }
     ctx.all_styles_mut(|s| {
         s.spacing.button_padding = Vec2::new(10.0, 3.0);
@@ -481,7 +745,12 @@ pub(in crate::app) fn apply_style(ctx: &egui::Context, dark: bool) {
         s.spacing.interact_size.y = 18.0;
         // Tahoma 8 as NDM's dialogs, tree and list draw it (fitted to text widths measured on NDM; the
         // menu bar is Segoe UI 12.2, the toolbar labels Segoe UI 11.6)
-        for (t, size) in [(egui::TextStyle::Body, 10.0), (egui::TextStyle::Button, 10.0), (egui::TextStyle::Small, 10.0), (egui::TextStyle::Heading, 14.0)] {
+        for (t, size) in [
+            (egui::TextStyle::Body, 10.0),
+            (egui::TextStyle::Button, 10.0),
+            (egui::TextStyle::Small, 10.0),
+            (egui::TextStyle::Heading, 14.0),
+        ] {
             s.text_styles.insert(t, FontId::proportional(size));
         }
     });
@@ -492,13 +761,28 @@ pub(in crate::app) fn apply_style(ctx: &egui::Context, dark: bool) {
 fn ndm_visuals(v: &mut egui::Visuals, dark: bool) {
     let t = dlu::theme(dark);
     let r = |x: f32| egui::CornerRadius::same(x as u8);
-    (v.panel_fill, v.window_fill, v.extreme_bg_color, v.faint_bg_color) = (t.bg, t.surface, t.surface, t.raised);
+    (
+        v.panel_fill,
+        v.window_fill,
+        v.extreme_bg_color,
+        v.faint_bg_color,
+    ) = (t.bg, t.surface, t.surface, t.raised);
     v.override_text_color = Some(t.text);
     v.window_corner_radius = r(dlu::R_CARD + 3.0);
     v.menu_corner_radius = r(dlu::R_CARD);
     v.window_stroke = egui::Stroke::new(1.0_f32, t.border);
-    v.window_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 40 }) };
-    v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(if dark { 100 } else { 34 }) };
+    v.window_shadow = egui::Shadow {
+        offset: [0, 6],
+        blur: 18,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 110 } else { 40 }),
+    };
+    v.popup_shadow = egui::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 100 } else { 34 }),
+    };
     v.selection.bg_fill = t.accent_soft;
     v.selection.stroke = egui::Stroke::new(1.0_f32, t.accent);
     v.hyperlink_color = t.accent;
@@ -540,46 +824,100 @@ pub(in crate::app) struct Res {
 impl Res {
     pub(super) fn load(ctx: &egui::Context) -> Res {
         let mut r = Res::default();
-        if let Ok(img) = image::load_from_memory_with_format(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grabber.jpg")), image::ImageFormat::Jpeg) {
+        if let Ok(img) = image::load_from_memory_with_format(
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/grabber.jpg")),
+            image::ImageFormat::Jpeg,
+        ) {
             let px = img.to_rgba8();
-            r.grab_pic = Some(ctx.load_texture("grabpic", egui::ColorImage::from_rgba_unmultiplied([px.width() as usize, px.height() as usize], px.as_raw()), egui::TextureOptions::LINEAR));
+            r.grab_pic = Some(ctx.load_texture(
+                "grabpic",
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [px.width() as usize, px.height() as usize],
+                    px.as_raw(),
+                ),
+                egui::TextureOptions::LINEAR,
+            ));
         }
         let tex = |name: &str, i: Option<win::Rgba>| i.map(|i| texture(ctx, name, &i));
         // tree images (drawn 16 x 13 pt): folders, statuses, categories, grabber projects, queues, limits
         const FOLDER: [u8; 3] = [240, 170, 30];
         let tree: [(u16, u32, [u8; 3]); 20] = [
-            (214, 0xE838, FOLDER), (215, 0xE8B7, FOLDER), (216, 0xE930, [46, 158, 79]), (217, 0xE930, [46, 158, 79]),
-            (218, 0xE896, [30, 136, 229]), (219, 0xE896, [30, 136, 229]), (220, 0xE8D6, [216, 27, 96]), (221, 0xE714, [229, 57, 53]),
-            (222, 0xE756, [84, 110, 122]), (223, 0xE8A5, [30, 136, 229]), (224, 0xE8B7, FOLDER), (225, 0xE7B8, [141, 110, 99]),
-            (282, 0xE774, [3, 155, 229]), (311, 0xE8FD, [94, 53, 177]), (312, 0xE8FD, [67, 160, 71]), (313, 0xE8FD, [94, 53, 177]),
-            (315, 0xE895, [0, 137, 123]), (316, 0xE895, [67, 160, 71]), (329, 0xEC4A, [251, 140, 0]), (104, 0xEA80, [251, 192, 45]),
+            (214, 0xE838, FOLDER),
+            (215, 0xE8B7, FOLDER),
+            (216, 0xE930, [46, 158, 79]),
+            (217, 0xE930, [46, 158, 79]),
+            (218, 0xE896, [30, 136, 229]),
+            (219, 0xE896, [30, 136, 229]),
+            (220, 0xE8D6, [216, 27, 96]),
+            (221, 0xE714, [229, 57, 53]),
+            (222, 0xE756, [84, 110, 122]),
+            (223, 0xE8A5, [30, 136, 229]),
+            (224, 0xE8B7, FOLDER),
+            (225, 0xE7B8, [141, 110, 99]),
+            (282, 0xE774, [3, 155, 229]),
+            (311, 0xE8FD, [94, 53, 177]),
+            (312, 0xE8FD, [67, 160, 71]),
+            (313, 0xE8FD, [94, 53, 177]),
+            (315, 0xE895, [0, 137, 123]),
+            (316, 0xE895, [67, 160, 71]),
+            (329, 0xEC4A, [251, 140, 0]),
+            (104, 0xEA80, [251, 192, 45]),
         ];
         for (id, cp, rgb) in tree {
-            let (w, h, px) = if id == 104 { (48, 48, 40.0) } else { (32, 26, 24.0) };
+            let (w, h, px) = if id == 104 {
+                (48, 48, 40.0)
+            } else {
+                (32, 26, 24.0)
+            };
             if let Some(t) = tex(&format!("ndmt{id}"), glyph_strip(&[(cp, rgb)], w, h, px)) {
                 r.tree.insert(id, t);
             }
         }
         // grabber toolbar (10 icons, drawn 24 pt): explore, stop, check all, uncheck, download, stop download,
         // add to the main list, refresh, schedule, statistics
-        let gtb = [(0xE721, [30, 136, 229]), (0xE71A, [229, 57, 53]), (0xE73A, [46, 158, 79]), (0xE739, [117, 117, 117]), (0xE896, [30, 136, 229]),
-            (0xE81D, [198, 40, 40]), (0xE8F4, [245, 124, 0]), (0xE72C, [0, 137, 123]), (0xE823, [245, 124, 0]), (0xE946, [94, 53, 177])];
+        let gtb = [
+            (0xE721, [30, 136, 229]),
+            (0xE71A, [229, 57, 53]),
+            (0xE73A, [46, 158, 79]),
+            (0xE739, [117, 117, 117]),
+            (0xE896, [30, 136, 229]),
+            (0xE81D, [198, 40, 40]),
+            (0xE8F4, [245, 124, 0]),
+            (0xE72C, [0, 137, 123]),
+            (0xE823, [245, 124, 0]),
+            (0xE946, [94, 53, 177]),
+        ];
         if let Some(n) = glyph_strip(&gtb, 48, 48, 34.0) {
             let mut g = n.clone();
             for p in g.2.chunks_mut(4) {
                 let l = ((p[0] as u32 * 3 + p[1] as u32 * 6 + p[2] as u32) / 10) as u8;
                 p.copy_from_slice(&[l, l, l, p[3] / 2]);
             }
-            r.grab_tb = Some([texture(ctx, "gtbn", &n), texture(ctx, "gtbh", &lighter(n.clone())), texture(ctx, "gtbg", &g)]);
+            r.grab_tb = Some([
+                texture(ctx, "gtbn", &n),
+                texture(ctx, "gtbh", &lighter(n.clone())),
+                texture(ctx, "gtbg", &g),
+            ]);
         }
         // 32 pt page and dialog icons: Options pages, site logins, dial up, sounds, queues, grabber schedule
         let pages: [(u16, u32, [u8; 3]); 11] = [
-            (277, 0xE774, [3, 155, 229]), (295, 0xE8A5, [30, 136, 229]), (276, 0xE8B7, FOLDER), (293, 0xE896, [46, 158, 79]),
-            (273, 0xE9D9, [94, 53, 177]), (278, 0xE8AF, [0, 137, 123]), (272, 0xE8D7, [251, 140, 0]), (275, 0xE7EF, [84, 110, 122]),
-            (274, 0xE8D6, [216, 27, 96]), (331, 0xE8FD, [94, 53, 177]), (285, 0xE823, [245, 124, 0]),
+            (277, 0xE774, [3, 155, 229]),
+            (295, 0xE8A5, [30, 136, 229]),
+            (276, 0xE8B7, FOLDER),
+            (293, 0xE896, [46, 158, 79]),
+            (273, 0xE9D9, [94, 53, 177]),
+            (278, 0xE8AF, [0, 137, 123]),
+            (272, 0xE8D7, [251, 140, 0]),
+            (275, 0xE7EF, [84, 110, 122]),
+            (274, 0xE8D6, [216, 27, 96]),
+            (331, 0xE8FD, [94, 53, 177]),
+            (285, 0xE823, [245, 124, 0]),
         ];
         for (id, cp, rgb) in pages {
-            if let Some(t) = tex(&format!("ndmi{id}"), glyph_strip(&[(cp, rgb)], 64, 64, 52.0)) {
+            if let Some(t) = tex(
+                &format!("ndmi{id}"),
+                glyph_strip(&[(cp, rgb)], 64, 64, 52.0),
+            ) {
                 r.icons.insert(id, t);
             }
         }
@@ -595,15 +933,25 @@ impl Res {
 
 impl App {
     /// Cached Explorer icon for a file extension ("/" = folder).
-    pub(in crate::app) fn icon(&mut self, ctx: &egui::Context, ext: &str) -> Option<egui::TextureId> {
+    pub(in crate::app) fn icon(
+        &mut self,
+        ctx: &egui::Context,
+        ext: &str,
+    ) -> Option<egui::TextureId> {
         self.icons
             .entry(ext.to_string())
-            .or_insert_with(|| win::shell_icon(ext, ext == "/").map(|i| texture(ctx, &format!("icon{ext}"), &i)))
+            .or_insert_with(|| {
+                win::shell_icon(ext, ext == "/").map(|i| texture(ctx, &format!("icon{ext}"), &i))
+            })
             .as_ref()
             .map(|t| t.id())
     }
 
-    pub(in crate::app) fn exe_icon(&mut self, ctx: &egui::Context, exe: &str) -> Option<egui::TextureId> {
+    pub(in crate::app) fn exe_icon(
+        &mut self,
+        ctx: &egui::Context,
+        exe: &str,
+    ) -> Option<egui::TextureId> {
         let key = format!("exe:{exe}");
         self.icons
             .entry(key.clone())

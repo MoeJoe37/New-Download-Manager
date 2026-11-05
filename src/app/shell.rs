@@ -1,9 +1,12 @@
-use crate::app::{Path, win};
+use crate::app::{win, Path};
 
 /// Virus scanner arguments: `[File]` replaced by the downloaded file, or the file appended (template 494's note).
 pub(in crate::app) fn virus_args(args: &str, file: &Path) -> Vec<String> {
     let f = file.display().to_string();
-    let mut v: Vec<String> = args.split_whitespace().map(|a| a.replace("[File]", &f)).collect();
+    let mut v: Vec<String> = args
+        .split_whitespace()
+        .map(|a| a.replace("[File]", &f))
+        .collect();
     if !args.contains("[File]") {
         v.push(f);
     }
@@ -14,7 +17,10 @@ pub(in crate::app) fn virus_args(args: &str, file: &Path) -> Vec<String> {
 fn virus_arg_list() {
     let p = Path::new(r"C:\d\a b.zip");
     assert_eq!(virus_args("", p), [r"C:\d\a b.zip"]);
-    assert_eq!(virus_args("/scan=[File] /q", p), [r"/scan=C:\d\a b.zip", "/q"]);
+    assert_eq!(
+        virus_args("/scan=[File] /q", p),
+        [r"/scan=C:\d\a b.zip", "/q"]
+    );
 }
 
 pub(in crate::app) fn explore(arg: impl AsRef<std::ffi::OsStr>) {
@@ -38,7 +44,9 @@ pub(in crate::app) fn open_folder_of(path: &Path) {
 /// Open a web address in the default browser.
 pub(in crate::app) fn open_url(u: &str) {
     #[cfg(windows)]
-    let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", u]).spawn();
+    let _ = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", u])
+        .spawn();
     #[cfg(not(windows))]
     win::open(u);
 }
@@ -46,7 +54,10 @@ pub(in crate::app) fn open_url(u: &str) {
 /// "Open with...": the system's program chooser.
 pub(in crate::app) fn open_with(p: impl AsRef<std::ffi::OsStr>) {
     #[cfg(windows)]
-    let _ = std::process::Command::new("rundll32").arg("shell32.dll,OpenAs_RunDLL").arg(p).spawn();
+    let _ = std::process::Command::new("rundll32")
+        .arg("shell32.dll,OpenAs_RunDLL")
+        .arg(p)
+        .spawn();
     #[cfg(not(windows))]
     win::open_with(Path::new(p.as_ref()));
 }

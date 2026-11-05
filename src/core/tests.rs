@@ -1,8 +1,8 @@
-use super::*;
-use super::state::Saved;
-use super::settings::Category;
-use super::browser_bridge::{Incoming, handle, proxy_conn};
+use super::browser_bridge::{handle, proxy_conn, Incoming};
 use super::queue::quota_bytes;
+use super::settings::Category;
+use super::state::Saved;
+use super::*;
 
 #[test]
 fn localhost_rejects_web_origins_and_ambiguous_messages() {
@@ -30,9 +30,20 @@ fn integration_restores_system_proxy() {
     let before = crate::win::system_proxy();
     core.apply_integration(true);
     let (on, server, _) = crate::win::system_proxy();
-    assert!(on && server.starts_with(&format!("http=127.0.0.1:{PROXY_PORT}")), "{server}");
+    assert!(
+        on && server.starts_with(&format!("http=127.0.0.1:{PROXY_PORT}")),
+        "{server}"
+    );
     let p = core.settings().proxy_for("http://x.com/a");
-    assert_eq!(p, if before.0 { core.settings().proxy_for("http://x.com/a") } else { String::new() }, "NDM's own downloads skip its proxy");
+    assert_eq!(
+        p,
+        if before.0 {
+            core.settings().proxy_for("http://x.com/a")
+        } else {
+            String::new()
+        },
+        "NDM's own downloads skip its proxy"
+    );
     core.shutdown();
     assert_eq!(crate::win::system_proxy(), before);
 }
@@ -53,8 +64,18 @@ fn integration_proxy() {
                     break;
                 }
             }
-            let (ty, body) = if line.contains("/a.zip") { ("application/zip", "zipdata") } else { ("text/html", "<html>hi</html>") };
-            let _ = (&s).write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {ty}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+            let (ty, body) = if line.contains("/a.zip") {
+                ("application/zip", "zipdata")
+            } else {
+                ("text/html", "<html>hi</html>")
+            };
+            let _ = (&s).write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ty}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
         }
     });
     let core = Core::load();
@@ -69,7 +90,10 @@ fn integration_proxy() {
         (inc, got)
     };
     let (inc, got) = ask("/page.html");
-    assert!(inc.is_none() && got.starts_with("HTTP/1.1 200") && got.ends_with("<html>hi</html>"), "{got}");
+    assert!(
+        inc.is_none() && got.starts_with("HTTP/1.1 200") && got.ends_with("<html>hi</html>"),
+        "{got}"
+    );
     let (inc, got) = ask("/a.zip");
     assert!(got.starts_with("HTTP/1.0 204"), "{got}");
     assert_eq!(inc.unwrap().url, format!("http://127.0.0.1:{port}/a.zip"));
@@ -78,11 +102,27 @@ fn integration_proxy() {
 #[test]
 fn site_logins() {
     let mut s = Settings::default();
-    s.logins.push(Login { site: "https://files.example.com/".into(), user: "u".into(), pass: "p w".into() });
-    assert_eq!(s.with_login("http://files.example.com/a.zip"), "http://u:p%20w@files.example.com/a.zip");
-    assert_eq!(s.with_login("http://cdn.files.example.com/a.zip"), "http://u:p%20w@cdn.files.example.com/a.zip");
-    assert_eq!(s.with_login("http://other.com/a.zip"), "http://other.com/a.zip");
-    assert_eq!(s.with_login("http://x:y@files.example.com/a.zip"), "http://x:y@files.example.com/a.zip");
+    s.logins.push(Login {
+        site: "https://files.example.com/".into(),
+        user: "u".into(),
+        pass: "p w".into(),
+    });
+    assert_eq!(
+        s.with_login("http://files.example.com/a.zip"),
+        "http://u:p%20w@files.example.com/a.zip"
+    );
+    assert_eq!(
+        s.with_login("http://cdn.files.example.com/a.zip"),
+        "http://u:p%20w@cdn.files.example.com/a.zip"
+    );
+    assert_eq!(
+        s.with_login("http://other.com/a.zip"),
+        "http://other.com/a.zip"
+    );
+    assert_eq!(
+        s.with_login("http://x:y@files.example.com/a.zip"),
+        "http://x:y@files.example.com/a.zip"
+    );
 }
 
 /// A finished file whose name didn't say what it is (YouTube's "watch", a "get.php"): named, filed and
@@ -97,13 +137,22 @@ fn finished_files_are_typed() {
     core.settings().cat_dirs.clear();
     let job = |name: &str, bytes: &[u8]| {
         std::fs::write(dir.join(name), bytes).unwrap();
-        engine::Job::new(engine::Info { name: name.into(), folder: dir.display().to_string(), category: GENERAL.into(), url: "https://x.com/watch?v=1".into(), ..Default::default() })
+        engine::Job::new(engine::Info {
+            name: name.into(),
+            folder: dir.display().to_string(),
+            category: GENERAL.into(),
+            url: "https://x.com/watch?v=1".into(),
+            ..Default::default()
+        })
     };
     let mp4 = b"\0\0\0\x18ftypisom\0\0\0\0rest";
     let j = job("watch", mp4);
     assert!(core.classify(&j));
     let i = j.info().clone();
-    assert_eq!((i.name.as_str(), i.category.as_str()), ("watch.mp4", "Video"));
+    assert_eq!(
+        (i.name.as_str(), i.category.as_str()),
+        ("watch.mp4", "Video")
+    );
     assert_eq!(Path::new(&i.folder), dir.join("Video"));
     assert_eq!(std::fs::read(dir.join("Video/watch.mp4")).unwrap(), mp4);
     let j = job("get.php", b"%PDF-1.7 ...");
@@ -120,13 +169,35 @@ fn finished_files_are_typed() {
 fn categories_and_capture() {
     let mut s = Settings::default();
     assert_eq!(s.category_for("a.ZIP", ""), "Compressed");
-    assert_eq!(s.category_for("movie.mkv", "http://x.com/movie.mkv"), "Video");
+    assert_eq!(
+        s.category_for("movie.mkv", "http://x.com/movie.mkv"),
+        "Video"
+    );
     assert_eq!(s.category_for("noext", ""), GENERAL);
-    s.categories.insert(0, Category { name: "Work".into(), exts: "zip".into(), sites_on: true, sites: "*.corp.com intranet".into(), ..Default::default() });
-    assert_eq!(s.category_for("a.zip", "https://files.corp.com/a.zip"), "Work");
-    assert_eq!(s.category_for("a.zip", "https://other.com/a.zip"), "Compressed");
+    s.categories.insert(
+        0,
+        Category {
+            name: "Work".into(),
+            exts: "zip".into(),
+            sites_on: true,
+            sites: "*.corp.com intranet".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        s.category_for("a.zip", "https://files.corp.com/a.zip"),
+        "Work"
+    );
+    assert_eq!(
+        s.category_for("a.zip", "https://other.com/a.zip"),
+        "Compressed"
+    );
     let core = Core::load();
-    let inc = |url: &str, mime: &str| Incoming { url: url.into(), mime: mime.into(), ..Default::default() };
+    let inc = |url: &str, mime: &str| Incoming {
+        url: url.into(),
+        mime: mime.into(),
+        ..Default::default()
+    };
     assert!(core.wants(&inc("https://x.com/a.zip", "")));
     assert!(!core.wants(&inc("https://x.com/a.html", "")));
     assert!(core.wants(&inc("https://x.com/get?id=1", "application/octet-stream")));
@@ -134,13 +205,34 @@ fn categories_and_capture() {
     assert!(!core.wants(&inc("blob:https://x.com/1", "")));
     core.settings().skip_urls = vec!["https://x.com/dl/*".into()];
     assert!(!core.wants(&inc("https://x.com/dl/a.zip", "")));
-    assert!(core.wants(&Incoming { force: true, ..inc("https://x.com/dl/a.zip", "") }), "the context menu still downloads");
+    assert!(
+        core.wants(&Incoming {
+            force: true,
+            ..inc("https://x.com/dl/a.zip", "")
+        }),
+        "the context menu still downloads"
+    );
     let edge_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Edg/130.0";
     let chrome_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
-    assert_eq!((browser_kind(edge_ua), browser_kind(chrome_ua), browser_kind("Microsoft Edge")), ("edge", "chrome", "edge"));
+    assert_eq!(
+        (
+            browser_kind(edge_ua),
+            browser_kind(chrome_ua),
+            browser_kind("Microsoft Edge")
+        ),
+        ("edge", "chrome", "edge")
+    );
     core.settings().browsers = vec![
-        Browser { name: "Microsoft Edge".into(), exe: r"C:\x\msedge.exe".into(), on: false },
-        Browser { name: "Google Chrome".into(), exe: r"C:\x\chrome.exe".into(), on: true },
+        Browser {
+            name: "Microsoft Edge".into(),
+            exe: r"C:\x\msedge.exe".into(),
+            on: false,
+        },
+        Browser {
+            name: "Google Chrome".into(),
+            exe: r"C:\x\chrome.exe".into(),
+            on: true,
+        },
     ];
     assert!(!core.captures(edge_ua) && core.captures(chrome_ua) && core.captures("curl/8"));
 }
@@ -149,12 +241,25 @@ fn categories_and_capture() {
 fn queues() {
     // a state file from before queues: its schedule becomes the main queue's
     let old = r#"{"settings":{"max_active":5,"sched":{"start_at":"03:00","on_startup":true}},"items":[{"id":1,"queued":true,"status":"Complete"}],"next_id":2}"#;
-    let core = Core::from_saved(serde_json::from_str(old).unwrap(), std::env::temp_dir().join("ndm-test-unused.json"));
+    let core = Core::from_saved(
+        serde_json::from_str(old).unwrap(),
+        std::env::temp_dir().join("ndm-test-unused.json"),
+    );
     {
         let s = core.settings();
         assert_eq!(s.queues.len(), 2);
-        assert!(s.queues[1].sync && s.queues[1].builtin(), "NDM's Synchronization queue is added");
-        assert_eq!((s.queues[0].id, s.queues[0].max_active, s.queues[0].sched.start_at.as_str()), (MAIN_QUEUE, 5, "03:00"));
+        assert!(
+            s.queues[1].sync && s.queues[1].builtin(),
+            "NDM's Synchronization queue is added"
+        );
+        assert_eq!(
+            (
+                s.queues[0].id,
+                s.queues[0].max_active,
+                s.queues[0].sched.start_at.as_str()
+            ),
+            (MAIN_QUEUE, 5, "03:00")
+        );
     }
     assert!(core.queue_running(MAIN_QUEUE)); // "start on startup"
     core.tick_queue(); // only a finished file left: the queue finishes
@@ -167,7 +272,12 @@ fn queues() {
     i.status = Status::Error("x".into());
     let id = i.id;
     let job = core.add(i);
-    core.settings().queues.iter_mut().find(|queue| queue.id == q).unwrap().limit_kb = 50;
+    core.settings()
+        .queues
+        .iter_mut()
+        .find(|queue| queue.id == q)
+        .unwrap()
+        .limit_kb = 50;
     core.start_queue(q);
     core.set_queue(&[id], Some(q));
     assert!(job.info().queued);
@@ -205,7 +315,10 @@ fn queues() {
     drop(listener);
     let deadline = Instant::now() + Duration::from_secs(5);
     while core.checking.lock().unwrap().contains(&id) {
-        assert!(Instant::now() < deadline, "synchronization probe did not finish");
+        assert!(
+            Instant::now() < deadline,
+            "synchronization probe did not finish"
+        );
         thread::sleep(Duration::from_millis(20));
     }
     core.tick_queue();
@@ -216,8 +329,11 @@ fn queues() {
 #[test]
 fn old_state_keeps_behaviour() {
     // what 1.0.4 saved: none of 1.1's fields
-    let s: Settings = serde_json::from_str(r#"{"proxy_mode":3,"proxy_host":"px","proxy_port":"3128","proxy_https":false,
-        "adv":{"socks_on":true,"socks_host":"sx","socks_port":"1080","socks5":true}}"#).unwrap();
+    let s: Settings = serde_json::from_str(
+        r#"{"proxy_mode":3,"proxy_host":"px","proxy_port":"3128","proxy_https":false,
+        "adv":{"socks_on":true,"socks_host":"sx","socks_port":"1080","socks5":true}}"#,
+    )
+    .unwrap();
     assert_eq!(s.proxy_for("http://a.com/f"), "http://px:3128");
     assert_eq!(s.proxy_for("https://a.com/f"), "socks5h://sx:1080");
     // ftp not ticked goes by SOCKS, as the Advanced dialog's note says
@@ -227,7 +343,10 @@ fn old_state_keeps_behaviour() {
 
 #[test]
 fn lanes_only_for_direct() {
-    let mut s = Settings { multi_net: true, ..Default::default() };
+    let mut s = Settings {
+        multi_net: true,
+        ..Default::default()
+    };
     assert!(s.use_lanes("http://a.com/f") && !s.use_lanes("ftp://a.com/f"));
     (s.proxy_mode, s.proxy_host) = (3, "px".into());
     assert!(!s.use_lanes("http://a.com/f"));
@@ -238,11 +357,21 @@ fn lanes_only_for_direct() {
 
 #[test]
 fn ftp_routes() {
-    let mut s = Settings { proxy_mode: 3, proxy_host: "px".into(), proxy_port: "3128".into(), ..Default::default() };
+    let mut s = Settings {
+        proxy_mode: 3,
+        proxy_host: "px".into(),
+        proxy_port: "3128".into(),
+        ..Default::default()
+    };
     assert_eq!(s.proxy_for("ftp://a.com/f"), "");
     s.proxy_ftp = true;
     assert_eq!(s.proxy_for("ftp://a.com/f"), "http://px:3128");
-    s.adv = AdvProxy { ftp_on: true, ftp_host: "fx".into(), ftp_port: "2121".into(), ..Default::default() };
+    s.adv = AdvProxy {
+        ftp_on: true,
+        ftp_host: "fx".into(),
+        ftp_port: "2121".into(),
+        ..Default::default()
+    };
     assert_eq!(s.proxy_for("ftp://a.com/f"), "ftp://fx:2121"); // the FTP proxy comes first
     (s.proxy_bypass_on, s.proxy_bypass) = (true, "a.com".into());
     assert_eq!(s.proxy_for("ftp://a.com/f"), "");
@@ -250,11 +379,24 @@ fn ftp_routes() {
 
 #[test]
 fn proxies() {
-    let mut s = Settings { proxy_mode: 3, proxy_host: "px".into(), proxy_port: "3128".into(), proxy_user: "u@x".into(), proxy_pass: "p".into(), ..Default::default() };
+    let mut s = Settings {
+        proxy_mode: 3,
+        proxy_host: "px".into(),
+        proxy_port: "3128".into(),
+        proxy_user: "u@x".into(),
+        proxy_pass: "p".into(),
+        ..Default::default()
+    };
     assert_eq!(s.proxy_for("http://a.com/f"), "http://u%40x:p@px:3128");
     s.proxy_https = false;
     assert_eq!(s.proxy_for("https://a.com/f"), "");
-    s.adv = AdvProxy { socks_on: true, socks_host: "sx".into(), socks_port: "1080".into(), socks5: true, ..Default::default() };
+    s.adv = AdvProxy {
+        socks_on: true,
+        socks_host: "sx".into(),
+        socks_port: "1080".into(),
+        socks5: true,
+        ..Default::default()
+    };
     assert_eq!(s.proxy_for("https://a.com/f"), "socks5h://sx:1080"); // socks for the unticked protocol
     s.adv.local_dns = true;
     assert_eq!(s.proxy_for("https://a.com/f"), "socks5://sx:1080");
@@ -279,12 +421,18 @@ fn proxies() {
             let mut c = c;
             let _ = c.read(&mut [0; 4096]);
             let pac = r#"function FindProxyForURL(url, host) { return host == "d.com" ? "DIRECT" : "PROXY 10.1.2.3:8080"; }"#;
-            let _ = c.write_all(format!("HTTP/1.1 200 OK
+            let _ = c.write_all(
+                format!(
+                    "HTTP/1.1 200 OK
 Content-Type: application/x-ns-proxy-autoconfig
 Content-Length: {}
 Connection: close
 
-{pac}", pac.len()).as_bytes());
+{pac}",
+                    pac.len()
+                )
+                .as_bytes(),
+            );
         }
     });
     s.proxy_mode = 2;
@@ -295,7 +443,10 @@ Connection: close
 #[test]
 fn download_limits() {
     assert_eq!(quota_bytes(100), 100 * 1024 * 1024 / 100 * 98);
-    let core = Core::from_saved(Saved::default(), std::env::temp_dir().join("ndm-test-unused.json"));
+    let core = Core::from_saved(
+        Saved::default(),
+        std::env::temp_dir().join("ndm-test-unused.json"),
+    );
     {
         let mut s = core.settings();
         (s.quota_on, s.quota_mb, s.quota_hours) = (true, 1, 5);
@@ -307,7 +458,12 @@ fn download_limits() {
     core.limiter.received.store(quota_bytes(1), Relaxed);
     core.tick_quota();
     assert!(core.quota_blocked());
-    assert!(core.quota_msg.lock().unwrap().as_deref().is_some_and(|m| m.contains("you downloaded 0 MB")));
+    assert!(core
+        .quota_msg
+        .lock()
+        .unwrap()
+        .as_deref()
+        .is_some_and(|m| m.contains("you downloaded 0 MB")));
     // the window ends: downloads come back and counting starts over
     core.quota.lock().unwrap().start.as_mut().unwrap().0 -= chrono::Duration::hours(6);
     core.tick_quota();

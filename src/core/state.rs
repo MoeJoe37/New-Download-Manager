@@ -1,4 +1,7 @@
-use crate::core::{Arc, AtomicU64, BTreeSet, Core, Deserialize, Info, Job, Limiter, MAIN_QUEUE, Mutex, Path, PathBuf, Queue, Relaxed, Serialize, Settings, Status};
+use crate::core::{
+    Arc, AtomicU64, BTreeSet, Core, Deserialize, Info, Job, Limiter, Mutex, Path, PathBuf, Queue,
+    Relaxed, Serialize, Settings, Status, MAIN_QUEUE,
+};
 use crate::file_ops::atomic_write;
 use std::{fs, io};
 
@@ -16,8 +19,13 @@ pub fn store_path() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         return Path::new(&home).join("Library/Application Support/NewDownloadManager/state.json");
     }
-    let base = std::env::var("APPDATA").or_else(|_| std::env::var("XDG_CONFIG_HOME")).or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config"))).unwrap_or_else(|_| ".".into());
-    Path::new(&base).join("NewDownloadManager").join("state.json")
+    let base = std::env::var("APPDATA")
+        .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
+        .unwrap_or_else(|_| ".".into());
+    Path::new(&base)
+        .join("NewDownloadManager")
+        .join("state.json")
 }
 
 impl Core {
@@ -32,7 +40,14 @@ impl Core {
     #[cfg(test)]
     #[cfg(target_os = "linux")]
     pub(crate) fn for_dialog_snapshots(store: PathBuf, items: Vec<Info>) -> Arc<Self> {
-        Self::from_saved(Saved { items, next_id: 4, ..Default::default() }, store)
+        Self::from_saved(
+            Saved {
+                items,
+                next_id: 4,
+                ..Default::default()
+            },
+            store,
+        )
     }
 
     pub(super) fn from_saved(mut saved: Saved, store: PathBuf) -> Arc<Core> {
@@ -55,12 +70,23 @@ impl Core {
         }
         if s.grab_recent.is_empty() {
             // lists saved before Recent Projects was kept: the newest saved projects
-            s.grab_recent = s.grab_projects.iter().rev().take(4).map(|p| p.opts.name.clone()).collect();
+            s.grab_recent = s
+                .grab_projects
+                .iter()
+                .rev()
+                .take(4)
+                .map(|p| p.opts.name.clone())
+                .collect();
         }
         if let Some(old) = s.old_max_active.take() {
             s.queues[0].max_active = old;
         }
-        let on_startup: BTreeSet<u32> = s.queues.iter().filter(|q| q.sched.on_startup).map(|q| q.id).collect();
+        let on_startup: BTreeSet<u32> = s
+            .queues
+            .iter()
+            .filter(|q| q.sched.on_startup)
+            .map(|q| q.id)
+            .collect();
         let jobs = saved
             .items
             .into_iter()
@@ -118,7 +144,8 @@ impl Core {
             items: self.jobs().iter().map(|j| j.info().clone()).collect(),
             next_id: self.next_id.load(Relaxed),
         };
-        let result = serde_json::to_vec_pretty(&saved).map_err(io::Error::other)
+        let result = serde_json::to_vec_pretty(&saved)
+            .map_err(io::Error::other)
             .and_then(|bytes| persist(&self.store, &bytes));
         match result {
             Ok(()) => *last_error = None,
@@ -137,7 +164,8 @@ impl Core {
 }
 
 fn read_saved(path: &Path) -> io::Result<Saved> {
-    serde_json::from_slice(&fs::read(path)?).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    serde_json::from_slice(&fs::read(path)?)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn preserve_unreadable(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -145,8 +173,10 @@ fn preserve_unreadable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     bad.push(".bad");
     let mut bad = PathBuf::from(bad);
     if bad.exists() {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().as_nanos();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         bad.set_extension(format!("bad.{stamp}"));
     }
     atomic_write(&bad, bytes)
@@ -168,9 +198,18 @@ fn load_saved(path: &Path) -> (Saved, Option<String>) {
         }
     }
     if let Ok(saved) = read_saved(&backup) {
-        return (saved, Some(crate::i18n::tr_os("The download list was recovered from its backup.")));
+        return (
+            saved,
+            Some(crate::i18n::tr_os(
+                "The download list was recovered from its backup.",
+            )),
+        );
     }
-    let fresh = primary.as_ref().err().is_some_and(|e| e.kind() == io::ErrorKind::NotFound) && !backup.exists();
+    let fresh = primary
+        .as_ref()
+        .err()
+        .is_some_and(|e| e.kind() == io::ErrorKind::NotFound)
+        && !backup.exists();
     let notice = (!fresh).then(|| crate::i18n::tr_os(
         "The saved download list could not be read. Check state.json and state.json.bak in NDM's settings folder. Unreadable files are preserved before a new list is saved.",
     ));
@@ -205,7 +244,7 @@ fn persist(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 #[cfg(test)]
 mod persistence_tests {
-    use super::{Core, Info, PathBuf, Saved, Settings, fs, load_saved, persist, read_saved};
+    use super::{fs, load_saved, persist, read_saved, Core, Info, PathBuf, Saved, Settings};
     use std::sync::{Arc, Barrier};
 
     fn store(label: &str) -> PathBuf {
@@ -217,10 +256,19 @@ mod persistence_tests {
 
     fn snapshot(name: &str) -> Vec<u8> {
         serde_json::to_vec_pretty(&Saved {
-            settings: Settings { user_agent: name.into(), ..Default::default() },
-            items: vec![Info { id: 42, name: "resume.zip".into(), etag: "original".into(), ..Default::default() }],
+            settings: Settings {
+                user_agent: name.into(),
+                ..Default::default()
+            },
+            items: vec![Info {
+                id: 42,
+                name: "resume.zip".into(),
+                etag: "original".into(),
+                ..Default::default()
+            }],
             next_id: 43,
-        }).unwrap()
+        })
+        .unwrap()
     }
 
     #[test]
@@ -232,11 +280,27 @@ mod persistence_tests {
         let (saved, notice) = load_saved(&path);
         assert!(notice.is_some());
         assert_eq!(saved.settings.user_agent, "first");
-        assert_eq!((saved.next_id, saved.items[0].id, saved.items[0].etag.as_str()), (43, 42, "original"));
-        assert_eq!(fs::read(path.with_extension("json.bad")).unwrap(), b"{interrupted");
+        assert_eq!(
+            (
+                saved.next_id,
+                saved.items[0].id,
+                saved.items[0].etag.as_str()
+            ),
+            (43, 42, "original")
+        );
+        assert_eq!(
+            fs::read(path.with_extension("json.bad")).unwrap(),
+            b"{interrupted"
+        );
         persist(&path, &serde_json::to_vec(&saved).unwrap()).unwrap();
         assert_eq!(read_saved(&path).unwrap().settings.user_agent, "first");
-        assert_eq!(read_saved(&path.with_extension("json.bak")).unwrap().settings.user_agent, "first");
+        assert_eq!(
+            read_saved(&path.with_extension("json.bak"))
+                .unwrap()
+                .settings
+                .user_agent,
+            "first"
+        );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -251,8 +315,14 @@ mod persistence_tests {
         fs::write(path.with_extension("json.bak"), b"invalid backup").unwrap();
         let (_, notice) = load_saved(&path);
         assert!(notice.is_some());
-        assert_eq!(fs::read(path.with_extension("json.bad")).unwrap(), b"invalid primary");
-        assert_eq!(fs::read(path.with_extension("json.bak.bad")).unwrap(), b"invalid backup");
+        assert_eq!(
+            fs::read(path.with_extension("json.bad")).unwrap(),
+            b"invalid primary"
+        );
+        assert_eq!(
+            fs::read(path.with_extension("json.bak.bad")).unwrap(),
+            b"invalid backup"
+        );
         persist(&path, &snapshot("new")).unwrap();
         assert_eq!(read_saved(&path).unwrap().settings.user_agent, "new");
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -266,9 +336,19 @@ mod persistence_tests {
         fs::create_dir(&path).unwrap();
         assert!(persist(&path, &snapshot("replacement")).is_err());
         assert!(crate::file_ops::atomic_write(&path, &snapshot("replacement")).is_err());
-        assert_eq!(read_saved(&path.with_extension("json.bak")).unwrap().settings.user_agent, "good");
+        assert_eq!(
+            read_saved(&path.with_extension("json.bak"))
+                .unwrap()
+                .settings
+                .user_agent,
+            "good"
+        );
         assert!(fs::read_dir(path.parent().unwrap()).unwrap().all(|entry| {
-            !entry.unwrap().file_name().to_string_lossy().ends_with(".tmp")
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
         }));
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -279,19 +359,23 @@ mod persistence_tests {
         let core = Core::from_saved(Saved::default(), path.clone());
         core.save();
         let barrier = Arc::new(Barrier::new(5));
-        let workers: Vec<_> = (0..4).map(|writer| {
-            let (core, barrier, path) = (core.clone(), barrier.clone(), path.clone());
-            std::thread::spawn(move || {
-                barrier.wait();
-                for sequence in 0..8 {
-                    core.settings().user_agent = format!("writer-{writer}-{sequence}");
-                    core.save();
-                    assert!(read_saved(&path).is_ok());
-                }
+        let workers: Vec<_> = (0..4)
+            .map(|writer| {
+                let (core, barrier, path) = (core.clone(), barrier.clone(), path.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for sequence in 0..8 {
+                        core.settings().user_agent = format!("writer-{writer}-{sequence}");
+                        core.save();
+                        assert!(read_saved(&path).is_ok());
+                    }
+                })
             })
-        }).collect();
+            .collect();
         barrier.wait();
-        for worker in workers { worker.join().unwrap(); }
+        for worker in workers {
+            worker.join().unwrap();
+        }
         assert!(core.state_notice.lock().unwrap().is_none());
         assert!(read_saved(&path).is_ok());
         assert!(read_saved(&path.with_extension("json.bak")).is_ok());

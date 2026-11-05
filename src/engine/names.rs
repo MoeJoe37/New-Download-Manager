@@ -1,8 +1,13 @@
-use crate::engine::{File, Path, Read, pct_decode, strip_ci};
+use crate::engine::{pct_decode, strip_ci, File, Path, Read};
 
 /// The file type a Content-Type names, as an extension (None: not a type NDM files by).
 pub fn mime_ext(ct: &str) -> Option<&'static str> {
-    let m = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let m = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     Some(match m.as_str() {
         "video/mp4" => "mp4",
         "video/webm" => "webm",
@@ -26,7 +31,9 @@ pub fn mime_ext(ct: &str) -> Option<&'static str> {
         "application/gzip" | "application/x-gzip" => "gz",
         "application/x-tar" => "tar",
         "application/x-iso9660-image" => "iso",
-        "application/x-msdownload" | "application/x-msdos-program" | "application/vnd.microsoft.portable-executable" => "exe",
+        "application/x-msdownload"
+        | "application/x-msdos-program"
+        | "application/vnd.microsoft.portable-executable" => "exe",
         "application/x-msi" | "application/x-ms-installer" => "msi",
         "application/vnd.android.package-archive" => "apk",
         "application/x-apple-diskimage" => "dmg",
@@ -50,9 +57,18 @@ pub fn mime_ext(ct: &str) -> Option<&'static str> {
 /// A name that says what the file is: one with no extension, or a script's (download.php, get.aspx...),
 /// takes the type's extension.
 pub fn typed_name(name: &str, ext: Option<&str>) -> String {
-    let Some(ext) = ext else { return name.to_string() };
-    let (stem, cur) = name.rsplit_once('.').filter(|(s, e)| !s.is_empty() && e.len() <= 5 && !e.contains(' ')).unwrap_or((name, ""));
-    let script = ["", "php", "asp", "aspx", "jsp", "cgi", "do", "ashx", "pl", "py", "action", "bin", "dat", "tmp"].contains(&cur.to_ascii_lowercase().as_str());
+    let Some(ext) = ext else {
+        return name.to_string();
+    };
+    let (stem, cur) = name
+        .rsplit_once('.')
+        .filter(|(s, e)| !s.is_empty() && e.len() <= 5 && !e.contains(' '))
+        .unwrap_or((name, ""));
+    let script = [
+        "", "php", "asp", "aspx", "jsp", "cgi", "do", "ashx", "pl", "py", "action", "bin", "dat",
+        "tmp",
+    ]
+    .contains(&cur.to_ascii_lowercase().as_str());
     if !script || cur.eq_ignore_ascii_case(ext) {
         return name.to_string();
     }
@@ -60,10 +76,15 @@ pub fn typed_name(name: &str, ext: Option<&str>) -> String {
 }
 
 pub(crate) fn media_name(name: &str, actual: &str) -> String {
-    const CONTAINERS: &[&str] = &["ts", "mp4", "m4a", "mkv", "webm", "mov", "avi", "flv", "3gp"];
+    const CONTAINERS: &[&str] = &[
+        "ts", "mp4", "m4a", "mkv", "webm", "mov", "avi", "flv", "3gp",
+    ];
     let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
-    if CONTAINERS.contains(&actual) && CONTAINERS.contains(&ext.to_ascii_lowercase().as_str())
-        && !ext.eq_ignore_ascii_case(actual) && !(actual == "mp4" && ext.eq_ignore_ascii_case("m4a")) {
+    if CONTAINERS.contains(&actual)
+        && CONTAINERS.contains(&ext.to_ascii_lowercase().as_str())
+        && !ext.eq_ignore_ascii_case(actual)
+        && !(actual == "mp4" && ext.eq_ignore_ascii_case("m4a"))
+    {
         format!("{stem}.{actual}")
     } else {
         typed_name(name, Some(actual))
@@ -84,7 +105,11 @@ pub fn sniff(path: &Path) -> Option<&'static str> {
             _ => "mp4",
         }
     } else if at(0, &[0x1A, 0x45, 0xDF, 0xA3]) {
-        if d.windows(4).any(|w| w == b"webm") { "webm" } else { "mkv" }
+        if d.windows(4).any(|w| w == b"webm") {
+            "webm"
+        } else {
+            "mkv"
+        }
     } else if at(0, b"ID3") || (d.len() > 1 && d[0] == 0xFF && matches!(d[1], 0xFB | 0xF3 | 0xF2)) {
         "mp3"
     } else if at(0, b"OggS") {
@@ -142,13 +167,31 @@ pub fn disposition_name(h: &str) -> Option<String> {
 pub fn url_name(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or("");
     let path = path.split_once("://").map_or(path, |(_, rest)| rest);
-    path.split_once('/').map_or("", |(_, p)| p).rsplit('/').next().map(pct_decode).unwrap_or_default()
+    path.split_once('/')
+        .map_or("", |(_, p)| p)
+        .rsplit('/')
+        .next()
+        .map(pct_decode)
+        .unwrap_or_default()
 }
 
 pub fn sanitize(name: &str) -> String {
-    let s: String = name.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if r#"\/:*?"<>|"#.contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
     let s = s.trim_matches([' ', '.']);
-    if s.is_empty() { "download".into() } else { s.into() }
+    if s.is_empty() {
+        "download".into()
+    } else {
+        s.into()
+    }
 }
 
 /// `name`, or `name (1).ext`, `name (2).ext`... whichever is free in `folder`.
@@ -164,5 +207,8 @@ pub fn unique_name(folder: &str, name: &str, taken: &dyn Fn(&str) -> bool) -> St
         Some(i) if i > 0 => (&name[..i], &name[i..]),
         _ => (name, ""),
     };
-    (1..).map(|i| format!("{stem} ({i}){ext}")).find(|n| free(n)).unwrap()
+    (1..)
+        .map(|i| format!("{stem} ({i}){ext}"))
+        .find(|n| free(n))
+        .unwrap()
 }

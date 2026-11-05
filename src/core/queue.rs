@@ -1,4 +1,7 @@
-use crate::core::{Arc, Core, Deserialize, Duration, Instant, Job, Local, Relaxed, Serialize, Settings, Status, engine, thread};
+use crate::core::{
+    engine, thread, Arc, Core, Deserialize, Duration, Instant, Job, Local, Relaxed, Serialize,
+    Settings, Status,
+};
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -77,14 +80,28 @@ pub struct Queue {
 
 impl Default for Queue {
     fn default() -> Self {
-        Queue { id: MAIN_QUEUE, name: "Main download queue".into(), sched: Sched::default(), max_active: 3, sync: false, fixed: false, limit_kb: 0 }
+        Queue {
+            id: MAIN_QUEUE,
+            name: "Main download queue".into(),
+            sched: Sched::default(),
+            max_active: 3,
+            sync: false,
+            fixed: false,
+            limit_kb: 0,
+        }
     }
 }
 
 impl Queue {
     /// NDM's built-in second queue.
     pub(super) fn sync_default(id: u32) -> Queue {
-        Queue { id, name: "Synchronization queue".into(), sync: true, fixed: true, ..Default::default() }
+        Queue {
+            id,
+            name: "Synchronization queue".into(),
+            sync: true,
+            fixed: true,
+            ..Default::default()
+        }
     }
 
     /// Main and synchronization queues are built in: they can't be deleted or change type.
@@ -111,12 +128,21 @@ pub fn quota_bytes(mb: u64) -> u64 {
 
 /// Whether `t` is in [from, to); a window that ends before it starts runs past midnight.
 pub fn in_window(t: chrono::NaiveTime, from: chrono::NaiveTime, to: chrono::NaiveTime) -> bool {
-    if from <= to { from <= t && t < to } else { t >= from || t < to }
+    if from <= to {
+        from <= t && t < to
+    } else {
+        t >= from || t < to
+    }
 }
 
 /// A queued download's rate in bytes/s: its own limit and its queue's, the lower one (KB/s, 0: none).
 pub(super) fn queue_rate(own_kb: u64, queue_kb: u64) -> u64 {
-    [own_kb, queue_kb].into_iter().filter(|rate| *rate > 0).min().unwrap_or(0).saturating_mul(1024)
+    [own_kb, queue_kb]
+        .into_iter()
+        .filter(|rate| *rate > 0)
+        .min()
+        .unwrap_or(0)
+        .saturating_mul(1024)
 }
 
 #[test]
@@ -150,7 +176,9 @@ impl Core {
         } else {
             0
         };
-        job.limiter.rate.store(queue_rate(own, queue_limit), Relaxed);
+        job.limiter
+            .rate
+            .store(queue_rate(own, queue_limit), Relaxed);
     }
 
     pub fn queue_running(&self, q: u32) -> bool {
@@ -194,8 +222,16 @@ impl Core {
     pub fn add_queue(&self, name: &str) -> u32 {
         let mut s = self.settings();
         let id = s.queues.iter().map(|q| q.id).max().unwrap_or(0) + 1;
-        let name = if name.trim().is_empty() { format!("Queue # {id}") } else { name.trim().to_string() };
-        s.queues.push(Queue { id, name, ..Default::default() });
+        let name = if name.trim().is_empty() {
+            format!("Queue # {id}")
+        } else {
+            name.trim().to_string()
+        };
+        s.queues.push(Queue {
+            id,
+            name,
+            ..Default::default()
+        });
         id
     }
 
@@ -232,7 +268,12 @@ impl Core {
     pub(super) fn tick_quota(self: &Arc<Self>) {
         let (on, mb, hours, warn) = {
             let s = self.settings();
-            (s.quota_on, s.quota_mb, s.quota_hours.clamp(1, 23), s.quota_warn)
+            (
+                s.quota_on,
+                s.quota_mb,
+                s.quota_hours.clamp(1, 23),
+                s.quota_warn,
+            )
         };
         let now = Local::now();
         let got = self.limiter.received.load(Relaxed);
@@ -249,18 +290,30 @@ impl Core {
             q.start = Some((now, got));
             if let Some((_, ids)) = q.stopped.take() {
                 drop(q);
-                ids.iter().filter_map(|id| self.find(*id)).for_each(|j| self.start(&j));
+                ids.iter()
+                    .filter_map(|id| self.find(*id))
+                    .for_each(|j| self.start(&j));
             }
             return;
         }
         if q.stopped.is_some() {
             // keep everything stopped until the window ends (a manual resume is stopped again)
-            self.jobs().iter().filter(|j| j.running()).for_each(|j| j.stop());
+            self.jobs()
+                .iter()
+                .filter(|j| j.running())
+                .for_each(|j| j.stop());
             return;
         }
         if got.saturating_sub(base) >= quota_bytes(mb) {
-            let ids: Vec<u64> = self.jobs().iter().filter(|j| j.running()).map(|j| j.info().id).collect();
-            ids.iter().filter_map(|id| self.find(*id)).for_each(|j| j.stop());
+            let ids: Vec<u64> = self
+                .jobs()
+                .iter()
+                .filter(|j| j.running())
+                .map(|j| j.info().id)
+                .collect();
+            ids.iter()
+                .filter_map(|id| self.find(*id))
+                .for_each(|j| j.stop());
             q.stopped = Some((end, ids));
             if warn {
                 let hm = |t: chrono::DateTime<Local>| t.format("%H:%M").to_string();
@@ -284,18 +337,34 @@ impl Core {
         let running: Vec<u32> = self.running.lock().unwrap().iter().copied().collect();
         let jobs = self.jobs();
         for q in running {
-            let (max, retries, sync, again, limit) = self.settings().queue(q).map_or((1, 0, false, None, 0), |x| {
-                let again = Some(x.sched.again_h as u64 * 3600 + x.sched.again_m as u64 * 60).filter(|s| x.sync && x.sched.again_on && *s > 0);
-                (x.max_active.max(1), if x.sched.retry_on { x.sched.retries } else { 0 }, x.sync, again, x.limit_kb)
-            });
-            let mine: Vec<&Arc<Job>> = jobs.iter().filter(|j| {
-                let i = j.info();
-                i.queued && i.queue == q
-            }).collect();
+            let (max, retries, sync, again, limit) =
+                self.settings()
+                    .queue(q)
+                    .map_or((1, 0, false, None, 0), |x| {
+                        let again =
+                            Some(x.sched.again_h as u64 * 3600 + x.sched.again_m as u64 * 60)
+                                .filter(|s| x.sync && x.sched.again_on && *s > 0);
+                        (
+                            x.max_active.max(1),
+                            if x.sched.retry_on { x.sched.retries } else { 0 },
+                            x.sync,
+                            again,
+                            x.limit_kb,
+                        )
+                    });
+            let mine: Vec<&Arc<Job>> = jobs
+                .iter()
+                .filter(|j| {
+                    let i = j.info();
+                    i.queued && i.queue == q
+                })
+                .collect();
             for j in &mine {
                 let info = j.info();
                 if info.queued && info.queue == q {
-                    j.limiter.rate.store(queue_rate(info.limit_kb, limit), Relaxed);
+                    j.limiter
+                        .rate
+                        .store(queue_rate(info.limit_kb, limit), Relaxed);
                 }
             }
             let mut active = mine.iter().filter(|j| j.running()).count();
@@ -305,12 +374,19 @@ impl Core {
                 // failed after the queue's retries: the user decides
                 let failed = matches!(&status, Status::Error(error) if engine::range::permanent_error(error) || j.fails.load(Relaxed) > retries);
                 let id = j.info().id;
-                if status == Status::Complete && sync && !self.synced.lock().unwrap().contains_key(&id) {
+                if status == Status::Complete
+                    && sync
+                    && !self.synced.lock().unwrap().contains_key(&id)
+                {
                     // synchronization: ask the server whether the file changed (size or date); if so it is
                     // downloaded again on a later tick
                     self.synced.lock().unwrap().insert(id, q);
                     self.checking.lock().unwrap().insert(id);
-                    let (j, agent, checking) = ((*j).clone(), self.agent(&j.info().url), self.checking.clone());
+                    let (j, agent, checking) = (
+                        (*j).clone(),
+                        self.agent(&j.info().url),
+                        self.checking.clone(),
+                    );
                     thread::spawn(move || {
                         let (url, referrer, cookies) = {
                             let i = j.info();
@@ -318,7 +394,11 @@ impl Core {
                         };
                         if let Ok(p) = engine::probe::probe(&agent, &url, &referrer, &cookies) {
                             let i = j.info().clone();
-                            if p.size != i.size || (!p.etag.is_empty() && !i.etag.is_empty() && p.etag != i.etag) || (!p.modified.is_empty() && p.modified != i.modified) || !i.path().exists() {
+                            if p.size != i.size
+                                || (!p.etag.is_empty() && !i.etag.is_empty() && p.etag != i.etag)
+                                || (!p.modified.is_empty() && p.modified != i.modified)
+                                || !i.path().exists()
+                            {
                                 j.reset();
                             }
                         }
@@ -333,7 +413,11 @@ impl Core {
                     continue;
                 }
                 // a failed one waits before its next try (it still counts as pending)
-                let waiting = matches!(status, Status::Error(_)) && j.failed_at.lock().unwrap().is_some_and(|t| t.elapsed() < engine::retry_wait(j.fails.load(Relaxed)));
+                let waiting = matches!(status, Status::Error(_))
+                    && j.failed_at
+                        .lock()
+                        .unwrap()
+                        .is_some_and(|t| t.elapsed() < engine::retry_wait(j.fails.load(Relaxed)));
                 if waiting {
                     pending = true;
                     continue;
@@ -346,7 +430,10 @@ impl Core {
             }
             if !pending && active == 0 {
                 if let Some(secs) = again {
-                    self.again.lock().unwrap().insert(q, Instant::now() + Duration::from_secs(secs));
+                    self.again
+                        .lock()
+                        .unwrap()
+                        .insert(q, Instant::now() + Duration::from_secs(secs));
                 }
                 self.running.lock().unwrap().remove(&q);
                 self.queue_finished.lock().unwrap().push(q);
@@ -359,7 +446,11 @@ impl Core {
     pub(super) fn tick_sounds(&self) {
         for j in self.jobs() {
             if j.ended.swap(false, Relaxed) {
-                self.sound(if j.info().status == Status::Complete { 0 } else { 1 });
+                self.sound(if j.info().status == Status::Complete {
+                    0
+                } else {
+                    1
+                });
             }
         }
     }
@@ -411,11 +502,18 @@ impl Core {
         }
         let due: Vec<u32> = {
             let mut again = self.again.lock().unwrap();
-            let due = again.iter().filter(|(_, t)| **t <= Instant::now()).map(|(q, _)| *q).collect::<Vec<_>>();
+            let due = again
+                .iter()
+                .filter(|(_, t)| **t <= Instant::now())
+                .map(|(q, _)| *q)
+                .collect::<Vec<_>>();
             due.iter().for_each(|q| _ = again.remove(q));
             due
         };
-        start.into_iter().chain(due).for_each(|q| self.start_queue(q));
+        start
+            .into_iter()
+            .chain(due)
+            .for_each(|q| self.start_queue(q));
         stop.into_iter().for_each(|q| self.stop_queue(q));
     }
 }

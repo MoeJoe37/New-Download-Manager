@@ -90,7 +90,10 @@ pub(super) fn sps_size(sps: &[u8]) -> (u16, u16) {
     };
     let width = (w * 16).saturating_sub((cl + cr) * sx);
     let height = ((2 - frame_mbs_only) * h * 16).saturating_sub((ct + cb) * sy);
-    (width.min(u16::MAX as u32) as u16, height.min(u16::MAX as u32) as u16)
+    (
+        width.min(u16::MAX as u32) as u16,
+        height.min(u16::MAX as u32) as u16,
+    )
 }
 
 // ---------------------------------------------------------------- H.265
@@ -142,7 +145,14 @@ pub(super) fn hevc_sps(sps: &[u8]) -> HevcSps {
         h = h.saturating_sub(sh * (t + bo));
     }
     let depth = (b.ue(), b.ue());
-    HevcSps { size: (w.min(65535) as u16, h.min(65535) as u16), ptl, chroma, depth, layers: msl + 1, nested }
+    HevcSps {
+        size: (w.min(65535) as u16, h.min(65535) as u16),
+        ptl,
+        chroma,
+        depth,
+        layers: msl + 1,
+        nested,
+    }
 }
 
 /// `hvc1` sample entry with its HEVCDecoderConfigurationRecord (ISO/IEC 14496-15 8.3.3).
@@ -150,7 +160,16 @@ pub(super) fn hvc1(vps: &[u8], sps: &[u8], pps: &[u8]) -> (Vec<u8>, (u16, u16)) 
     let s = hevc_sps(sps);
     let mut c = vec![1];
     c.extend_from_slice(&s.ptl);
-    c.extend([0xf0, 0x00, 0xfc, 0xfc | s.chroma as u8, 0xf8 | s.depth.0 as u8, 0xf8 | s.depth.1 as u8, 0, 0]);
+    c.extend([
+        0xf0,
+        0x00,
+        0xfc,
+        0xfc | s.chroma as u8,
+        0xf8 | s.depth.0 as u8,
+        0xf8 | s.depth.1 as u8,
+        0,
+        0,
+    ]);
     c.push(((s.layers & 7) << 3 | (s.nested & 1) << 2 | 3) as u8);
     c.push(3);
     for (ty, nal) in [(32u8, vps), (33, sps), (34, pps)] {
@@ -171,8 +190,15 @@ fn start_codes(d: &[u8]) -> impl Iterator<Item = usize> + '_ {
 /// The sequence header with its extensions (the decoder config) and the picture size.
 pub(super) fn mpeg2_seq(d: &[u8]) -> Option<(Vec<u8>, (u16, u16))> {
     let s = start_codes(d).find(|&i| d.get(i + 3) == Some(&0xb3))?;
-    let (a, b, c) = (*d.get(s + 4)? as u16, *d.get(s + 5)? as u16, *d.get(s + 6)? as u16);
-    let end = start_codes(d).filter(|&i| i > s).find(|&i| d.get(i + 3) != Some(&0xb5)).unwrap_or(d.len());
+    let (a, b, c) = (
+        *d.get(s + 4)? as u16,
+        *d.get(s + 5)? as u16,
+        *d.get(s + 6)? as u16,
+    );
+    let end = start_codes(d)
+        .filter(|&i| i > s)
+        .find(|&i| d.get(i + 3) != Some(&0xb5))
+        .unwrap_or(d.len());
     Some((d[s..end].to_vec(), (a << 4 | b >> 4, (b & 0x0f) << 8 | c)))
 }
 

@@ -49,7 +49,11 @@ struct Ts {
 const OPUS: u8 = 0xd0;
 
 fn pts_at(b: &[u8]) -> i64 {
-    ((b[0] as i64 >> 1) & 7) << 30 | (b[1] as i64) << 22 | (b[2] as i64 >> 1) << 15 | (b[3] as i64) << 7 | b[4] as i64 >> 1
+    ((b[0] as i64 >> 1) & 7) << 30
+        | (b[1] as i64) << 22
+        | (b[2] as i64 >> 1) << 15
+        | (b[3] as i64) << 7
+        | b[4] as i64 >> 1
 }
 
 enum Pes {
@@ -99,20 +103,35 @@ impl Ts {
             let len = (((s[1] as usize & 0x0f) << 8) | s[2] as usize).min(s.len() - 3);
             let end = 3 + len.saturating_sub(4); // before the CRC
             if pid == 0 {
-                self.pmt = s[8..end].chunks(4).find(|e| e.len() == 4 && (e[0], e[1]) != (0, 0)).map(|e| ((e[2] as u16 & 0x1f) << 8) | e[3] as u16);
+                self.pmt = s[8..end]
+                    .chunks(4)
+                    .find(|e| e.len() == 4 && (e[0], e[1]) != (0, 0))
+                    .map(|e| ((e[2] as u16 & 0x1f) << 8) | e[3] as u16);
             } else {
                 let mut k = 12 + (((s[10] as usize & 0x0f) << 8) | s[11] as usize);
                 while k + 5 <= end {
                     let (mut ty, es) = (s[k], ((s[k + 1] as u16 & 0x1f) << 8) | s[k + 2] as u16);
-                    let info = (((s[k + 3] as usize & 0x0f) << 8) | s[k + 4] as usize).min(end.saturating_sub(k + 5));
+                    let info = (((s[k + 3] as usize & 0x0f) << 8) | s[k + 4] as usize)
+                        .min(end.saturating_sub(k + 5));
                     let descs = &s[k + 5..k + 5 + info];
-                    if ty == 0x06 && descs.windows(6).any(|w| w == [0x05, 4, b'O', b'p', b'u', b's']) {
+                    if ty == 0x06
+                        && descs
+                            .windows(6)
+                            .any(|w| w == [0x05, 4, b'O', b'p', b'u', b's'])
+                    {
                         ty = OPUS;
-                        self.opus = descs.windows(4).find(|w| w[0] == 0x7f && w[2] == 0x80).map_or(2, |w| w[3]);
+                        self.opus = descs
+                            .windows(4)
+                            .find(|w| w[0] == 0x7f && w[2] == 0x80)
+                            .map_or(2, |w| w[3]);
                     }
-                    if [0x01, 0x02, 0x10, 0x1b, 0x24, 0x42, 0xea].contains(&ty) && self.video.is_none() {
+                    if [0x01, 0x02, 0x10, 0x1b, 0x24, 0x42, 0xea].contains(&ty)
+                        && self.video.is_none()
+                    {
                         self.video = Some((es, ty));
-                    } else if [0x03, 0x04, 0x0f, 0x11, 0x81, 0x87, OPUS].contains(&ty) && self.audio.is_none() {
+                    } else if [0x03, 0x04, 0x0f, 0x11, 0x81, 0x87, OPUS].contains(&ty)
+                        && self.audio.is_none()
+                    {
                         self.audio = Some((es, ty));
                     }
                     k += 5 + (((s[k + 3] as usize & 0x0f) << 8) | s[k + 4] as usize);
@@ -133,7 +152,9 @@ impl Ts {
     }
 
     fn flush(&mut self, pid: u16, out: &mut Vec<Pes>) {
-        let Some(b) = self.pes.remove(&pid) else { return };
+        let Some(b) = self.pes.remove(&pid) else {
+            return;
+        };
         if b.len() < 9 || b[..3] != [0, 0, 1] {
             return;
         }
@@ -149,9 +170,16 @@ impl Ts {
             let Some(p) = pts else { return };
             let d = self.uv.0.fix(dts.unwrap_or(p));
             let p = self.uv.1.fix(p).max(d);
-            out.push(Pes::Video { pts: p, dts: d, data });
+            out.push(Pes::Video {
+                pts: p,
+                dts: d,
+                data,
+            });
         } else {
-            out.push(Pes::Audio { pts: pts.map(|p| self.ua.fix(p)), data });
+            out.push(Pes::Audio {
+                pts: pts.map(|p| self.ua.fix(p)),
+                data,
+            });
         }
     }
 
@@ -182,9 +210,13 @@ impl Src<'_> {
                     let p = p?;
                     if p.first() == Some(&0x47) {
                         self.ts.feed(&p, &mut pes);
-                        let bad = |s: Option<(u16, u8)>, ok: &[u8]| s.is_some_and(|s| !ok.contains(&s.1));
+                        let bad =
+                            |s: Option<(u16, u8)>, ok: &[u8]| s.is_some_and(|s| !ok.contains(&s.1));
                         // H.264, H.265, MPEG-1/2 video; AAC, MPEG-1/2 audio, AC-3, E-AC-3, Opus
-                        if (self.video && bad(self.ts.video, &[0x1b, 0x24, 0x01, 0x02])) || (self.audio && bad(self.ts.audio, &[0x0f, 0x03, 0x04, 0x81, 0x87, OPUS])) {
+                        if (self.video && bad(self.ts.video, &[0x1b, 0x24, 0x01, 0x02]))
+                            || (self.audio
+                                && bad(self.ts.audio, &[0x0f, 0x03, 0x04, 0x81, 0x87, OPUS]))
+                        {
                             return Err(UNSUPPORTED.into());
                         }
                     } else if self.video {
@@ -194,7 +226,8 @@ impl Src<'_> {
                         if rest.len() >= 8 && audio_frame(rest).is_none() {
                             return Err(UNSUPPORTED.into()); // not AAC, MP3 or AC-3
                         }
-                        self.adts.push(ts.map(|t| self.ts.ua.fix(t)), rest, &mut self.q);
+                        self.adts
+                            .push(ts.map(|t| self.ts.ua.fix(t)), rest, &mut self.q);
                     }
                 }
                 None => {
@@ -206,10 +239,24 @@ impl Src<'_> {
                 match e {
                     Pes::Video { pts, dts, data } if self.video => {
                         let codec = self.ts.video.map_or(0x1b, |v| v.1);
-                        self.q.push_back(Sample { audio: false, data, dts, pts, entry: None, dur: 0, codec })
+                        self.q.push_back(Sample {
+                            audio: false,
+                            data,
+                            dts,
+                            pts,
+                            entry: None,
+                            dur: 0,
+                            codec,
+                        })
                     }
-                    Pes::Audio { pts, data } if self.audio && self.ts.audio.is_some_and(|a| a.1 == OPUS) => self.adts.push_opus(pts, &data, self.ts.opus, &mut self.q),
-                    Pes::Audio { pts, data } if self.audio => self.adts.push(pts, &data, &mut self.q),
+                    Pes::Audio { pts, data }
+                        if self.audio && self.ts.audio.is_some_and(|a| a.1 == OPUS) =>
+                    {
+                        self.adts.push_opus(pts, &data, self.ts.opus, &mut self.q)
+                    }
+                    Pes::Audio { pts, data } if self.audio => {
+                        self.adts.push(pts, &data, &mut self.q)
+                    }
                     _ => {}
                 }
             }
@@ -219,11 +266,23 @@ impl Src<'_> {
 }
 
 /// HLS MPEG-TS video (H.264 / H.265 / MPEG-2, with its own audio or a separate rendition: TS or packed audio) -> MP4.
-pub fn ts_to_mp4<'a>(video: Pieces<'a>, audio: Option<Pieces<'a>>, out: &Path) -> Result<bool, String> {
+pub fn ts_to_mp4<'a>(
+    video: Pieces<'a>,
+    audio: Option<Pieces<'a>>,
+    out: &Path,
+) -> Result<bool, String> {
     let r = (|| {
         let mut w = Mp4::create(out)?;
         let sep = audio.is_some();
-        let src = |pieces, video, audio| Src { pieces, ts: Ts::default(), adts: Audio::default(), q: VecDeque::new(), video, audio, done: false };
+        let src = |pieces, video, audio| Src {
+            pieces,
+            ts: Ts::default(),
+            adts: Audio::default(),
+            q: VecDeque::new(),
+            video,
+            audio,
+            done: false,
+        };
         let mut srcs = vec![src(video, true, !sep)];
         if let Some(a) = audio {
             srcs.push(src(a, false, true));
@@ -233,7 +292,12 @@ pub fn ts_to_mp4<'a>(video: Pieces<'a>, audio: Option<Pieces<'a>>, out: &Path) -
                 s.fill()?;
             }
             // interleave by time
-            let Some(k) = (0..srcs.len()).filter(|k| !srcs[*k].q.is_empty()).min_by_key(|k| srcs[*k].q[0].dts) else { break };
+            let Some(k) = (0..srcs.len())
+                .filter(|k| !srcs[*k].q.is_empty())
+                .min_by_key(|k| srcs[*k].q[0].dts)
+            else {
+                break;
+            };
             let s = srcs[k].q.pop_front().unwrap();
             w.add(s)?;
         }
