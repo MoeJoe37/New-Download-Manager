@@ -60,6 +60,7 @@ NOT_UI = re.compile(
     r"|^(access is denied|authentication required|could not join video and audio|disk full|login required"
     r"|needs ffmpeg|no space left|partial download is shorter|permission denied|proxy authentication"
     r"|read-only file system|requires ffmpeg|saved download ranges are invalid|set yt-dlp)$"
+    r"|^(AppData/Roaming|Naver/Naver Whale/Application|IsRelative|Profile|Profiles|ProgramFiles(?:\(x86\))?)$"
     r"|^&(gt|lt|nbsp|quot);$|^SHA256 \($"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
 )
@@ -82,6 +83,8 @@ EXTRA += ["Main download queue", "Synchronization queue", "%b %d %H:%M:%S %Y"]
 EXTRA += ["Joining video and audio..."]
 # checkbox labels drawn with dlu::checkbox (Options -> Keyboard)
 EXTRA += ["Del"]
+# Dynamic installed-browser labels keep their existing translations.
+EXTRA += ["Chrome", "Edge", "Safari (macOS)"]
 # what NDM does after a download (Job::set_post, shown through Info::post)
 EXTRA += ["Joining the pieces...", "Getting the audio...", "Moving the file to its folder...", "Processing...", "Processing"]
 EXTRA += ["HTTP/1.1...", "HTTP/1.1 hosts"]

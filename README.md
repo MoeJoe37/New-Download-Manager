@@ -187,9 +187,12 @@ Select the videos you want and choose **Queue selected videos**. NDM lists up to
 positions and resolves each queued video separately when its download starts. Each output name includes
 its NDM job ID so videos with the same title can run concurrently.
 
-Public access is the default. For a playlist or video that requires sign-in, explicitly choose a browser
-whose default profile can open it. yt-dlp loads that profile separately for each lookup and applies its
-cookie scopes. Browser profile access depends on the browser and operating system. Some browsers must be
+Public access is the default. The browser picker lists only supported browsers whose installed
+executables NDM detects when the dialog opens. For a playlist or video that requires sign-in, choose
+one of those browsers. Zen, Waterfox, LibreWolf and Floorp use their own Firefox-compatible profiles;
+Chrome, Edge, Chromium, Brave, Vivaldi, Opera and Whale use yt-dlp's corresponding cookie source.
+Safari is offered only on macOS. yt-dlp loads the cookies separately for each lookup and queued video,
+with their domain and path scopes. Browser profile access depends on the browser and operating system. Some browsers must be
 closed before yt-dlp can read their profile.
 
 ### Checksum verification and diagnostic reports

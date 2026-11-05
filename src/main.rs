@@ -3,6 +3,7 @@
 // its state in a few nested shared structures. Those two lints would only rename that.
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 mod app;
+mod browsers;
 mod checksum;
 mod core;
 mod diagnostics;

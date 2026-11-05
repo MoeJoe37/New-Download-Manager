@@ -15,14 +15,24 @@ pub fn installed_browsers() -> Vec<(String, String)> {
         ("Vivaldi", "Vivaldi.app", "Vivaldi"),
         ("Opera", "Opera.app", "Opera"),
         ("Mozilla Firefox", "Firefox.app", "firefox"),
+        ("Zen", "Zen.app", "zen"),
+        ("Waterfox", "Waterfox.app", "waterfox"),
+        ("LibreWolf", "LibreWolf.app", "librewolf"),
+        ("Floorp", "Floorp.app", "floorp"),
+        ("Whale", "Whale.app", "Whale"),
+        ("Safari", "Safari.app", "Safari"),
     ];
-    let dirs = [PathBuf::from("/Applications"), home().join("Applications")];
+    let dirs = [
+        PathBuf::from("/Applications"),
+        home().join("Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
     known
         .iter()
         .filter_map(|(name, app, bin)| {
             dirs.iter()
                 .map(|d| d.join(app).join("Contents/MacOS").join(bin))
-                .find(|p| p.is_file())
+                .find(|p| crate::browsers::executable_exists(p))
                 .map(|p| (name.to_string(), p.display().to_string()))
         })
         .collect()

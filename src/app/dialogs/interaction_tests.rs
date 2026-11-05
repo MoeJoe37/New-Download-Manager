@@ -1,4 +1,4 @@
-use super::{App, Dialog};
+use super::{App, Dialog, PlaylistPicker};
 use crate::app::resources::apply_style;
 use crate::app::{dlu, egui, i18n, Core, Incoming, Info, Status};
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, Vec2};
@@ -361,5 +361,46 @@ fn desktop_interactions() {
     assert_eq!(desktop.app.refreshing, Some(recovery_id));
     assert_eq!(recoverable.info().yt.quality, "720");
     assert_eq!(std::fs::read(&part).unwrap(), b"partial");
+    let mut playlist = Dialog::Playlist(Box::new(PlaylistPicker {
+        browsers: vec![crate::browsers::CookieBrowser {
+            id: "zen",
+            label: "Zen",
+        }],
+        ..Default::default()
+    }));
+    assert!(desktop.click(&mut playlist, "Public access"));
+    let (labels, _) = desktop.frame(&mut playlist, vec![]);
+    assert!(labels.contains_key("Zen"));
+    assert!(!labels.contains_key("Chrome"));
+    assert!(!labels.contains_key("Firefox"));
+    assert!(!labels.contains_key("Safari (macOS)"));
+    assert!(desktop.click(&mut playlist, "Zen"));
+    let (labels, _) = desktop.frame(&mut playlist, vec![]);
+    assert!(
+        !labels.contains_key("Public access"),
+        "browser picker stayed open"
+    );
+    if let Dialog::Playlist(pick) = &mut playlist {
+        assert_eq!(pick.browser, "zen");
+        pick.list = Some(crate::ytdlp::playlist::Playlist {
+            entries: vec![crate::ytdlp::playlist::PlaylistEntry {
+                url: "https://example.test/playlist-video".into(),
+                title: "A video".into(),
+            }],
+            limited: false,
+        });
+        pick.selected = vec![true];
+    }
+    assert!(!desktop.click(&mut playlist, "Queue selected videos"));
+    let queued = core
+        .jobs()
+        .iter()
+        .find(|job| job.info().url == "https://example.test/playlist-video")
+        .unwrap()
+        .info()
+        .clone();
+    assert_eq!(queued.yt.browser, "zen");
+    assert!(queued.yt.playlist_entry);
+    assert!(queued.queued);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -7,6 +7,7 @@ module's dependencies are visible at the top of its file.
 | Module | Owns | Main callers |
 | --- | --- | --- |
 | `startup` | Arguments, single instance, renderer fallback and process startup | `main` |
+| `browsers` | Installed cookie-source identities and Firefox-derivative profile locations | Platform discovery, playlist UI and yt-dlp |
 | `app` | Desktop state, events, windows and user actions | `startup` |
 | `app::dialogs` | Dialog routing, lifetime, layout and feature-specific forms | `app` |
 | `app::dialogs::download`, `progress`, `recovery` | Add/refresh forms, transfer status and error recovery | Dialog router |

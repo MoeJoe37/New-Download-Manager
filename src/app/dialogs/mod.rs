@@ -32,6 +32,7 @@ pub(super) type ProbeSlot = Arc<Mutex<Option<Result<Probe, String>>>>;
 pub(super) struct PlaylistPicker {
     url: String,
     browser: String,
+    browsers: Vec<crate::browsers::CookieBrowser>,
     pending: Option<PlaylistLookup>,
     list: Option<ytdlp::playlist::Playlist>,
     selected: Vec<bool>,
@@ -41,6 +42,7 @@ impl PlaylistPicker {
     pub(super) fn new(url: String) -> Self {
         Self {
             url,
+            browsers: crate::browsers::installed(&crate::win::installed_browsers()),
             ..Default::default()
         }
     }

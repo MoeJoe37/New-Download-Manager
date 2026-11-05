@@ -2,18 +2,6 @@ use crate::ytdlp::{command, last_error, output_with_timeout, yt_dlp, Job};
 
 pub const PLAYLIST_LIMIT: usize = 200;
 
-pub const PLAYLIST_BROWSERS: &[(&str, &str)] = &[
-    ("Public access", ""),
-    ("Firefox", "firefox"),
-    ("Chrome", "chrome"),
-    ("Edge", "edge"),
-    ("Chromium", "chromium"),
-    ("Brave", "brave"),
-    ("Vivaldi", "vivaldi"),
-    ("Opera", "opera"),
-    ("Safari (macOS)", "safari"),
-];
-
 pub struct PlaylistEntry {
     pub url: String,
     pub title: String,
@@ -38,11 +26,12 @@ pub fn playlist_url(text: &str) -> Option<String> {
 }
 
 pub(super) fn browser_args(args: &mut Vec<String>, browser: &str) -> Result<(), String> {
-    if !PLAYLIST_BROWSERS.iter().any(|(_, value)| *value == browser) {
-        return Err("Unsupported browser cookie source.".into());
-    }
-    if !browser.is_empty() {
-        args.extend(["--cookies-from-browser".into(), browser.into()]);
+    let source = crate::browsers::cookie_source(browser).map_err(|error| match error {
+        crate::browsers::CookieSourceError::Unsupported => "Unsupported browser cookie source.".to_string(),
+        crate::browsers::CookieSourceError::MissingProfile => crate::i18n::tr_os("No profile was found for the selected browser. Open it and sign in to the site, then try again."),
+    })?;
+    if !source.is_empty() {
+        args.extend(["--cookies-from-browser".into(), source]);
     }
     Ok(())
 }

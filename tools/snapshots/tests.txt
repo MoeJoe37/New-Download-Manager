@@ -21,6 +21,7 @@ dead_lane_doesnt_fail_download
 default_routes
 desktop_entry_quotes
 desktop_interactions (ignored)
+detects_executables_and_flatpak_exports_without_listing_leftover_profiles
 dialog_snapshots (ignored)
 domains
 download_limits
@@ -41,8 +42,10 @@ file_types
 find
 finished_files_are_typed
 firefox_cache_entry
+firefox_derivatives_use_their_own_default_profile_on_every_platform
 flat_playlist_filters_invalid_and_duplicate_links
 folder_update_replaces_files
+fork_profiles_support_flatpak_legacy_and_absolute_custom_locations
 formats_per_site
 found_streams_stay_plain
 fragment_write_failure_rolls_back_progress
@@ -60,6 +63,7 @@ host_dirs_cover_snap_firefox
 http_protocol_benchmark (ignored)
 https_connect_forwards_proxy_credentials_and_reports_407
 initial_full_response_is_downloaded_once_without_splitting
+installed_sources_exclude_missing_browsers_and_deduplicate_inventory
 installs_and_checks
 integration_proxy
 integration_restores_system_proxy (ignored)
@@ -80,6 +84,7 @@ localhost_rejects_web_origins_and_ambiguous_messages
 login_fields
 lookup_stops
 masks
+missing_fork_profiles_never_fall_back_to_firefox_and_legacy_ids_stay_valid
 mpeg2_and_opus_remux
 mux_interleaves_fragments
 names
@@ -119,6 +124,7 @@ rejects_invalid_ranges_and_preserves_partial_when_etag_changes
 resume_detects_changed_file
 retime_moves_fragments
 retries_wait_longer
+safari_is_only_an_installed_macos_source
 sched_times
 script_and_advanced_links
 segmentbase_periods_keep_their_shift

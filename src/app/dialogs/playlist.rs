@@ -40,15 +40,31 @@ impl App {
         let (mut load, mut stop) = (false, false);
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!busy, |ui| {
-                let label = ytdlp::playlist::PLAYLIST_BROWSERS
+                let label = pick
+                    .browsers
                     .iter()
-                    .find(|(_, b)| *b == pick.browser)
-                    .map_or("Public access", |(label, _)| *label);
+                    .find(|b| b.id == pick.browser)
+                    .map_or("Public access", |b| b.label);
                 egui::ComboBox::from_id_salt("playlist-browser")
                     .selected_text(tr(label))
                     .show_ui(ui, |ui| {
-                        for &(label, browser) in ytdlp::playlist::PLAYLIST_BROWSERS {
-                            ui.selectable_value(&mut pick.browser, browser.to_string(), tr(label));
+                        if ui
+                            .selectable_value(&mut pick.browser, String::new(), tr("Public access"))
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                        for browser in &pick.browsers {
+                            if ui
+                                .selectable_value(
+                                    &mut pick.browser,
+                                    browser.id.to_string(),
+                                    tr(browser.label),
+                                )
+                                .clicked()
+                            {
+                                ui.close_menu();
+                            }
                         }
                     });
             });

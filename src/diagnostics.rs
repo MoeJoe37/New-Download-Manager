@@ -53,6 +53,7 @@ const CRASH_MODULES: &[&str] = &[
     "app::window::menu",
     "app::window::table",
     "app::window::toolbar",
+    "browsers",
     "checksum",
     "core",
     "core::browser_bridge",

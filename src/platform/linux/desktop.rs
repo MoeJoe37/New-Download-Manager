@@ -1,27 +1,70 @@
 use super::{clean_env, Path, PathBuf};
 
-/// Browsers found on PATH: (name, executable).
+/// Browsers with an executable on PATH, in desktop package exports, or Zen's official tarball location.
 pub fn installed_browsers() -> Vec<(String, String)> {
-    let known = [
-        ("Google Chrome", "google-chrome"),
-        ("Chromium", "chromium"),
-        ("Chromium", "chromium-browser"),
-        ("Microsoft Edge", "microsoft-edge"),
-        ("Brave", "brave-browser"),
-        ("Vivaldi", "vivaldi"),
-        ("Opera", "opera"),
-        ("Mozilla Firefox", "firefox"),
-    ];
+    let user_home = home();
     let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<_> = std::env::split_paths(&path).collect();
+    dirs.extend([
+        user_home.join(".local/bin"),
+        user_home.join(".local/share/flatpak/exports/bin"),
+        PathBuf::from("/var/lib/flatpak/exports/bin"),
+        PathBuf::from("/snap/bin"),
+    ]);
+    detect_browsers(&dirs, &user_home)
+}
+
+fn detect_browsers(dirs: &[PathBuf], user_home: &Path) -> Vec<(String, String)> {
+    let known: &[(&str, &[&str])] = &[
+        (
+            "Google Chrome",
+            &["google-chrome", "google-chrome-stable", "com.google.Chrome"],
+        ),
+        (
+            "Chromium",
+            &["chromium", "chromium-browser", "org.chromium.Chromium"],
+        ),
+        (
+            "Microsoft Edge",
+            &[
+                "microsoft-edge",
+                "microsoft-edge-stable",
+                "com.microsoft.Edge",
+            ],
+        ),
+        ("Brave", &["brave-browser", "brave", "com.brave.Browser"]),
+        (
+            "Vivaldi",
+            &["vivaldi", "vivaldi-stable", "com.vivaldi.Vivaldi"],
+        ),
+        ("Opera", &["opera", "com.opera.Opera"]),
+        ("Mozilla Firefox", &["firefox", "org.mozilla.firefox"]),
+        ("Zen", &["zen", "zen-browser", "app.zen_browser.zen"]),
+        ("Waterfox", &["waterfox", "net.waterfox.waterfox"]),
+        ("LibreWolf", &["librewolf", "io.gitlab.librewolf-community"]),
+        ("Floorp", &["floorp", "one.ablaze.floorp"]),
+        ("Whale", &["naver-whale", "whale"]),
+    ];
     let mut out: Vec<(String, String)> = vec![];
-    for (name, bin) in known {
-        if let Some(exe) = std::env::split_paths(&path)
-            .map(|d| d.join(bin))
-            .find(|p| p.is_file())
+    for (name, bins) in known {
+        if let Some(exe) = bins
+            .iter()
+            .flat_map(|bin| dirs.iter().map(move |dir| dir.join(bin)))
+            .find(|p| crate::browsers::executable_exists(p))
         {
-            if !out.iter().any(|b| b.0 == name) {
-                out.push((name.into(), exe.display().to_string()));
-            }
+            out.push(((*name).into(), exe.display().to_string()));
+        }
+    }
+    if !out.iter().any(|(name, _)| name == "Zen") {
+        if let Some(exe) = [
+            ".tarball-installations/zen/zen",
+            ".tarball-installations/zen-twilight/zen",
+        ]
+        .iter()
+        .map(|p| user_home.join(p))
+        .find(|p| crate::browsers::executable_exists(p))
+        {
+            out.push(("Zen".into(), exe.display().to_string()));
         }
     }
     out
@@ -185,4 +228,54 @@ fn host_dirs_cover_snap_firefox() {
 /// The native messaging host (see `posix::native_host`).
 pub fn native_host(title: &str) {
     crate::posix::native_host(title, me(), clean_env);
+}
+
+#[test]
+fn detects_executables_and_flatpak_exports_without_listing_leftover_profiles() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!(
+        "ndm-browser-discovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let home = root.join("home");
+    let bin = root.join("bin");
+    let exports = home.join(".local/share/flatpak/exports/bin");
+    let executable = |path: &Path| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"fixture").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    executable(&bin.join("zen"));
+    executable(&exports.join("app.zen_browser.zen"));
+    executable(&exports.join("net.waterfox.waterfox"));
+    std::fs::write(bin.join("firefox"), b"not executable").unwrap();
+    std::fs::create_dir_all(home.join(".librewolf/leftover")).unwrap();
+    let dirs = [bin.clone(), exports.clone()];
+    let detected = detect_browsers(&dirs, &home);
+    assert_eq!(
+        detected
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["Zen", "Waterfox"]
+    );
+    assert_eq!(detected[0].1, bin.join("zen").display().to_string());
+    std::fs::remove_file(bin.join("zen")).unwrap();
+    assert_eq!(
+        detect_browsers(&dirs, &home)[0].1,
+        exports.join("app.zen_browser.zen").display().to_string()
+    );
+    std::fs::remove_file(exports.join("app.zen_browser.zen")).unwrap();
+    std::fs::remove_file(exports.join("net.waterfox.waterfox")).unwrap();
+    let tarball = home.join(".tarball-installations/zen/zen");
+    executable(&tarball);
+    assert_eq!(
+        detect_browsers(&dirs, &home),
+        vec![("Zen".into(), tarball.display().to_string())]
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

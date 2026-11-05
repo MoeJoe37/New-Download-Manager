@@ -80,6 +80,39 @@ pub fn installed_browsers() -> Vec<(String, String)> {
         }
         unsafe { RegCloseKey(hk) };
     }
+    // Some per-user installs register App Paths without a StartMenuInternet entry.
+    for (name, binary, folder) in [
+        ("Zen", "zen.exe", "Zen Browser"),
+        ("Waterfox", "waterfox.exe", "Waterfox"),
+        ("LibreWolf", "librewolf.exe", "LibreWolf"),
+        ("Floorp", "floorp.exe", "Floorp"),
+        ("Whale", "whale.exe", "Naver/Naver Whale/Application"),
+    ] {
+        let key = format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{binary}");
+        let mut candidates = vec![
+            reg_text(HKEY_CURRENT_USER, &key, ""),
+            reg_text(HKEY_LOCAL_MACHINE, &key, ""),
+        ];
+        for base in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(base) = std::env::var_os(base) {
+                candidates.push(
+                    Path::new(&base)
+                        .join(folder)
+                        .join(binary)
+                        .display()
+                        .to_string(),
+                );
+            }
+        }
+        for candidate in candidates {
+            let exe = candidate.trim().trim_matches('"');
+            if crate::browsers::executable_exists(Path::new(exe))
+                && !out.iter().any(|b| b.1.eq_ignore_ascii_case(exe))
+            {
+                out.push((name.into(), exe.into()));
+            }
+        }
+    }
     out
 }
 
