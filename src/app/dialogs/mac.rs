@@ -1,4 +1,4 @@
-use crate::app::{App, Duration, Receiver, channel, core, egui, i18n, tr, tr_os};
+use crate::app::{App, Duration, Receiver, channel, egui, i18n, tr, tr_os};
 #[cfg(target_os = "macos")]
 use crate::app::{mac_capture};
 
