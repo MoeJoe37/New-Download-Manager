@@ -118,9 +118,14 @@ def main():
     parser.add_argument("--baseline", type=Path, help="include elapsed-time ratios against an earlier report from the same environment")
     args = parser.parse_args()
     binary = build_test_binary(not args.debug).resolve()
+    # Container checkouts may belong to the host runner's user. GitHub supplies
+    # the checked-out revision without changing Git's repository trust settings.
+    revision = os.environ.get("GITHUB_SHA", "") if os.environ.get("GITHUB_ACTIONS") == "true" else ""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", revision):
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     report = {
         "schema": 1,
-        "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "commit": revision,
         "platform": platform.platform(), "machine": platform.machine(),
         "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
         "profile": "debug" if args.debug else "release",
