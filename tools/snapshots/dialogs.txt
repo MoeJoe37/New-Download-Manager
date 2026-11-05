@@ -1428,6 +1428,15 @@ NewVersion "New version of New Download Manager is available" 520.0x420.0
   text 319.5,367.5 342.5,375.5 "Later"
   text 18.0,366.5 89.0,376.5 "Download page"
 
+Recovery "Recover download" 467.3x228.8
+  rect 0.0,0.0 467.5,229.0
+  text 11.0,46.0 93.0,55.0 "Connection closed"
+  text 11.0,98.5 210.0,108.5 "Retry this download with its current settings."
+  rect 11.0,185.5 222.0,211.0
+  text 104.5,195.0 128.5,204.0 "Retry"
+  rect 342.0,185.5 450.5,211.0
+  text 381.5,194.0 411.5,203.0 "Cancel"
+
 Find "Find file" 320.9x236.8
   rect 0.0,0.0 321.0,237.0
   text 10.0,13.0 31.0,22.0 "Find:"

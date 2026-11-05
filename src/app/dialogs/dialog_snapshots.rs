@@ -192,6 +192,7 @@ fn dialog_snapshots() {
             rel: Release { version: "9.0.0".into(), notes: "Example release".into(), exe: url(), page: url() },
             get: None,
         },
+        Recovery: Dialog::Recovery { .. } => Dialog::Recovery { id: 2 },
         Find: Dialog::Find { .. } => Dialog::Find { text: String::new(), flags: 0 },
     };
 

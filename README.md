@@ -221,6 +221,8 @@ activation. Other proxy fields are preserved.
 
 ## Browser media formats and download recovery
 
+Failed downloads offer **Recover download** in their context menu and **Recover...** in the progress window. The recovery dialog offers actions for expired links, credentials, proxy settings, missing media tools and storage errors. Restarting a changed file is an explicit choice.
+
 NDM serializes concurrent saves and keeps the previous valid download list in `state.json.bak`. It recovers that backup if the main list cannot be read, preserves unreadable files with a `.bad` suffix, and reports save failures in the app.
 
 The browser panel follows the current player as its source changes. When the desktop app can read

@@ -1,4 +1,5 @@
 mod download;
+mod recovery;
 mod options;
 pub(super) mod scheduler;
 
@@ -191,6 +192,7 @@ pub(super) enum Dialog {
     /// "New version of New Download Manager is available" (template 144).
     /// `get` while "Update now" downloads: (bytes, total, result).
     NewVersion { rel: Release, get: Option<(Arc<std::sync::atomic::AtomicU64>, Arc<std::sync::atomic::AtomicU64>, Arc<Mutex<Option<Result<(), String>>>>)> },
+    Recovery { id: u64 },
     /// Find file (template 506, 0x4b0b10): search text and NDM's dwSearchFlags.
     Find { text: String, flags: u32 },
 }
@@ -259,6 +261,7 @@ impl App {
             Dialog::NewVersion { .. } => ("New version of New Download Manager is available".into(), Some(Vec2::new(520.0, 420.0))),
             Dialog::Virus { .. } => ("Virus checking".into(), tpl(379.0, 235.0)),
             Dialog::Columns { .. } => ("Columns".into(), tpl(236.0, 177.0)),
+            Dialog::Recovery { .. } => ("Recover download".into(), tpl(335.0, 143.0)),
             Dialog::Find { .. } => ("Find file".into(), tpl(230.0, 148.0)),
             Dialog::ServerConn { .. } => ("Max. connections number for a server".into(), tpl(221.0, 89.0)),
             Dialog::Networks { nics, .. } => ("Networks".into(), tpl(240.0, 66.0 + 12.0 * nics.len().max(1) as f32)),
@@ -400,6 +403,7 @@ impl App {
             Dialog::PanelExc { text } => self.dialog_panel_exc(ui, text),
             Dialog::Networks { nics, off } => self.dialog_networks(ui, nics, off),
             Dialog::ServerConn { orig, server, n } => self.dialog_server_conn(ui, orig, server, n),
+            Dialog::Recovery { id } => self.dialog_recovery(ctx, ui, *id),
             Dialog::Find { text, flags } => self.dialog_find(ui, text, flags),
             Dialog::Info { text, .. } => Self::dialog_info(ui, text),
             Dialog::YtDlp { got, total, done } => self.dialog_yt_dlp(ui, got, total, done),

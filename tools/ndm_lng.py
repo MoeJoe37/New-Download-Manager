@@ -22,7 +22,12 @@ CALLS = (r'(?:trf\(|tr_os\(|tr\(&?|d2?\.(?:label|label_r|text|button|check|check
                    # message windows: Dialog::Info { title: "...", text: "..." }; texts picked in if / match arms
                    r'|\b(?:title|text): |\{\s*(?="[^"\n]*"\s*\})|=>\s*)' + LIT)
 DLU_LOCALS = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:dlu::)?D::new(?:_offset)?\(")
-TEST_ONLY_SOURCES = {"tests.rs", "dialog_snapshots.rs", "interaction_tests.rs", "test_support.rs", "transport_bench.rs"}
+TEST_ONLY_SOURCES = {"tests.rs", "dialog_snapshots.rs", "test_support.rs", "transport_bench.rs"}
+
+
+def is_test_source(path):
+    return path.name in TEST_ONLY_SOURCES or path.name.endswith("_tests.rs")
+
 
 # literals that pass the pattern but are not UI text (headers, file names, formats, examples)
 NOT_UI = re.compile(
@@ -51,6 +56,10 @@ NOT_UI = re.compile(
     r"|sourceURL|startNumber|timeShiftBufferDepth|contentType|dnsResolve|myIpAddress|FindProxyForURL|NoProxyFor|ProxyType"
     r"|NativeMessagingHosts|NDM extension|POST |only CONNECT|no answer|worker panicked|with ndm|open\(|url\(|<body)$"
     r"|^(HTTPEnable|HTTPPort|HTTPProxy|ProxyAutoConfigEnable|ProxyAutoDiscoveryEnable|SOCKSEnable|Proxies|Youtube|NDM crash location |Application crash|Renderer crash)$|^\\n### Local diagnostics"
+    # Error fragments used to choose recovery actions, rather than messages presented to the user.
+    r"|^(access is denied|authentication required|could not join video and audio|disk full|login required"
+    r"|needs ffmpeg|no space left|partial download is shorter|permission denied|proxy authentication"
+    r"|read-only file system|requires ffmpeg|saved download ranges are invalid|set yt-dlp)$"
     r"|^&(gt|lt|nbsp|quot);$|^SHA256 \($"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
 )
@@ -110,7 +119,7 @@ def without_tests(src):
 def strings():
     found = set(EXTRA)
     for path in sorted((Path(ROOT) / "src").rglob("*.rs")):
-        if path.name in TEST_ONLY_SOURCES:
+        if is_test_source(path):
             continue
         src = path.read_text(encoding="utf-8")
         src = without_tests(src)  # tests aren't UI

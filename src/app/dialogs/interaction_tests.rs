@@ -183,5 +183,44 @@ fn desktop_interactions() {
     }
     assert_eq!(cancelled.info().status, Status::Stopped);
     assert!(!cancelled.info().path().exists());
+    let recoverable = core.add(Info {
+        name: "protected.bin".into(), folder: root.display().to_string(),
+        status: Status::Error("HTTP 401: authentication required".into()),
+        yt: crate::engine::YtOpts { quality: "720".into(), ..Default::default() },
+        segs: vec![crate::engine::Seg { next: 7, stop: Some(100), ..Default::default() }],
+        ..core.new_info("https://example.test/protected.bin")
+    });
+    let recovery_id = recoverable.info().id;
+    let part = recoverable.info().part();
+    std::fs::write(&part, b"partial").unwrap();
+    let mut failed_progress = Dialog::Progress { id: recovery_id, tab: 0, details: false, min: false };
+    assert!(desktop.click(&mut failed_progress, "Recover..."));
+    let index = desktop.app.dialogs.iter().position(|(_, d)| matches!(d, Dialog::Recovery { id } if *id == recovery_id)).unwrap();
+    let (_, mut recovery) = desktop.app.dialogs.remove(index);
+    assert!(!desktop.click(&mut recovery, "Edit credentials"));
+    let index = desktop.app.dialogs.iter().position(|(_, d)| matches!(d, Dialog::FileProps { id, .. } if *id == recovery_id)).unwrap();
+    let (_, mut properties) = desktop.app.dialogs.remove(index);
+    if let Dialog::FileProps { login, pass, .. } = &mut properties {
+        *login = "new-user".into();
+        *pass = "new-password".into();
+    }
+    assert!(!desktop.click(&mut properties, "OK"));
+    assert!(recoverable.info().url.contains("new-user:new-password@"));
+    assert_eq!(recoverable.info().yt.quality, "720");
+    assert_eq!(recoverable.info().done(), 7);
+    assert_eq!(std::fs::read(&part).unwrap(), b"partial");
+    recoverable.info().status = Status::Error(crate::engine::CHANGED.into());
+    let mut recovery = Dialog::Recovery { id: recovery_id };
+    let (labels, _) = desktop.frame(&mut recovery, vec![]);
+    assert!(labels.contains_key("Restart download"));
+    assert!(!labels.contains_key("Retry"));
+    assert!(!desktop.click(&mut recovery, "Cancel"));
+    assert_eq!(std::fs::read(&part).unwrap(), b"partial");
+    recoverable.info().status = Status::Error("HTTP 403: expired address".into());
+    let mut recovery = Dialog::Recovery { id: recovery_id };
+    assert!(!desktop.click(&mut recovery, "Refresh download address"));
+    assert_eq!(desktop.app.refreshing, Some(recovery_id));
+    assert_eq!(recoverable.info().yt.quality, "720");
+    assert_eq!(std::fs::read(&part).unwrap(), b"partial");
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -7,7 +7,9 @@ mod grabber_window;
 mod events;
 
 use self::display::{human, human_os, rate, time_left, size3, size3_os, pct2, date};
-use self::downloads::{with_login, split_login, join_login, clipboard, links, discard, DUPL};
+use self::downloads::{with_login, join_login, clipboard, links, discard, DUPL};
+#[cfg(test)]
+use self::downloads::split_login;
 use self::browser_setup::{extension_page, GUIDES, integration, extension_dir};
 use self::shell::{virus_args, explore, open_folder_of, open_url, open_with};
 use self::grabber_window::{GRAB_MENU, GRAB_TB, GRAB_STEPS, GrabCmd};

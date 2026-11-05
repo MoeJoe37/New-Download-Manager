@@ -109,6 +109,7 @@ real_ffmpeg_unpack (ignored)
 real_ytdlp_audio_and_extras (ignored)
 real_ytdlp_page (ignored)
 real_ytdlp_separate_streams (ignored)
+recovery_keeps_identity_changes_separate_from_retry_and_proxy_authentication
 redirect_keeps_same_origin_context_and_strips_it_at_another_port
 redirect_uses_configured_route_for_the_new_address
 regroup_cuts_units

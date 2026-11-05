@@ -1,4 +1,4 @@
-use crate::app::{App, Arc, Dialog, Duration, GENERAL, Incoming, Path, ProbeSlot, Status, core, egui, engine, grabber, stream, win, ytdlp};
+use crate::app::{App, Arc, Dialog, Duration, GENERAL, Incoming, Path, ProbeSlot, Status, core, egui, engine, explore, grabber, stream, win, ytdlp};
 
 /// "http://u:p@host/x" -> ("http://host/x", "u", "p"); the File Properties Login/Password fields.
 /// `url` with login:password put in (Add URL / Batch "Use authorization").
@@ -361,5 +361,27 @@ impl App {
     pub(in crate::app) fn remove_completed(&mut self) {
         let ids: Vec<u64> = self.core.jobs().iter().map(|j| j.info()).filter(|i| i.status == Status::Complete).map(|i| i.id).collect();
         self.remove(&ids, false);
+    }
+}
+
+impl App {
+    pub(in crate::app) fn refresh_address(&mut self, id: u64) {
+        let Some(job) = self.core.find(id) else { return };
+        let info = job.info().clone();
+        let page = if info.parent.is_empty() { info.referrer } else { info.parent };
+        self.refreshing = Some(id);
+        self.open(Dialog::WaitLink { name: info.name });
+        if page.is_empty() {
+            self.open(Dialog::Info { title: "Refresh download address".into(), text: "The web page of this download is unknown. Open the page in your browser and click the download link again: New Download Manager will use the new address for this download.".into() });
+        } else {
+            explore(page);
+        }
+    }
+
+    pub(in crate::app) fn file_properties(&mut self, id: u64) {
+        let Some(job) = self.core.find(id) else { return };
+        let info = job.info().clone();
+        let (url, login, pass) = split_login(&info.url);
+        self.open(Dialog::FileProps { id, url, desc: info.description, referer: info.referrer, login, pass });
     }
 }

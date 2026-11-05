@@ -1,4 +1,4 @@
-use crate::app::{Align, App, Cat, Color32, Column, Dialog, HashMap, HashSet, Layout, PathBuf, RichText, Sense, Status, TableBuilder, Vec2, Which, core, date, dlu, egui, explore, human, i18n, open_folder_of, open_with, rate, split_login, time_left, tr, tr_os};
+use crate::app::{Align, App, Cat, Color32, Column, Dialog, HashMap, HashSet, Layout, PathBuf, RichText, Sense, Status, TableBuilder, Vec2, Which, core, date, dlu, egui, explore, human, i18n, open_folder_of, open_with, rate, time_left, tr, tr_os};
 
 /// List row height: NDM's 19 px at 125%.
 pub(in crate::app) const ROW_H: f32 = 15.2;
@@ -361,6 +361,7 @@ impl App {
                     item(ui, "Stop Download", r.running);
                     item(ui, "Speed limit...", !done);
                     ui.separator();
+                    item(ui, "Recover download", matches!(r.status, Status::Error(_)) && !r.running);
                     item(ui, "Refresh download address", !done);
                     ui.separator();
                     item(ui, "Remove", true);
@@ -464,18 +465,8 @@ impl App {
                 }
                 "Open folder" => open_folder_of(&row.path),
                 "Move/Rename (Ctrl-M)" => self.move_rename(id),
-                "Refresh download address" => {
-                    // "Downloading owner web page to refresh link address": open the page the link
-                    // came from; the user clicks the link again and the browser hands it to us
-                    let page = if row.parent.is_empty() { row.referrer.clone() } else { row.parent.clone() };
-                    self.refreshing = Some(id);
-                    self.open(Dialog::WaitLink { name: row.name.clone() });
-                    if page.is_empty() {
-                        self.open(Dialog::Info { title: "Refresh download address".into(), text: "The web page of this download is unknown. Open the page in your browser and click the download link again: New Download Manager will use the new address for this download.".into() });
-                    } else {
-                        explore(page);
-                    }
-                }
+                "Recover download" => self.open(Dialog::Recovery { id }),
+                "Refresh download address" => self.refresh_address(id),
                 "Resume Download" => self.resume(&ids),
                 "Stop Download" => self.stop(&ids),
                 "Redownload" => self.redownload(&ids),
@@ -532,10 +523,7 @@ impl App {
             let details = self.core.settings().prog_details;
             return self.open(Dialog::Progress { id, tab: 0, details, min: false });
         }
-        let Some(j) = self.core.find(id) else { return };
-        let i = j.info().clone();
-        let (url, login, pass) = split_login(&i.url);
-        self.open(Dialog::FileProps { id, url, desc: i.description, referer: i.referrer, login, pass });
+        self.file_properties(id);
     }
 
     /// View -> Customize URL List / header menu -> Columns... (template 209).

@@ -363,9 +363,10 @@ impl App {
             self.core.save();
         }
         let finished = i.status == Status::Complete;
-        let pause_label = ["Resume", "Pause"][running as usize];
+        let failed = matches!(i.status, Status::Error(_));
+        let pause_label = if running { "Pause" } else if failed { "Recover..." } else { "Resume" };
         if d.button(203.0, 126.0, 56.0, 15.0, pause_label, running || !finished) {
-            if running { job.stop() } else { self.core.start(&job) }
+            if running { job.stop() } else if failed { self.open(Dialog::Recovery { id: *id }) } else { self.core.start(&job) }
         }
         let cancel = d.button(277.0, 126.0, 50.0, 15.0, "Cancel", true);
         if cancel {

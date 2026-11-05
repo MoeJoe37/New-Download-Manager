@@ -10,6 +10,7 @@ pub(crate) mod probe;
 pub(crate) mod range;
 pub(crate) mod names;
 mod job;
+pub(crate) mod recovery;
 #[cfg(test)]
 mod tests;
 

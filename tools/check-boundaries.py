@@ -4,13 +4,12 @@ from pathlib import Path
 import re
 import sys
 
-from ndm_lng import without_tests
+from ndm_lng import is_test_source, without_tests
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_FILES = {"tests.rs", "test_support.rs", "transport_bench.rs", "dialog_snapshots.rs", "interaction_tests.rs"}
 errors = []
 for path in sorted((ROOT / "src").rglob("*.rs")):
-    if path.name in TEST_FILES:
+    if is_test_source(path):
         continue
     source = without_tests(path.read_text(encoding="utf-8"))
     relative = path.relative_to(ROOT).as_posix()
