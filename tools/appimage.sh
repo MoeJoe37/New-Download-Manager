@@ -20,7 +20,7 @@ arch="$(uname -m)" # x86_64 or aarch64: linuxdeploy and appimagetool come for bo
 app="$work/AppDir"
 rm -rf "$app"
 mkdir -p "$app/usr/bin" "$app/usr/share/applications" "$app/usr/share/icons/hicolor/256x256/apps"
-cp target/release/ndm "$app/usr/bin/"
+cp "${CARGO_TARGET_DIR:-target}/release/ndm" "$app/usr/bin/"
 cp -r help Languages extension LICENSE "$app/usr/bin/"
 cp assets/ndm.png "$app/usr/share/icons/hicolor/256x256/apps/ndm.png"
 cat > "$app/usr/share/applications/ndm.desktop" <<'EOF'

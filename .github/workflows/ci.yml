@@ -175,9 +175,7 @@ jobs:
       - name: FFmpeg media integration (TS, HLS, MP4, MKV and synchronization)
         run: cargo test --release --locked actual_media_ -- --ignored --test-threads=1
       - name: AppImage
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: bash tools/appimage.sh
+        run: CARGO_TARGET_DIR="$PWD/target" bash tools/appimage.sh
       - name: .deb, .rpm and .tar.gz
         run: bash tools/linux-packages.sh target/release/ndm
       - name: Startup benchmark prerequisites
