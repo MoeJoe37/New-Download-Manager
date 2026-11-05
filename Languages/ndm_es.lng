@@ -953,3 +953,7 @@ Verify matched hash=Verificar con la suma encontrada
 Web proxy settings restored.=Se restauró la configuración del proxy web.
 yt-dlp did not find a playlist at this address.=yt-dlp no encontró una lista de reproducción en esta dirección.
 NDM could not verify a video format at or below %dp. Choose Best to download without a resolution limit.=NDM no pudo verificar un formato de vídeo de %dp o menos. Elige Mejor para descargar sin límite de resolución.
+Download list=Lista de descargas
+The download list was recovered from its backup.=Se ha recuperado la lista de descargas desde su copia de seguridad.
+The saved download list could not be read. Check state.json and state.json.bak in NDM's settings folder. Unreadable files are preserved before a new list is saved.=No se pudo leer la lista de descargas guardada. Revise state.json y state.json.bak en la carpeta de configuración de NDM. Los archivos ilegibles se conservan antes de guardar una lista nueva.
+Could not save the download list. Check the available disk space and folder permissions, then try again.\n%s=No se pudo guardar la lista de descargas. Compruebe el espacio disponible y los permisos de la carpeta e inténtelo de nuevo.\n%s

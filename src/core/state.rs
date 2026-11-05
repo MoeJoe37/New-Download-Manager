@@ -1,4 +1,6 @@
 use crate::core::{Arc, AtomicU64, BTreeSet, Core, Deserialize, Info, Job, Limiter, MAIN_QUEUE, Mutex, Path, PathBuf, Queue, Relaxed, Serialize, Settings, Status};
+use crate::file_ops::atomic_write;
+use std::{fs, io};
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -21,14 +23,10 @@ pub fn store_path() -> PathBuf {
 impl Core {
     pub fn load() -> Arc<Core> {
         let store = store_path();
-        let text = std::fs::read_to_string(&store).ok();
-        let saved: Saved = text.as_deref().map_or(Ok(Saved::default()), serde_json::from_str).unwrap_or_else(|e| {
-            // keep the unreadable list instead of letting autosave overwrite it with an empty one
-            eprintln!("state.json unreadable ({e}), kept as state.json.bad");
-            let _ = std::fs::copy(&store, store.with_extension("json.bad"));
-            Saved::default()
-        });
-        Core::from_saved(saved, store)
+        let (saved, notice) = load_saved(&store);
+        let core = Core::from_saved(saved, store);
+        *core.state_notice.lock().unwrap() = notice;
+        core
     }
 
     #[cfg(test)]
@@ -92,6 +90,8 @@ impl Core {
             again: Mutex::default(),
             checking: Arc::default(),
             store,
+            save_lock: Mutex::default(),
+            state_notice: Mutex::default(),
             grab_fired: Mutex::default(),
             grab_again: Mutex::default(),
             grab_running: Mutex::default(),
@@ -111,18 +111,191 @@ impl Core {
     }
 
     pub fn save(&self) {
+        // Take the lock before taking the snapshot, so a delayed save cannot publish older state.
+        let mut last_error = self.save_lock.lock().unwrap();
         let saved = Saved {
             settings: self.settings().clone(),
             items: self.jobs().iter().map(|j| j.info().clone()).collect(),
             next_id: self.next_id.load(Relaxed),
         };
-        let Ok(json) = serde_json::to_string_pretty(&saved) else { return };
-        let tmp = self.store.with_extension("tmp");
-        let r = std::fs::create_dir_all(self.store.parent().unwrap())
-            .and_then(|_| std::fs::write(&tmp, json))
-            .and_then(|_| std::fs::rename(&tmp, &self.store));
-        if let Err(e) = r {
-            eprintln!("save failed: {e}");
+        let result = serde_json::to_vec_pretty(&saved).map_err(io::Error::other)
+            .and_then(|bytes| persist(&self.store, &bytes));
+        match result {
+            Ok(()) => *last_error = None,
+            Err(error) => {
+                let message = error.to_string();
+                if last_error.as_ref() != Some(&message) {
+                    *self.state_notice.lock().unwrap() = Some(crate::i18n::trf_os(
+                        "Could not save the download list. Check the available disk space and folder permissions, then try again.\n%s",
+                        &[&message],
+                    ));
+                }
+                *last_error = Some(message);
+            }
         }
+    }
+}
+
+fn read_saved(path: &Path) -> io::Result<Saved> {
+    serde_json::from_slice(&fs::read(path)?).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn preserve_unreadable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut bad = path.as_os_str().to_os_string();
+    bad.push(".bad");
+    let mut bad = PathBuf::from(bad);
+    if bad.exists() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_nanos();
+        bad.set_extension(format!("bad.{stamp}"));
+    }
+    atomic_write(&bad, bytes)
+}
+
+fn load_saved(path: &Path) -> (Saved, Option<String>) {
+    let backup = path.with_extension("json.bak");
+    let primary = read_saved(path);
+    if let Ok(saved) = primary {
+        return (saved, None);
+    }
+    for candidate in [path, backup.as_path()] {
+        if let Ok(bytes) = fs::read(candidate) {
+            if serde_json::from_slice::<Saved>(&bytes).is_err() {
+                if let Err(error) = preserve_unreadable(candidate, &bytes) {
+                    eprintln!("could not preserve unreadable state: {error}");
+                }
+            }
+        }
+    }
+    if let Ok(saved) = read_saved(&backup) {
+        return (saved, Some(crate::i18n::tr_os("The download list was recovered from its backup.")));
+    }
+    let fresh = primary.as_ref().err().is_some_and(|e| e.kind() == io::ErrorKind::NotFound) && !backup.exists();
+    let notice = (!fresh).then(|| crate::i18n::tr_os(
+        "The saved download list could not be read. Check state.json and state.json.bak in NDM's settings folder. Unreadable files are preserved before a new list is saved.",
+    ));
+    (Saved::default(), notice)
+}
+
+fn persist(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))?;
+    let backup = path.with_extension("json.bak");
+    let current = match fs::read(path) {
+        Ok(current) => Some(current),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if current.as_deref() == Some(bytes) && read_saved(&backup).is_ok() {
+        return Ok(());
+    }
+    if let Some(current) = current {
+        if serde_json::from_slice::<Saved>(&current).is_ok() {
+            atomic_write(&backup, &current)?;
+        } else {
+            preserve_unreadable(path, &current)?;
+            if read_saved(&backup).is_err() {
+                atomic_write(&backup, bytes)?;
+            }
+        }
+    } else if read_saved(&backup).is_err() {
+        atomic_write(&backup, bytes)?;
+    }
+    atomic_write(path, bytes)
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::{Core, Info, PathBuf, Saved, Settings, fs, load_saved, persist, read_saved};
+    use std::sync::{Arc, Barrier};
+
+    fn store(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ndm-state-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path.join("state.json")
+    }
+
+    fn snapshot(name: &str) -> Vec<u8> {
+        serde_json::to_vec_pretty(&Saved {
+            settings: Settings { user_agent: name.into(), ..Default::default() },
+            items: vec![Info { id: 42, name: "resume.zip".into(), etag: "original".into(), ..Default::default() }],
+            next_id: 43,
+        }).unwrap()
+    }
+
+    #[test]
+    fn state_recovers_previous_snapshot_and_preserves_corruption() {
+        let path = store("recover");
+        persist(&path, &snapshot("first")).unwrap();
+        persist(&path, &snapshot("second")).unwrap();
+        fs::write(&path, b"{interrupted").unwrap();
+        let (saved, notice) = load_saved(&path);
+        assert!(notice.is_some());
+        assert_eq!(saved.settings.user_agent, "first");
+        assert_eq!((saved.next_id, saved.items[0].id, saved.items[0].etag.as_str()), (43, 42, "original"));
+        assert_eq!(fs::read(path.with_extension("json.bad")).unwrap(), b"{interrupted");
+        persist(&path, &serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(read_saved(&path).unwrap().settings.user_agent, "first");
+        assert_eq!(read_saved(&path.with_extension("json.bak")).unwrap().settings.user_agent, "first");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn state_ignores_stale_temporary_files_and_reports_unreadable_lists() {
+        let path = store("unreadable");
+        fs::write(path.with_extension("tmp"), snapshot("incomplete")).unwrap();
+        let (saved, notice) = load_saved(&path);
+        assert!(notice.is_none());
+        assert!(saved.items.is_empty());
+        fs::write(&path, b"invalid primary").unwrap();
+        fs::write(path.with_extension("json.bak"), b"invalid backup").unwrap();
+        let (_, notice) = load_saved(&path);
+        assert!(notice.is_some());
+        assert_eq!(fs::read(path.with_extension("json.bad")).unwrap(), b"invalid primary");
+        assert_eq!(fs::read(path.with_extension("json.bak.bad")).unwrap(), b"invalid backup");
+        persist(&path, &snapshot("new")).unwrap();
+        assert_eq!(read_saved(&path).unwrap().settings.user_agent, "new");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn failed_state_publication_keeps_backup_and_cleans_its_temporary_file() {
+        let path = store("failure");
+        persist(&path, &snapshot("good")).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(persist(&path, &snapshot("replacement")).is_err());
+        assert!(crate::file_ops::atomic_write(&path, &snapshot("replacement")).is_err());
+        assert_eq!(read_saved(&path.with_extension("json.bak")).unwrap().settings.user_agent, "good");
+        assert!(fs::read_dir(path.parent().unwrap()).unwrap().all(|entry| {
+            !entry.unwrap().file_name().to_string_lossy().ends_with(".tmp")
+        }));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn concurrent_state_saves_publish_complete_snapshots() {
+        let path = store("concurrent");
+        let core = Core::from_saved(Saved::default(), path.clone());
+        core.save();
+        let barrier = Arc::new(Barrier::new(5));
+        let workers: Vec<_> = (0..4).map(|writer| {
+            let (core, barrier, path) = (core.clone(), barrier.clone(), path.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                for sequence in 0..8 {
+                    core.settings().user_agent = format!("writer-{writer}-{sequence}");
+                    core.save();
+                    assert!(read_saved(&path).is_ok());
+                }
+            })
+        }).collect();
+        barrier.wait();
+        for worker in workers { worker.join().unwrap(); }
+        assert!(core.state_notice.lock().unwrap().is_none());
+        assert!(read_saved(&path).is_ok());
+        assert!(read_saved(&path.with_extension("json.bak")).is_ok());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 2);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

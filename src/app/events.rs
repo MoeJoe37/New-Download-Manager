@@ -186,6 +186,10 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         PAINTED.store(true, Relaxed);
         no_zoom(ctx);
+        let state_notice = self.core.state_notice.lock().unwrap().take();
+        if let Some(text) = state_notice {
+            self.open(Dialog::Info { title: "Download list".into(), text });
+        }
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if self.hwnd.load(Relaxed) == 0 {
             if let Ok(RawWindowHandle::Win32(h)) = frame.window_handle().map(|h| h.as_raw()) {

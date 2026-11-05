@@ -221,6 +221,8 @@ activation. Other proxy fields are preserved.
 
 ## Browser media formats and download recovery
 
+NDM serializes concurrent saves and keeps the previous valid download list in `state.json.bak`. It recovers that backup if the main list cannot be read, preserves unreadable files with a `.bad` suffix, and reports save failures in the app.
+
 The browser panel follows the current player as its source changes. When the desktop app can read
 a manifest, the panel lists detected HLS variants or single-period DASH representations with their
 known resolution, codecs and audio. Use the existing **Options → General → Customize** video panel

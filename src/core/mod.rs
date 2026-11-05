@@ -83,6 +83,9 @@ pub struct Core {
     again: Mutex<HashMap<u32, Instant>>,
     checking: Arc<Mutex<HashSet<u64>>>,
     store: PathBuf,
+    /// Serializes snapshots and publication. The value remembers the last reported write failure.
+    save_lock: Mutex<Option<String>>,
+    pub(crate) state_notice: Mutex<Option<String>>,
     /// Grabber projects: the days their start / stop time fired, periodic next runs, running projects,
     /// and the downloads a scheduled run added (for its when-done options).
     grab_fired: Mutex<HashMap<String, (Option<NaiveDate>, Option<NaiveDate>)>>,
