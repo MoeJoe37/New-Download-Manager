@@ -43,9 +43,11 @@ jobs:
     runs-on: windows-11-arm
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:
           name: windows-arm64-exe
@@ -57,9 +59,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - uses: actions/download-artifact@v4
         with:
           name: windows-arm64-exe
@@ -105,7 +109,9 @@ jobs:
           apt-get install -y -qq build-essential pkg-config curl ca-certificates git file rsync patchelf \
             libgtk-3-dev libxdo-dev libayatana-appindicator3-dev librsvg2-common dpkg-dev rpm
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
       - run: bash tools/appimage.sh
       - name: .deb, .rpm and .tar.gz
         run: bash tools/linux-packages.sh "$HOME/.cache/ndm-build/src/target/release/ndm"
@@ -123,8 +129,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.1
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - run: bash tools/macos.sh
       - uses: actions/upload-artifact@v4

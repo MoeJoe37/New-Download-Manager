@@ -16,6 +16,7 @@ module's dependencies are visible at the top of its file.
 | `core::routing` | Proxy selection, network lanes and capture integration | Coordinator and transport setup |
 | `core::browser_bridge` | Loopback endpoints, browser messages and page-fed downloads | Startup and extension |
 | `engine` | Download state, progress and job lifecycle | Coordinator, streams and desktop |
+| `engine::recovery` | Recovery choices for saved download errors | Desktop recovery dialogs |
 | `engine::range`, `engine::probe`, `engine::ftp`, `engine::names` | Range rules, probes, FTP and file names | Download execution |
 | `transport` | Requests, responses, redirects, connection policy and authentication | Engine, streams and tool downloads |
 | `stream` | HLS/DASH plans, fragment transfer and fragmented MP4 assembly | Engine and media downloads |
@@ -45,6 +46,17 @@ inside the selected platform implementation.
   native module that calls those APIs.
 - Add a re-export when it defines a lasting subsystem interface. Update callers
   when moving an implementation detail to its owner.
+
+## Persistence
+
+`Core::save` takes its publication lock before capturing a snapshot. State files
+are written to unique temporary files, synced, and renamed into place. A valid
+previous list is retained in `state.json.bak`. Unreadable data is preserved before
+replacement. The desktop displays recovery and write-failure notices.
+
+Preserve the serialized field names, defaults and migration aliases when changing
+saved records. A recovery action keeps a job's identity, selected quality and
+partial data until the user explicitly chooses to restart it.
 
 ## Browser extension
 
