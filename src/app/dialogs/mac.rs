@@ -47,6 +47,7 @@ impl App {
             egui::ComboBox::from_id_salt("mac-capture-service")
                 .selected_text(label)
                 .show_ui(ui, |ui| {
+                    crate::dlu::scale_popup(ui);
                     for (index, (_, name)) in services.iter().enumerate() {
                         ui.selectable_value(selected, Some(index), i18n::shown(name));
                     }

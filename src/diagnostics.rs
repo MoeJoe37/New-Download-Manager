@@ -63,6 +63,7 @@ const CRASH_MODULES: &[&str] = &[
     "core::state",
     "diagnostics",
     "dlu",
+    "dlu::popup",
     "dlu::widgets",
     "engine",
     "engine::ftp",

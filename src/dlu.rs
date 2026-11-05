@@ -1,7 +1,10 @@
 //! Absolute layout in Windows dialog units, so dialogs reproduce classic Win32 dialog templates.
 //! Scale measured from the original dialogs rendered by Windows from their templates
 //! (Tahoma 8pt): 1 DLU = 1.395 px across, 1.6 px down at 100% DPI.
+mod popup;
 mod widgets;
+
+pub use popup::{scale_popup, set_popup_scale};
 
 use crate::i18n::{self, tr, tr_os};
 use eframe::egui::{

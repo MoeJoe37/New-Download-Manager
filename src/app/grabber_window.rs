@@ -264,6 +264,7 @@ impl App {
         };
         egui::menu::bar(ui, |ui| {
             ui.menu_button(tr("Project"), |ui| {
+                crate::dlu::scale_popup(ui);
                 if ui.button(tr("New")).clicked() {
                     cmd = Some(GrabCmd::New);
                     ui.close_menu();
@@ -286,6 +287,7 @@ impl App {
                 ui.separator();
                 // "1 name"... "4 name", or a greyed "Recent..." when there are none
                 ui.menu_button(tr("Recent Projects"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     if recent.is_empty() {
                         ui.add_enabled(false, egui::Button::new(tr("Recent...")));
                     }
@@ -303,6 +305,7 @@ impl App {
                 }
             });
             ui.menu_button(tr("Options"), |ui| {
+                crate::dlu::scale_popup(ui);
                 if ui.button(tr("Grabber Settings")).clicked() {
                     settings = true;
                     ui.close_menu();
@@ -457,6 +460,7 @@ impl App {
             &resp,
             egui::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
+                crate::dlu::scale_popup(ui);
                 ui.set_min_width(260.0);
                 ui.add(egui::TextEdit::singleline(buf).hint_text("*.zip;*.pdf"));
                 if ui.button(tr("OK")).clicked() {

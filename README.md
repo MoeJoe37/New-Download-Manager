@@ -78,7 +78,7 @@
 
 **And**
 - Dark mode and three looks: Modern, Classic and **NDM Style**, NDM's own modern design for every window
-- Custom scale for the toolbar, the categories pane and the text (View → Custom scale...)
+- Custom scale for the toolbar, the categories pane and the text, including dropdown menus and their contents (View → Custom scale...)
 - Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
 - Filter box above the list, clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
 - Import and export of download lists, built-in help, automatic update check

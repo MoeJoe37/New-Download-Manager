@@ -90,6 +90,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             };
             pad(ui, 42.0);
             ui.menu_button(mn("Tasks"), |ui| {
+                crate::dlu::scale_popup(ui);
                 if ui.button(tr("Add new download")).clicked() {
                     self.add_url();
                     ui.close_menu();
@@ -129,6 +130,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 ui.separator();
                 ui.menu_button(tr("Export"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     for (t, ef2) in [("To NDM export file", true), ("To text file", false)] {
                         if ui.button(tr(t)).clicked() {
                             let mode = if sel.is_empty() { 2 } else { 1 };
@@ -138,6 +140,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     }
                 });
                 ui.menu_button(tr("Import"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     for (t, ef2) in [("From NDM export file", true), ("From text file", false)] {
                         if ui.button(tr(t)).clicked() {
                             self.import(ef2);
@@ -153,6 +156,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
             pad(ui, 28.0);
             ui.menu_button(mn("File"), |ui| {
+                crate::dlu::scale_popup(ui);
                 ui.add_enabled_ui(!sel.is_empty(), |ui| {
                     if ui.button(tr("Stop Download")).clicked() {
                         self.stop(sel);
@@ -174,6 +178,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
             pad(ui, 52.0);
             ui.menu_button(mn("Downloads"), |ui| {
+                crate::dlu::scale_popup(ui);
                 if ui.button(tr("Pause All")).clicked() || ui.button(tr("Stop All")).clicked() {
                     self.core.stop_all();
                     ui.close_menu();
@@ -200,6 +205,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 let queues: Vec<(u32, String)> = self.core.settings().queues.iter().map(|q| (q.id, tr(&q.name))).collect();
                 for start in [true, false] {
                     ui.menu_button(tr(if start { "Start queue" } else { "Stop queue" }), |ui| {
+                        crate::dlu::scale_popup(ui);
                         for (id, name) in &queues {
                             if ui.add_enabled(self.core.queue_running(*id) != start, egui::Button::new(name)).clicked() {
                                 if start { self.core.start_queue(*id) } else { self.core.stop_queue(*id) }
@@ -210,6 +216,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 ui.separator();
                 ui.menu_button(tr("Speed Limiter"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     let on = self.core.settings().limit_on;
                     for (label, v) in [("Turn on", true), ("Turn off", false)] {
                         if ui.add_enabled(on != v, egui::Button::new(tr(label))).clicked() {
@@ -244,11 +251,13 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
             pad(ui, 33.0);
             ui.menu_button(mn("View"), |ui| {
+                crate::dlu::scale_popup(ui);
                 if ui.button(tr(if self.show_cats { "Hide categories" } else { "Show categories" })).clicked() {
                     self.show_cats = !self.show_cats;
                     ui.close_menu();
                 }
                 ui.menu_button(tr("Arrange files"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     use Col::*;
                     let by = [(Added, "Order Of Addition"), (Name, "File Name"), (Size, "Size"), (Status, "Status"), (Left, "Time Left"), (Rate, "Transfer Rate"), (LastTry, "Last Try Date"), (Desc, "Description"), (SaveTo, "Save Path"), (Referer, "Referer"), (Parent, "Parent Web Page")];
                     for (c, n) in by {
@@ -258,9 +267,16 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                         }
                     }
                 });
-                ui.menu_button(tr("Toolbar"), |ui| self.toolbar_menu(ui));
-                ui.menu_button(tr("Category icons"), |ui| self.cat_icons_menu(ui));
+                ui.menu_button(tr("Toolbar"), |ui| {
+                    crate::dlu::scale_popup(ui);
+                    self.toolbar_menu(ui)
+                });
+                ui.menu_button(tr("Category icons"), |ui| {
+                    crate::dlu::scale_popup(ui);
+                    self.cat_icons_menu(ui)
+                });
                 ui.menu_button(tr("NDM tray icon"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     // 0x45ada0: delete the icon, then add it back with the new picture unless "Don't show"
                     let cur = self.core.settings().tray_icon;
                     for (v, label) in [(1, "3D style"), (2, "Classic style"), (3, "Don't show")] {
@@ -286,6 +302,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     self.theme_check = u32::MAX;
                 }
                 ui.menu_button(tr("Font"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     let (face, px) = { let s = self.core.settings(); (s.list_font.clone(), s.list_font_px) };
                     let mut pick = None;
                     if ui.button(tr("Choose Font...")).clicked() {
@@ -312,6 +329,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 }
                 ui.separator();
                 ui.menu_button(tr("Language"), |ui| {
+                    crate::dlu::scale_popup(ui);
                     // NDM's Language menu: English plus every Languages\ndm_*.lng
                     if !ALL_CJK.swap(true, Relaxed) {
                         style(ui.ctx(), self.dark); // the Chinese and Korean names need their fonts
@@ -354,6 +372,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
             });
             pad(ui, 29.0);
             ui.menu_button(mn("Help"), |ui| {
+                crate::dlu::scale_popup(ui);
                 // NDM's four help entries, each opening a page of NDM's own help
                 for (t, page) in [
                     ("Help contents", "index.htm"),
