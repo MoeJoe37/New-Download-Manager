@@ -204,6 +204,13 @@ fn http_protocol_benchmark() {
             let (median, connections) = trials[2];
             println!("{workload}: {} {:.1} ms median, {connections} TLS connections (4 x 48 KiB, 5 trials)",
                 if split { "HTTP/2 plus extra HTTP/1.1" } else { "HTTP/2 only" }, median.as_secs_f64() * 1000.0);
+            println!("NDM_BENCH {}", serde_json::json!({
+                "case": if split { "https_split" } else { "https_http2" },
+                "workload": workload, "bytes": 4 * CHUNK, "trials": 5,
+                "median_seconds": median.as_secs_f64(),
+                "bytes_per_second": (4 * CHUNK) as f64 / median.as_secs_f64(),
+                "tls_connections": connections,
+            }));
             if !split {
                 assert_eq!(connections, 1);
             }

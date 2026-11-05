@@ -13,6 +13,8 @@ mod job;
 pub(crate) mod recovery;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod performance_tests;
 
 use self::ftp::{ftp_open, is_ftp};
 use self::names::{disposition_name, media_name, mime_ext, sanitize, sniff, unique_name, url_name};

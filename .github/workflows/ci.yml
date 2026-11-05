@@ -164,6 +164,21 @@ jobs:
         run: bash tools/appimage.sh
       - name: .deb, .rpm and .tar.gz
         run: bash tools/linux-packages.sh target/release/ndm
+      - name: Startup benchmark prerequisites
+        if: matrix.runner == 'ubuntu-latest'
+        run: apt-get install -y -qq xvfb xauth libgl1-mesa-dri libglx-mesa0
+      - name: Native performance report
+        if: matrix.runner != 'ubuntu-latest'
+        run: python3 tools/benchmark.py --output artifacts/performance.json
+      - name: Native and startup performance report
+        if: matrix.runner == 'ubuntu-latest'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: 1
+        run: xvfb-run -a python3 tools/benchmark.py --app target/release/ndm --output artifacts/performance.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ matrix.runner }}
+          path: artifacts/performance.json
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.runner == 'ubuntu-24.04-arm' && 'aarch64' || 'x86_64' }}

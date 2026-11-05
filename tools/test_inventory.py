@@ -3,6 +3,7 @@
 
 import argparse
 import difflib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,21 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT = ROOT / "tools" / "snapshots" / "tests.txt"
+
+
+def build_test_binary(release=True):
+    command = ["cargo", "test", "--locked", "--no-run", "--message-format=json"]
+    if release:
+        command.append("--release")
+    build = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True)
+    binaries = []
+    for line in build.stdout.splitlines():
+        item = json.loads(line)
+        if item.get("reason") == "compiler-artifact" and item.get("profile", {}).get("test") and item.get("executable"):
+            binaries.append(Path(item["executable"]))
+    if len(binaries) != 1:
+        raise RuntimeError(f"Expected one application test executable, found {binaries}")
+    return binaries[0]
 
 
 def list_tests(command, *flags):

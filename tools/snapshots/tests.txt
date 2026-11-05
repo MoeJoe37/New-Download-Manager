@@ -93,6 +93,7 @@ ntlmv2_reference
 old_state_keeps_behaviour
 pac_scripts
 path_filters
+performance_download (ignored)
 permanent_http_errors_and_bad_proxy_do_not_bypass_the_route
 problem_report
 problem_report_excludes_raw_crash_data
