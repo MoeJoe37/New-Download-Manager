@@ -27,6 +27,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Module boundaries
         run: python3 tools/check-boundaries.py
+      - name: Translation scanner
+        run: python3 tools/test_language_scanner.py
       - name: Check move commits
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

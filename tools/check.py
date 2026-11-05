@@ -31,6 +31,7 @@ def main():
     run(["cargo", "fmt", "--all", "--", "--check"])
     run([sys.executable, "tools/check-boundaries.py"])
     run([sys.executable, "tools/ndm_lng.py", "--check"])
+    run([sys.executable, "tools/test_language_scanner.py"])
     profile = ["--release"] if args.release else []
     run(["cargo", "clippy", "--locked", "--all-targets", *profile, "--", "-D", "warnings"])
     binary = build_test_binary(args.release)

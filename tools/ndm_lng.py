@@ -16,11 +16,11 @@ OUT = os.path.join(ROOT, "Languages", "ndm_en.lng")
 
 LIT = r'"((?:[^"\\]|\\.)+)"'
 # the calls whose string arguments the UI shows (same set the translation audit uses, in every file)
-CALLS = (r'(?:trf\(|tr_os\(|tr\(&?|d2?\.(?:label|label_r|text|button|check|check_off|radio|radio_off|group|page_header|readonly)\([^"\n]*?|listview\([^"\n]*?|tabs\([^"\n]*?|\(\s*'
+CALLS = (r'(?:trf\(|tr_os\(|tr\(&?|d2?\.(?:label|label_r|text|button|check|check_off|radio|radio_off|group|page_header|readonly)\([^";]*?|listview\([^";]*?|tabs\([^";]*?|\(\s*'
                    # tables of UI text: a tuple's later strings, tuples that start with a value, arrays, menu items
                    r'|(?<=")\s*,\s*|\(\s*(?:(?:true|false|-?\d+(?:\.\d+)?|[A-Za-z_][\w:]*),\s*){1,4}|\[\s*|item\(ui,\s*'
                    # message windows: Dialog::Info { title: "...", text: "..." }; texts picked in if / match arms
-                   r'|\b(?:title|text): |\{\s*(?="[^"\n]*"\s*\})|=>\s*)' + LIT)
+                   r'|\b(?:title|text):\s*|\{\s*(?="[^"\n]*"\s*\})|=>\s*)' + LIT)
 DLU_LOCALS = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*=\s*(?:dlu::)?D::new(?:_offset)?\(")
 TEST_ONLY_SOURCES = {"tests.rs", "dialog_snapshots.rs", "test_support.rs", "transport_bench.rs"}
 
@@ -125,7 +125,7 @@ def strings():
         src = without_tests(src)  # tests aren't UI
         src = "\n".join(l for l in src.split("\n") if not l.lstrip().startswith("//"))  # nor are comments
         receivers = "|".join(sorted({"d", "d2", *DLU_LOCALS.findall(src)}))
-        calls = re.compile(CALLS.replace(r"d2?\.", rf"\b(?:{receivers})\."))
+        calls = re.compile(CALLS.replace(r"d2?\.", rf"\b(?:{receivers})\s*\."))
         for m in calls.finditer(src):
             s = unescape(m.group(1))
             if re.search("[A-Za-z]{2}", s) and "{" not in s and "=" not in s and not re.match(r"^[a-z_:./*\\-]+$", s) and not NOT_UI.search(s):
