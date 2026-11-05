@@ -80,7 +80,7 @@ def startup(app):
             try:
                 deadline = started + 60
                 ready = False
-                while time.monotonic() < deadline and process.poll() is None:
+                while time.monotonic() < deadline:
                     for port in ports:
                         request = urllib.request.Request(f"http://127.0.0.1:{port}/config", data=b"", headers={"X-NDM": "1"})
                         try:
@@ -92,6 +92,13 @@ def startup(app):
                             break
                     if ready:
                         break
+                    # NDM can hand startup to a child when changing renderer.
+                    # Follow that process group until its bridge is ready.
+                    if process.poll() is not None:
+                        try:
+                            os.killpg(process.pid, 0)
+                        except ProcessLookupError:
+                            break
                     time.sleep(0.02)
                 if not ready:
                     output.seek(0)
@@ -105,8 +112,13 @@ def startup(app):
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
+                    pass
+                # A fallback renderer can outlive the original launcher.
+                try:
                     os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=5)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
     return {"case": "startup_to_bridge", "trials_seconds": samples, "median_seconds": sorted(samples)[1]}
 
 

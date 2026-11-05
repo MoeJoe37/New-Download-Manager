@@ -29,6 +29,8 @@ jobs:
         run: python3 tools/check-boundaries.py
       - name: Translation scanner
         run: python3 tools/test_language_scanner.py
+      - name: Startup observer regression tests
+        run: python3 tools/test_benchmark.py
       - name: Check move commits
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -173,12 +175,16 @@ jobs:
       - name: FFmpeg media integration (TS, HLS, MP4, MKV and synchronization)
         run: cargo test --release --locked actual_media_ -- --ignored --test-threads=1
       - name: AppImage
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: bash tools/appimage.sh
       - name: .deb, .rpm and .tar.gz
         run: bash tools/linux-packages.sh target/release/ndm
       - name: Startup benchmark prerequisites
         if: matrix.runner == 'ubuntu-latest'
-        run: apt-get install -y -qq xvfb xauth libgl1-mesa-dri libglx-mesa0
+        run: |
+          apt-get install -y -qq xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 \
+            libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0 fonts-dejavu-core libdbus-1-3
       - name: Native performance report
         if: matrix.runner != 'ubuntu-latest'
         run: python3 tools/benchmark.py --output artifacts/performance.json
