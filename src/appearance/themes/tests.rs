@@ -190,7 +190,7 @@ fn bundled_theme_and_readme_examples_load() {
         fonts.font_data.values().next().unwrap().font.as_ref(),
     )
     .unwrap();
-    let readme = include_str!("../../../README.md");
+    let readme = include_str!("../../../README.md").replace("\r\n", "\n");
     let guide = readme
         .split("## Custom themes\n")
         .nth(1)
