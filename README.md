@@ -129,17 +129,17 @@ Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager
    (Start menu → New Download Manager → *Browser extension folder*). Or choose **Tasks → Export
    extension...** in NDM, choose **Chromium-based browsers** or **Firefox / Mozilla-based browsers**,
    and pick a destination. NDM opens the matching folder with an `INSTALL.txt` guide. Chromium browsers
-   use **Load unpacked**; Firefox, Zen, Waterfox and other Firefox browsers use **Load Temporary Add-on**
-   in `about:debugging#/runtime/this-firefox` and select `manifest.json`. Firefox removes unsigned
-   temporary add-ons on restart; permanent installation requires a Mozilla-signed add-on.
+   use **Load unpacked**. For Firefox, Zen, Waterfox and other Firefox browsers, open `about:addons`,
+   use the gear menu → **Install Add-on From File...**, select `NDM-Firefox.xpi` and confirm installation.
+   The Firefox add-on is signed by Mozilla and stays installed after browser restarts.
 3. Start NDM once, so the browser can reach it.
 
 **macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first
 time, right-click (or Control-click) NDM in Applications and choose **Open**, then **Open** again; after that
 it starts normally. (Or run `xattr -dr com.apple.quarantine /Applications/NDM.app` once in Terminal.) Its
-icon sits in the menu bar while it runs; links can be dropped on its window or on the drop target. Load the browser extension from
+icon sits in the menu bar while it runs; links can be dropped on its window or on the drop target. Load the Chromium browser extension from
 `~/Library/Application Support/NewDownloadManager/extension`, the copy NDM keeps there so updates don't move
-it (*Options → General → Reintegrate All* shows the steps for each browser).
+it (*Options → General → Reintegrate All* shows the steps for each browser). For Firefox, use the signed export described above.
 
 **Linux:** download the package for your distribution and processor: `.deb` (Debian, Ubuntu, Mint, Raspberry
 Pi OS), `.rpm` (Fedora, RHEL, openSUSE), the AppImage (any distribution: make it executable with

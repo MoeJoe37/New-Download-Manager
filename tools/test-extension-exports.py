@@ -26,10 +26,11 @@ def export(destination):
             f'#[path={json.dumps(str(ROOT / "src/app/browser_setup/export.rs"))}] mod export;\n'
             'fn main() {\n'
             'let args: Vec<_> = std::env::args_os().collect();\n'
-            'for firefox in [false, true] {\n'
-            'let folder = export::write_export(std::path::Path::new(&args[1]), '
-            'std::path::Path::new(&args[2]), firefox, "Browser test fixture").unwrap();\n'
-            'println!("{}", folder.display());\n}\n}\n', encoding="utf-8")
+            'let source = std::path::Path::new(&args[1]);\n'
+            'let parent = std::path::Path::new(&args[2]);\n'
+            'println!("{}", export::write_chromium_export(source, parent, "Browser test fixture").unwrap().display());\n'
+            'println!("{}", export::write_firefox_export(parent, "Browser test fixture").unwrap().display());\n'
+            '}\n', encoding="utf-8")
         subprocess.run(["cargo", "run", "--quiet", "--manifest-path", str(project / "Cargo.toml"),
                         "--", str(ROOT / "extension"), str(destination)], check=True)
 

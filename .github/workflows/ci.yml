@@ -52,7 +52,9 @@ jobs:
         with:
           toolchain: 1.99.1
       - name: Export browser-specific extension folders
-        run: python3 tools/test-extension-exports.py "$RUNNER_TEMP/ndm-extension-exports"
+        run: |
+          python3 tools/test-signed-extension.py
+          python3 tools/test-extension-exports.py "$RUNNER_TEMP/ndm-extension-exports"
       - name: Install Chromium and FFmpeg
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1
@@ -66,7 +68,7 @@ jobs:
       - name: Installed Firefox integration
         run: python3 tools/test-firefox.py --firefox "$RUNNER_TEMP/ndm-firefox/firefox/firefox"
       - name: Exported Firefox integration
-        run: python3 tools/test-firefox.py --firefox "$RUNNER_TEMP/ndm-firefox/firefox/firefox" --extension "$RUNNER_TEMP/ndm-extension-exports/NDM extension - Firefox"
+        run: python3 tools/test-firefox.py --firefox "$RUNNER_TEMP/ndm-firefox/firefox/firefox" --extension "$RUNNER_TEMP/ndm-extension-exports/NDM extension - Firefox/NDM-Firefox.xpi" --permanent
       - name: Extension video handoff
         run: node tools/test-extension.mjs
       - name: Packaged browser extension

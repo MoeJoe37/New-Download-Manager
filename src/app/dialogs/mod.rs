@@ -832,7 +832,7 @@ impl App {
             Dialog::Exceptions { list, sel, ask } => self.dialog_exceptions(ui, list, sel, ask),
             Dialog::ExcAdd { addr } => self.dialog_exc_add(ui, addr),
             Dialog::BrowserDetails { name } => self.dialog_browser_details(ui, name),
-            Dialog::Integrate { b } => Self::dialog_integrate(ui, b),
+            Dialog::Integrate { b } => self.dialog_integrate(ui, b),
             Dialog::ExtensionExport { firefox } => self.dialog_extension_export(ui, firefox),
             Dialog::Keys { k } => self.dialog_keys(ui, k),
             Dialog::MenuItems { dl, all } => self.dialog_menu_items(ui, dl, all),

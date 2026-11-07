@@ -110,13 +110,12 @@ Integrate "Browsers integration" 676.6x320.0
   rect 0.0,0.0 676.5,320.0
   text 11.0,10.0 42.0,19.0 "Firefox"
   rect 8.5,35.0 668.0,249.5
-  text 19.5,46.0 655.5,67.0 "To capture downloads from Firefox, open its extensions page (about:debugging), click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in this folder. Firefox removes the add-on when it closes, so load it again after a restart:"
-  rect 19.5,147.0 658.5,169.5
-  text 22.5,154.0 "<extension directory>"
+  text 19.5,46.0 643.5,67.0 "To capture downloads from Firefox, export the signed add-on below. Open about:addons in your browser, choose \"Install Add-on From File...\" from the gear menu and select NDM-Firefox.xpi. Confirm installation; the add-on stays installed after a browser restart."
+  text 19.5,154.0 248.5,164.0 "Export the signed add-on to a folder of your choice."
   rect 19.5,259.0 145.0,281.5
   text 33.0,266.0 131.0,276.0 "Open extensions page"
-  rect 153.5,259.0 251.0,281.5
-  text 175.0,266.0 230.0,276.0 "Open folder"
+  rect 153.5,259.0 314.0,281.5
+  text 183.0,266.0 284.0,276.0 "Export signed add-on..."
   rect 597.0,288.0 667.0,310.5
   text 620.0,294.5 644.0,303.5 "Close"
 
@@ -1469,7 +1468,7 @@ ExtensionExport "Export extension" 460.4x252.8
   circle 13.5,111.0 28.5,126.0
   text 32.0,114.0 174.0,124.0 "Firefox / Mozilla-based browsers"
   text 32.0,138.0 333.0,148.0 "Firefox, Zen, Waterfox, LibreWolf, Floorp and other Firefox browsers"
-  text 14.0,167.5 432.0,187.5 "NDM exports a ready-to-load folder with installation steps. Firefox removes temporary add-ons when the browser closes."
+  text 14.0,167.5 435.0,188.5 "NDM exports a Mozilla-signed Firefox add-on or an unpacked Chromium folder, with installation steps."
   rect 270.5,219.0 353.0,241.5
   text 293.5,227.0 329.5,236.0 "Export..."
   rect 362.5,219.0 445.0,241.5

@@ -52,7 +52,7 @@ impl App {
             10.0,
             "Firefox, Zen, Waterfox, LibreWolf, Floorp and other Firefox browsers",
         );
-        d.text(10.0, 104.0, 310.0, 24.0, "NDM exports a ready-to-load folder with installation steps. Firefox removes temporary add-ons when the browser closes.");
+        d.text(10.0, 104.0, 310.0, 24.0, "NDM exports a Mozilla-signed Firefox add-on or an unpacked Chromium folder, with installation steps.");
         let export = d.button(194.0, 137.0, 59.0, 14.0, "Export...", true);
         let cancel = d.button(260.0, 137.0, 59.0, 14.0, "Cancel", true);
         if export {
@@ -257,8 +257,13 @@ impl App {
         !d.button(227.0, 73.0, 67.0, 14.0, "Close", true)
     }
 
-    pub(super) fn dialog_integrate(ui: &mut egui::Ui, b: &mut core::settings::Browser) -> bool {
+    pub(super) fn dialog_integrate(
+        &mut self,
+        ui: &mut egui::Ui,
+        b: &mut core::settings::Browser,
+    ) -> bool {
         let page = extension_page(b).unwrap_or_default();
+        let firefox = page == "about:addons";
         let dir = extension_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -271,7 +276,6 @@ impl App {
             RichText::new(b.name.as_str()).strong(),
         );
         d.group(6.0, 18.0, 473.0, 138.0, "");
-        // ponytail: unsigned add-ons only load temporarily in release Firefox; signing on AMO makes it permanent
         d.text(
             14.0,
             28.0,
@@ -279,7 +283,17 @@ impl App {
             60.0,
             GUIDES[!page.starts_with("about:") as usize],
         );
-        d.readonly(14.0, 92.0, 458.0, 14.0, &dir);
+        if firefox {
+            d.label(
+                14.0,
+                92.0,
+                458.0,
+                14.0,
+                "Export the signed add-on to a folder of your choice.",
+            );
+        } else {
+            d.readonly(14.0, 92.0, 458.0, 14.0, &dir);
+        }
         if d.button(
             14.0,
             162.0,
@@ -292,7 +306,11 @@ impl App {
             win::clean_env(&mut c);
             let _ = c.arg(&page).spawn();
         }
-        if d.button(110.0, 162.0, 70.0, 14.0, "Open folder", !dir.is_empty()) {
+        if firefox {
+            if d.button(110.0, 162.0, 115.0, 14.0, "Export signed add-on...", true) {
+                self.export_extension_for(true);
+            }
+        } else if d.button(110.0, 162.0, 70.0, 14.0, "Open folder", !dir.is_empty()) {
             explore(&dir);
         }
         !d.button(428.0, 180.0, 50.0, 14.0, "Close", true)

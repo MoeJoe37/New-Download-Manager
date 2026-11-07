@@ -29,41 +29,40 @@ fn extension_exports_match_browser_families() {
         } else {
             "Chromium steps"
         };
-        let dest = write_export(&source, &root, firefox, guide).unwrap();
-        assert_assets(&source, &dest);
+        let export = || {
+            if firefox {
+                write_firefox_export(&root, guide)
+            } else {
+                write_chromium_export(&source, &root, guide)
+            }
+        };
+        let dest = export().unwrap();
         assert_eq!(
             std::fs::read_to_string(dest.join("INSTALL.txt")).unwrap(),
             guide
         );
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(dest.join("manifest.json")).unwrap()).unwrap();
-        for key in [
-            "version",
-            "manifest_version",
-            "content_scripts",
-            "host_permissions",
-            "action",
-            "options_ui",
-        ] {
-            assert_eq!(manifest[key], original[key]);
-        }
         if firefox {
-            assert!(manifest["background"].get("service_worker").is_none());
             assert_eq!(
-                manifest["background"]["scripts"],
-                original["background"]["scripts"]
+                std::fs::read(dest.join("NDM-Firefox.xpi")).unwrap(),
+                FIREFOX_XPI
             );
-            assert!(manifest.get("key").is_none());
-            assert_eq!(
-                manifest["browser_specific_settings"],
-                original["browser_specific_settings"]
-            );
-            assert!(!manifest["permissions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|p| p == "downloads.ui"));
+            assert!(!dest.join("manifest.json").exists());
+            assert!(!dest.join("background.js").exists());
         } else {
+            assert_assets(&source, &dest);
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dest.join("manifest.json")).unwrap())
+                    .unwrap();
+            for key in [
+                "version",
+                "manifest_version",
+                "content_scripts",
+                "host_permissions",
+                "action",
+                "options_ui",
+            ] {
+                assert_eq!(manifest[key], original[key]);
+            }
             assert_eq!(
                 manifest["background"]["service_worker"],
                 original["background"]["service_worker"]
@@ -75,7 +74,7 @@ fn extension_exports_match_browser_families() {
         }
         // Re-exporting must not replace or mix browser packages already in use.
         std::fs::write(dest.join("keep.txt"), "existing export").unwrap();
-        let second = write_export(&source, &root, firefox, guide).unwrap();
+        let second = export().unwrap();
         assert_ne!(dest, second);
         assert_eq!(
             std::fs::read_to_string(dest.join("keep.txt")).unwrap(),
@@ -94,7 +93,7 @@ fn extension_export_rejects_recursive_destination() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("manifest.json"), "{}").unwrap();
     assert_eq!(
-        write_export(&root, &root, false, "guide")
+        write_chromium_export(&root, &root, "guide")
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidInput

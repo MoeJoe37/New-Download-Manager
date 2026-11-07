@@ -991,3 +991,8 @@ NDM exports a ready-to-load folder with installation steps. Firefox removes temp
 The browser extension is in this folder:\n%s=إضافة المتصفح موجودة في هذا المجلد:\n%s
 The extension manifest has no background scripts.=لا يحتوي ملف تعريف الإضافة على نصوص برمجية تعمل في الخلفية.
 The extension manifest is invalid.=ملف تعريف الإضافة غير صالح.
+1. Open about:addons in your browser.\n2. Open the gear menu, choose "Install Add-on From File..." and select NDM-Firefox.xpi in this folder.\n3. Confirm the installation.\n\nThis add-on is signed by Mozilla and stays installed after restarting the browser.\n\nKeep NDM running to receive downloads.=1. افتح about:addons في متصفحك.\n2. افتح قائمة الترس، واختر "ثبّت إضافة من ملف..." ثم اختر NDM-Firefox.xpi في هذا المجلد.\n3. أكّد التثبيت.\n\nهذه الإضافة موقّعة من Mozilla وتبقى مثبتة بعد إعادة تشغيل المتصفح.\n\nأبقِ NDM قيد التشغيل لاستقبال التنزيلات.
+Export signed add-on...=تصدير الإضافة الموقّعة...
+Export the signed add-on to a folder of your choice.=صدّر الإضافة الموقّعة إلى مجلد من اختيارك.
+NDM exports a Mozilla-signed Firefox add-on or an unpacked Chromium folder, with installation steps.=يصدّر NDM إضافة Firefox موقّعة من Mozilla أو مجلد إضافة Chromium غير مضغوط، مع خطوات التثبيت.
+To capture downloads from Firefox, export the signed add-on below. Open about:addons in your browser, choose "Install Add-on From File..." from the gear menu and select NDM-Firefox.xpi. Confirm installation; the add-on stays installed after a browser restart.=لالتقاط التنزيلات من Firefox، صدّر الإضافة الموقّعة أدناه. افتح about:addons في متصفحك، واختر "ثبّت إضافة من ملف..." من قائمة الترس، ثم اختر NDM-Firefox.xpi. أكّد التثبيت؛ ستبقى الإضافة مثبتة بعد إعادة تشغيل المتصفح.
