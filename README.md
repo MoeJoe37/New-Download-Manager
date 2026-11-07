@@ -344,6 +344,7 @@ Colors use `#RRGGBB` or `#RRGGBBAA` (the last two digits are opacity).
 | `accent`, `accent_hot`, `accent_soft`, `on_accent` | Selection, links and action controls |
 | `danger`, `success` | Errors and completed/running status indicators |
 | `toolbar.<button>` | Tint for NDM Style's built-in line icon, e.g. `toolbar.add-url` |
+| `categories.<item>` | Tint for NDM Style's built-in category tree icon, by its picture name, e.g. `categories.video`, `categories.queue-running` |
 
 The palette also reaches NDM's painted controls and category tree. For standard controls, `style` provides
 more detailed overrides. To give one panel a different color, use a region rather than the shared palette.
