@@ -817,3 +817,43 @@ fn explorer_takes_any_path() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Update only this application's shortcuts in user-owned launcher folders. The signed executable
+/// stays intact; winit updates the running window's taskbar/title icon separately.
+pub fn set_application_icon(_pixels: &Rgba, icon: &std::path::Path, _custom: bool) {
+    let icon = icon.to_path_buf();
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    std::thread::spawn(move || {
+        use std::os::windows::process::CommandExt;
+        let script = r#"
+$ErrorActionPreference='Stop'
+$ws=New-Object -ComObject WScript.Shell
+$exe=[IO.Path]::GetFullPath($env:NDM_EXE_PATH)
+$folders=@([Environment]::GetFolderPath('DesktopDirectory'),[Environment]::GetFolderPath('Programs'),(Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'))
+$found=$false
+foreach($folder in $folders) {
+ if(Test-Path -LiteralPath $folder) {
+  Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+   $link=$ws.CreateShortcut($_.FullName)
+   if($link.TargetPath -and [IO.Path]::GetFullPath($link.TargetPath) -ieq $exe) {
+    $link.IconLocation=$env:NDM_ICON_PATH+',0';$link.Save();$found=$true
+   }
+  }
+ }
+}
+if(-not $found) {
+ $link=$ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'New Download Manager.lnk'))
+ $link.TargetPath=$exe;$link.WorkingDirectory=[IO.Path]::GetDirectoryName($exe)
+ $link.IconLocation=$env:NDM_ICON_PATH+',0';$link.Save()
+}
+"#;
+        let _ = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("NDM_EXE_PATH", exe)
+            .env("NDM_ICON_PATH", icon)
+            .creation_flags(0x08000000)
+            .status();
+    });
+}

@@ -700,8 +700,13 @@ pub(crate) fn help_body(
 
     // the page, in a reading column of about 65 characters
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(paper))
+        .frame(crate::appearance::themes::frame(
+            "help",
+            egui::Frame::new().fill(paper),
+            ui.visuals().dark_mode,
+        ))
         .show_inside(ui, |ui| {
+            crate::appearance::themes::paint(ui, "help");
             let query = search.trim().to_lowercase();
             egui::ScrollArea::vertical()
                 .auto_shrink(false)

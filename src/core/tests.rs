@@ -327,6 +327,30 @@ fn queues() {
 }
 
 #[test]
+fn appearance_settings_migrate_old_tray_and_keep_custom_choices() {
+    let root = std::env::temp_dir().join(format!("ndm-appearance-state-{}", std::process::id()));
+    for mode in [1, 2, 3, 4] {
+        let saved: Saved = serde_json::from_value(serde_json::json!({"settings":{
+            "tray_icon":mode,"tray_custom_icon":"tray-test.png","app_icon":"app-test.png",
+            "theme":"Aurora","ndm_style":true,"scale_text":1.25},"items":[]}))
+        .unwrap();
+        let core = Core::from_saved(saved, root.join("state.json"));
+        let s = core.settings();
+        assert_eq!(s.tray_icon, if mode == 1 { 2 } else { mode });
+        assert_eq!(s.tray_custom_icon, "tray-test.png");
+        assert_eq!(s.app_icon, "app-test.png");
+        assert_eq!(s.theme, "Aurora");
+        assert!(s.ndm_style);
+        assert_eq!(s.scale_text, 1.25);
+        let json = serde_json::to_value(&*s).unwrap();
+        let reloaded: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(reloaded.theme, s.theme);
+        assert_eq!(reloaded.app_icon, s.app_icon);
+    }
+    assert_eq!(Settings::default().tray_icon, 2);
+}
+
+#[test]
 fn removed_view_options_preserve_settings() {
     // Old size/theme keys are ignored; the remaining style and custom scales still round-trip.
     for ndm_style in [false, true] {

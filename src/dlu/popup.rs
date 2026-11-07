@@ -35,7 +35,8 @@ pub fn scale_popup(ui: &mut egui::Ui) {
     });
     basis.scale = scale;
     ui.data_mut(|data| data.insert_temp(id, basis));
-    let base = ui.ctx().style();
+    let mut base = (*ui.ctx().style()).clone();
+    crate::appearance::themes::region_style(&mut base, "popup", ui.visuals().dark_mode);
     let style = ui.style_mut();
     style.text_styles = base
         .text_styles
@@ -78,6 +79,7 @@ pub fn scale_popup(ui: &mut egui::Ui) {
         };
         ui.set_width(width);
     }
+    crate::appearance::themes::background(ui, "popup");
 }
 
 #[cfg(test)]

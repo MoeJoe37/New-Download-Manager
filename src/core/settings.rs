@@ -193,11 +193,16 @@ pub struct Settings {
     /// View -> Toolbar -> "NDM Style": NDM's own modern look (rounded controls, accent colour, flat
     /// sidebar, status bar). When off, use Modern style.
     pub ndm_style: bool,
+    /// Installed theme folder, or empty for a built-in theme.
+    pub theme: String,
+    /// Converted icon names in the settings icons folder; empty means the default.
+    pub app_icon: String,
+    pub tray_custom_icon: String,
     /// View -> "Custom scale...": the toolbar, the categories pane and the main window's text, 1.0 = 100%.
     pub scale_toolbar: f32,
     pub scale_tree: f32,
     pub scale_text: f32,
-    /// View -> "NDM tray icon": 1 3D style (app icon), 2 2D style, 3 Don't show.
+    /// View -> "NDM tray icon": 2 Default, 3 Don't show, 4 Custom (1 is migrated to Default).
     pub tray_icon: u8,
     /// "Customize download progress dialog" (template 367, 0x435a00): Start view 0 normal / 1 minimized /
     /// 2 don't show (PrgrDlgVisiblity), Speed Limiter tab, Options on completion tab, "Hide tab" buttons.
@@ -460,10 +465,13 @@ impl Default for Settings {
             close_note_shown: false,
             tip_next: 0,
             ndm_style: false,
+            theme: String::new(),
+            app_icon: String::new(),
+            tray_custom_icon: String::new(),
             scale_toolbar: 1.0,
             scale_tree: 1.0,
             scale_text: 1.0,
-            tray_icon: 1,
+            tray_icon: 2,
             prog_view: 0,
             ask_queue_later: true,
             ask_queue_batch: true,

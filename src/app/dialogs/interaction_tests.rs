@@ -11,6 +11,7 @@ struct Desktop {
     app: App,
     ctx: egui::Context,
     time: f64,
+    commands: Vec<egui::ViewportCommand>,
 }
 
 impl Desktop {
@@ -32,6 +33,7 @@ impl Desktop {
             app,
             ctx,
             time: 0.0,
+            commands: vec![],
         }
     }
 
@@ -62,29 +64,38 @@ impl Desktop {
                 });
             },
         );
-        fn labels(shape: &egui::Shape, out: &mut HashMap<String, Rect>) {
+        self.commands = output
+            .viewport_output
+            .values()
+            .flat_map(|v| v.commands.clone())
+            .collect();
+        fn labels(shape: &egui::Shape, clip: Rect, out: &mut HashMap<String, Rect>) {
             match shape {
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| labels(s, out)),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| labels(s, clip, out)),
                 egui::Shape::Text(text) => {
-                    out.insert(
-                        text.galley.text().to_string(),
-                        text.galley.rect.translate(text.pos.to_vec2()),
-                    );
+                    let rect = text
+                        .galley
+                        .rect
+                        .translate(text.pos.to_vec2())
+                        .intersect(clip);
+                    if rect.is_positive() {
+                        out.insert(text.galley.text().to_string(), rect);
+                    }
                 }
                 _ => {}
             }
         }
         let mut text = HashMap::new();
         for shape in output.shapes {
-            labels(&shape.shape, &mut text);
+            labels(&shape.shape, shape.clip_rect, &mut text);
         }
         text
     }
 
-    fn toolbar_style(&mut self, label: &str) {
+    fn theme_style(&mut self, label: &str) {
         let mut menu = |app: &mut App, _: &egui::Context, ui: &mut egui::Ui| {
             dlu::scale_popup(ui);
-            app.toolbar_menu(ui);
+            app.themes_menu(ui);
         };
         self.render(vec![], &mut menu);
         let labels = self.render(vec![], &mut menu);
@@ -95,8 +106,8 @@ impl Desktop {
             );
         }
         for kept in [
-            "Customize...",
-            "Built-in toolbar",
+            "Install theme...",
+            "Reload theme",
             "Modern style",
             "NDM Style",
         ] {
@@ -117,6 +128,65 @@ impl Desktop {
                 &mut menu,
             );
         }
+    }
+
+    fn scroll_quality_to(&mut self, dialog: &mut Dialog, label: &str) {
+        let labels = self.frame(dialog, vec![]).0;
+        if labels.contains_key(&i18n::tr(label)) {
+            return;
+        }
+        let pos = self
+            .ctx
+            .memory(|m| {
+                m.areas()
+                    .top_layer_id(egui::Order::Foreground)
+                    .and_then(|l| m.area_rect(l.id))
+            })
+            .expect("popup rectangle")
+            .center();
+        let choices = [
+            "Best",
+            "2160p",
+            "1440p",
+            "1080p",
+            "720p",
+            "480p",
+            "360p",
+            "Audio only (M4A)",
+            "Audio only (MP3)",
+        ];
+        let target = choices.iter().position(|c| *c == label).unwrap();
+        let first = choices
+            .iter()
+            .position(|c| {
+                labels.get(&i18n::tr(c)).is_some_and(|r| {
+                    self.ctx
+                        .layer_id_at(r.center())
+                        .is_some_and(|l| l.order == egui::Order::Foreground)
+                })
+            })
+            .unwrap_or(0);
+        let delta = if target < first { 64.0 } else { -64.0 };
+        for _ in 0..8 {
+            self.frame(
+                dialog,
+                vec![
+                    Event::PointerMoved(pos),
+                    Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new(0.0, delta),
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+            );
+            for _ in 0..8 {
+                self.frame(dialog, vec![]);
+            }
+            if self.frame(dialog, vec![]).0.contains_key(&i18n::tr(label)) {
+                return;
+            }
+        }
+        panic!("Could not scroll quality menu to {label}");
     }
 
     fn click_at(&mut self, dialog: &mut Dialog, pos: Pos2) -> bool {
@@ -145,8 +215,12 @@ impl Desktop {
     }
 
     fn click(&mut self, dialog: &mut Dialog, label: &str) -> bool {
-        let (labels, _) = self.frame(dialog, vec![]);
+        let (mut labels, _) = self.frame(dialog, vec![]);
         let translated = i18n::tr(label);
+        if !labels.contains_key(&translated) && self.ctx.memory(|m| m.any_popup_open()) {
+            self.scroll_quality_to(dialog, label);
+            labels = self.frame(dialog, vec![]).0;
+        }
         let rect = labels
             .get(&translated)
             .unwrap_or_else(|| panic!("Missing {label:?}: {:?}", labels.keys()));
@@ -189,11 +263,27 @@ fn desktop_interactions() {
         let core = Core::for_dialog_snapshots(root.join("state.json"), vec![]);
         core.settings().base_dir = root.display().to_string();
         let mut desktop = Desktop::new(core.clone(), scale);
+        let labels = desktop.render(vec![], |app, _, ui| app.toolbar_menu(ui));
+        for absent in [
+            "Large Buttons",
+            "Small Buttons",
+            "Classic style",
+            "Modern style",
+            "NDM Style",
+        ] {
+            assert!(
+                !labels.contains_key(&i18n::tr(absent)),
+                "{absent} is still in Toolbar"
+            );
+        }
+        for present in ["Customize...", "Built-in toolbar"] {
+            assert!(labels.contains_key(&i18n::tr(present)));
+        }
 
         for text_scale in [0.5, 1.0, 2.0] {
             dlu::set_popup_scale(&desktop.ctx, text_scale);
             for (label, ndm) in [("NDM Style", true), ("Modern style", false)] {
-                desktop.toolbar_style(label);
+                desktop.theme_style(label);
                 assert_eq!(core.settings().ndm_style, ndm);
                 assert_eq!(dlu::ndm(), ndm);
                 if text_scale == 1.0 {
@@ -220,6 +310,100 @@ fn desktop_interactions() {
             }
         }
         dlu::set_popup_scale(&desktop.ctx, 1.0);
+        // Both icon menus offer Default/import; the retired 3D/2D choices are absent.
+        for app_icon in [false, true] {
+            let labels = desktop.render(vec![], |app, _, ui| app.icon_menu(ui, app_icon));
+            for label in ["Default", "Choose icon..."] {
+                assert!(labels.contains_key(&i18n::tr(label)));
+            }
+            for label in ["3D style", "2D style"] {
+                assert!(!labels.contains_key(&i18n::tr(label)));
+            }
+            assert_eq!(labels.contains_key(&i18n::tr("Don't show")), !app_icon);
+        }
+
+        let theme_dir = core.config_dir().join("themes/Fixture");
+        std::fs::create_dir_all(&theme_dir).unwrap();
+        std::fs::write(
+            theme_dir.join("background.png"),
+            include_bytes!("../../../assets/ndm2d.png"),
+        )
+        .unwrap();
+        let theme_json = serde_json::json!({"version":1,"name":"Fixture theme","base":"ndm",
+            "common":{"palette":{"accent":"#B45599"},"metrics":{"control_radius":9},
+                "style":{"text_styles":{"Body":{"size":11}}},
+                "regions":{"toolbar":{"fill":"#102030","image":"background.png","image_mode":"contain"}}}});
+        std::fs::write(
+            theme_dir.join("theme.json"),
+            serde_json::to_vec(&theme_json).unwrap(),
+        )
+        .unwrap();
+        desktop.theme_style("Fixture theme");
+        assert_eq!(core.settings().theme, "Fixture");
+        assert_eq!(
+            desktop.ctx.style().visuals.hyperlink_color,
+            egui::Color32::from_rgb(0xB4, 0x55, 0x99)
+        );
+        assert_eq!(dlu::control_radius(), 9.0);
+        desktop.render(vec![], |app, _, ui| {
+            crate::appearance::themes::frame("toolbar", egui::Frame::new(), false).show(ui, |ui| {
+                crate::appearance::themes::paint(ui, "toolbar");
+                app.toolbar(ui, &[], &[]);
+            });
+        });
+        for text_scale in [0.5, 1.0, 2.0] {
+            dlu::set_popup_scale(&desktop.ctx, text_scale);
+            let mut dialog = file_info(
+                &core,
+                &root,
+                "https://example.test/themed-video".into(),
+                true,
+            );
+            desktop.click(&mut dialog, "Best");
+            desktop.scroll_quality_to(&mut dialog, "720p");
+            desktop.click(&mut dialog, "720p");
+            assert!(!desktop.ctx.memory(|m| m.any_popup_open()));
+            assert!(!desktop.click(&mut dialog, "Cancel"));
+        }
+        dlu::set_popup_scale(&desktop.ctx, 1.0);
+        let revision = crate::appearance::themes::revision();
+        std::fs::write(theme_dir.join("theme.json"), b"{broken JSON").unwrap();
+        desktop.theme_style("Reload theme");
+        assert_eq!(core.settings().theme, "Fixture");
+        assert_eq!(
+            crate::appearance::themes::revision(),
+            revision,
+            "bad reload replaced the working theme"
+        );
+        assert!(matches!(
+            desktop.app.dialogs.pop(),
+            Some((_, Dialog::Info { .. }))
+        ));
+        std::fs::write(
+            theme_dir.join("theme.json"),
+            serde_json::to_vec(&theme_json).unwrap(),
+        )
+        .unwrap();
+        desktop.theme_style("Reload theme");
+        assert!(crate::appearance::themes::revision() > revision);
+        desktop.theme_style("Modern style");
+        assert!(core.settings().theme.is_empty());
+        assert_eq!(dlu::control_radius(), 5.0);
+
+        let icon = crate::appearance::icons::import(
+            core.config_dir(),
+            &theme_dir.join("background.png"),
+            true,
+        )
+        .unwrap();
+        core.settings().app_icon = icon.clone();
+        crate::appearance::icons::initialize(core.config_dir(), &icon, "");
+        desktop.render(vec![], |app, ctx, _| app.apply_app_icon(ctx, false));
+        assert!(desktop.commands.iter().any(
+            |c| matches!(c,egui::ViewportCommand::Icon(Some(i)) if i.width==256 && i.height==256)
+        ));
+        core.settings().app_icon.clear();
+        crate::appearance::icons::initialize(core.config_dir(), "", "");
 
         desktop.app.export_extension();
         let (_, mut export) = desktop.app.dialogs.pop().unwrap();

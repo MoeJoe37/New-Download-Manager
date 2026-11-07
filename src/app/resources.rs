@@ -31,31 +31,31 @@ pub(in crate::app) fn cached_texture(
     t
 }
 
+pub(in crate::app) fn app_icon_texture(ctx: &egui::Context, name: &str) -> egui::TextureHandle {
+    let key = egui::Id::new(("app-icon", name));
+    let revision = crate::appearance::icons::revision();
+    if let Some((r, t)) = ctx.data(|d| d.get_temp::<(u64, egui::TextureHandle)>(key)) {
+        if r == revision {
+            return t;
+        }
+    }
+    let t = texture(ctx, name, &app_icon());
+    ctx.data_mut(|d| d.insert_temp(key, (revision, t.clone())));
+    t
+}
+
 pub(in crate::app) fn help_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    cached_texture(ctx, "help_logo", || Some(app_icon()))
+    Some(app_icon_texture(ctx, "help_logo"))
 }
 
 /// The app's own icon (assets/ndm.png, 256 px with alpha; the .exe gets assets/ndm.ico via build.rs).
 pub(crate) fn app_icon() -> win::Rgba {
-    let i = eframe::icon_data::from_png_bytes(include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/assets/ndm.png"
-    )))
-    .expect("bundled icon");
-    (i.width as usize, i.height as usize, i.rgba)
+    crate::appearance::icons::app()
 }
 
-/// Tray picture for View -> "NDM tray icon": 1 = 3D style (the app icon), 2 = 2D style (assets/ndm2d.png).
+/// Default 2D tray art, or the user's converted custom icon. Hidden state is handled by the tray owner.
 pub(in crate::app) fn tray_picture(style: u8) -> Option<tray_icon::Icon> {
-    let (w, h, rgba) = match style {
-        2 => eframe::icon_data::from_png_bytes(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/ndm2d.png"
-        )))
-        .map(|i| (i.width as usize, i.height as usize, i.rgba))
-        .ok()?,
-        _ => app_icon(),
-    };
+    let (w, h, rgba) = crate::appearance::icons::tray(style == 4);
     tray_icon::Icon::from_rgba(rgba, w as u32, h as u32).ok()
 }
 
@@ -417,8 +417,13 @@ impl Toolbar {
         let pictures = (0..TB_ICONS)
             .map(|k| {
                 let file = |suffix: &str| {
-                    let d = dir.as_ref()?;
                     let name = format!("{}{suffix}.png", TB_FILES[k]);
+                    if let Some(picture) = crate::appearance::themes::asset_dir("toolbar")
+                        .and_then(|d| tb_picture(&d.join(&name), cw, ch))
+                    {
+                        return Some(picture);
+                    }
+                    let d = dir.as_ref()?;
                     let root = d.join(&name);
                     // Keep older custom sets that stored pictures only in small/ usable.
                     let f = if root.is_file() {
@@ -474,7 +479,11 @@ impl Toolbar {
         } else {
             let (on_dark, on_light) = TB_NEON[k];
             let [r, g, b] = if dark { on_dark } else { on_light };
-            let neon = Color32::from_rgb(r, g, b);
+            let neon = crate::appearance::themes::role(
+                &format!("toolbar.{}", TB_FILES[k]),
+                dark,
+                Color32::from_rgb(r, g, b),
+            );
             match state {
                 2 => dlu::theme(dark).muted.gamma_multiply(0.45),
                 // hovered: brighter, towards white on dark, deeper on light
@@ -608,6 +617,7 @@ fn load_fonts(ctx: &egui::Context) {
     fonts
         .families
         .insert(egui::FontFamily::Name("list".into()), list_fam);
+    crate::appearance::themes::apply_fonts(&mut fonts);
     ctx.set_fonts(fonts);
 }
 
@@ -617,6 +627,7 @@ pub(in crate::app) fn style(ctx: &egui::Context, dark: bool) {
 }
 
 pub(in crate::app) fn apply_style(ctx: &egui::Context, dark: bool) {
+    dlu::THEME_DARK.store(dark, Relaxed);
     ctx.set_theme(if dark {
         egui::ThemePreference::Dark
     } else {
@@ -745,6 +756,11 @@ pub(in crate::app) fn apply_style(ctx: &egui::Context, dark: bool) {
             s.text_styles.insert(t, FontId::proportional(size));
         }
     });
+    for theme in [egui::Theme::Light, egui::Theme::Dark] {
+        let mut style = (*ctx.style_of(theme)).clone();
+        crate::appearance::themes::apply_style(&mut style, theme == egui::Theme::Dark);
+        ctx.set_style_of(theme, style);
+    }
 }
 
 /// NDM Style: soft rounded controls on a cool grey ground, the accent colour for selection, focus and
@@ -759,8 +775,8 @@ fn ndm_visuals(v: &mut egui::Visuals, dark: bool) {
         v.faint_bg_color,
     ) = (t.bg, t.surface, t.surface, t.raised);
     v.override_text_color = Some(t.text);
-    v.window_corner_radius = r(dlu::R_CARD + 3.0);
-    v.menu_corner_radius = r(dlu::R_CARD);
+    v.window_corner_radius = r(dlu::card_radius() + 3.0);
+    v.menu_corner_radius = r(dlu::card_radius());
     v.window_stroke = egui::Stroke::new(1.0_f32, t.border);
     v.window_shadow = egui::Shadow {
         offset: [0, 6],
@@ -787,7 +803,7 @@ fn ndm_visuals(v: &mut egui::Visuals, dark: bool) {
         (&mut w.open, t.accent_soft, t.accent),
     ];
     for (wv, fill, stroke) in states {
-        wv.corner_radius = r(dlu::R_CTRL);
+        wv.corner_radius = r(dlu::control_radius());
         (wv.bg_fill, wv.weak_bg_fill) = (fill, fill);
         wv.bg_stroke = egui::Stroke::new(1.0_f32, stroke);
         wv.fg_stroke.color = t.text;

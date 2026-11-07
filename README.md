@@ -77,7 +77,8 @@
 - Saved projects, templates and schedules
 
 **And**
-- Dark mode and two looks: Modern and **NDM Style**, NDM's own modern design for every window
+- Dark mode, Modern and **NDM Style** under **View → Themes**, and [custom themes](#custom-themes) with partial overrides
+- [Custom app and tray icons](#app-and-tray-icons), with automatic image conversion
 - Custom scale for the toolbar, the categories pane and the text, including dropdown menus and their contents (View → Custom scale...)
 - Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
 - Filter box above the list, clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
@@ -249,6 +250,204 @@ its source page and use **Refresh download address** to capture a fresh authoriz
 the resource before using any saved partial bytes.
 
 [Full changes and verification](docs/v-codex-2.8.0.md)
+
+## App and tray icons
+
+**View → NDM tray icon** offers **Default**, **Choose icon...**, and **Don't show**. Default is the flat NDM
+tray picture. After importing a picture, **Custom icon** selects it again. The old 3D option is gone;
+settings that selected it now use Default. Hiding the tray icon also changes how closing the window works:
+NDM minimizes while downloads run, otherwise it exits. Availability of the Linux tray depends on the desktop.
+
+**View → NDM icon → Choose icon...** changes NDM's running window and taskbar icon, its dialog title icons,
+About picture, help logo, and drop target. It also updates NDM shortcuts owned by your Windows account,
+creates a per-user Linux launcher override (including the icon used by Wayland docks), and changes the
+macOS Dock and Finder app-bundle icon. **Default** restores NDM's original app icon. App and tray icons are independent.
+
+You can choose PNG, JPEG, WebP, BMP, GIF, ICO or a self-contained SVG. NDM detects the contents even if the
+extension is wrong, preserves transparency and proportions, and converts the picture to a square PNG.
+On Windows it also creates an ICO containing 16, 24, 32, 48, 64, 128 and 256 pixel pictures. Animated images
+use their first frame. SVG images must embed other pictures instead of referring to external files or URLs.
+Unsupported or damaged files show an error and leave your selection unchanged. Files may be up to 16 MiB.
+
+NDM keeps converted copies in the `icons` folder beside its settings; you can move or delete the source
+picture afterward. Choices survive restarting. Windows Explorer's picture for the executable itself is a
+resource embedded when NDM is built; changing the running icon and shortcuts does not rewrite the executable.
+Pinned launchers may need to be unpinned and pinned again if the desktop keeps an old icon in its cache.
+macOS Finder changes require write access to the application bundle.
+
+## Custom themes
+
+**View → Themes** contains **Modern style**, **NDM Style**, and your installed themes. Toolbar picture sets
+stay under **View → Toolbar**. Themes describe appearance; they do not execute scripts or change download settings.
+
+### Install, select, edit and remove
+
+1. Unzip a theme into a folder. Keep its `theme.json`, fonts, pictures and icon folders together.
+2. Choose **View → Themes → Install theme...** and select `theme.json`. NDM validates it, copies only its
+   referenced assets into its own themes folder, then selects it. The original folder is no longer needed.
+3. Open **View → Themes → Open themes folder** to find installed themes. Each has its own folder and `theme.json`.
+   You can also place a complete theme folder here yourself; it appears when you reopen the Themes menu.
+4. Edit the installed `theme.json` and choose **Reload theme**. A successful reload takes effect immediately,
+   including images and fonts. An invalid reload leaves the previously working theme in place and shows the error.
+5. Select Modern style or NDM Style to return to a built-in look. To remove a custom theme, select another look,
+   then delete its folder. If a selected theme is missing or invalid at startup, NDM falls back to its built-in base.
+
+Theme files live next to `state.json`:
+
+| Platform | Themes folder |
+| --- | --- |
+| Windows | `%APPDATA%\NewDownloadManager\themes` |
+| Linux | `$XDG_CONFIG_HOME/NewDownloadManager/themes`, or `~/.config/NewDownloadManager/themes` |
+| macOS | `~/Library/Application Support/NewDownloadManager/themes` |
+
+### Make your own theme
+
+Choose **View → Themes → Create theme...**. NDM creates and opens a new `My-theme` folder containing:
+
+- `theme.json`: a small working theme that inherits the currently selected built-in base.
+- `style-reference-light.json` and `style-reference-dark.json`: snapshots of all current standard-control style
+  fields, useful for finding field names and value shapes. These reference files are guides, not automatically applied.
+
+Edit `theme.json`, select its name from View → Themes, and use Reload theme after edits. A ready-to-install
+example is [Aurora](examples/themes/Aurora/theme.json). A theme can be as small as:
+
+```json
+{
+  "version": 1,
+  "name": "My violet theme",
+  "base": "ndm",
+  "common": {
+    "palette": { "accent": "#8465E8" }
+  }
+}
+```
+
+`version` must be `1`. `name` is the menu label. `base` is `"ndm"` or `"modern"` (default: `"ndm"`).
+Every other field is optional. NDM starts with that base, applies `common`, then applies `light` or `dark`
+according to **Dark Mode support** and the operating system. Only fields you provide change; omitted fields
+continue to come from the base. Leave a section out, or remove a property, to inherit it again.
+A theme does not change your saved toolbar layout, custom scaling, category icon choice, list font or downloads.
+Its optional assets take precedence while it is selected; selecting a built-in theme restores the underlying choices.
+
+### Palette and application metrics
+
+Each of `common`, `light` and `dark` can contain `palette`, `metrics`, `style` and `regions`.
+Colors use `#RRGGBB` or `#RRGGBBAA` (the last two digits are opacity).
+
+| Palette key | Use |
+| --- | --- |
+| `bg` | App background |
+| `surface` | Surface and field backgrounds |
+| `raised` | Raised surfaces and inactive controls |
+| `border` | Edges and separators |
+| `text`, `muted` | Main and secondary text |
+| `accent`, `accent_hot`, `accent_soft`, `on_accent` | Selection, links and action controls |
+| `danger`, `success` | Errors and completed/running status indicators |
+| `toolbar.<button>` | Tint for NDM Style's built-in line icon, e.g. `toolbar.add-url` |
+
+The palette also reaches NDM's painted controls and category tree. For standard controls, `style` provides
+more detailed overrides. To give one panel a different color, use a region rather than the shared palette.
+
+| Metric | Meaning |
+| --- | --- |
+| `control_radius`, `card_radius` | Rounded-control and card corners, in points |
+| `menu_font`, `toolbar_font`, `categories_font`, `list_font`, `status_font` | Main window text sizes, before custom scaling (6–96 points) |
+| `toolbar_icon_size` | Extra icon-size multiplier (0.25–4), applied together with your toolbar scale |
+| `list_row_height` | Download row height, kept tall enough for its text |
+
+These metrics complement **View → Custom scale...**; scaling remains the user's size control.
+Modern keeps its original square control shapes; use the NDM base for rounded painted controls.
+
+### Panel backgrounds, pictures and borders
+
+Supported region names are `app`, `menu`, `toolbar`, `sidebar`, `list`, `status`, `dialog`, `grabber`, `help`,
+and `popup`. `status` is available in the NDM base. `dialog` applies to every app dialog; the `help` or `grabber`
+region can then override their respective windows. Native operating-system title bars, file pickers, and tray menus
+are drawn by the operating system and do not use the app's theme JSON.
+
+```json
+{
+  "version": 1,
+  "name": "Wallpaper",
+  "base": "ndm",
+  "common": {
+    "regions": {
+      "app": { "fill": "#182331" },
+      "toolbar": {
+        "fill": "#203044",
+        "image": "images/toolbar.png",
+        "image_mode": "cover",
+        "image_opacity": 0.45,
+        "border": "#526680",
+        "border_width": 1,
+        "corner_radius": 8,
+        "margin": [8, 8, 4, 4]
+      }
+    }
+  }
+}
+```
+
+Put `toolbar.png` in the theme's `images` folder. All asset paths are relative to `theme.json`, must stay inside
+its folder, and cannot point through a symlink to an outside file. Images accept the same formats as custom icons.
+`cover` fills and crops, `contain` fits the whole picture, `stretch` fills without preserving proportions, and `tile`
+repeats it. `image_opacity` is 0–1. Frames have their own backgrounds, so give each region you want to change its own
+image or fill. A region's `margin` is `[left, right, top, bottom]`; popup spacing uses `style.spacing.menu_margin`. Popup region borders decorate the content; its outer frame
+uses the standard visual style.
+
+### Standard controls, fonts and states
+
+`style` is a partial override of NDM's standard-control style. Use the generated reference files to inspect
+**every supported field**: background and text colors, widget states, selection, strokes, corner radii, shadows,
+spacing, scrollbar metrics, text styles and interaction options. Copy just the properties you want into `style`;
+do not copy the whole reference if you want the remaining defaults to keep following the base theme.
+Unknown fields, wrong types, unsupported versions, missing assets and invalid fonts are rejected.
+
+```json
+{
+  "version": 1,
+  "name": "Custom controls",
+  "base": "ndm",
+  "fonts": { "proportional": "fonts/MyFont.ttf" },
+  "common": {
+    "style": {
+      "spacing": { "button_padding": { "x": 12, "y": 4 } },
+      "text_styles": { "Body": { "size": 12 } },
+      "visuals": {
+        "selection": { "bg_fill": "#6845AA", "stroke": { "color": "#FFFFFF" } },
+        "widgets": { "hovered": { "bg_fill": "#DACDFA", "weak_bg_fill": "#DACDFA" } }
+      }
+    },
+    "regions": { "toolbar": { "style": { "visuals": { "override_text_color": "#33204C" } } } }
+  }
+}
+```
+
+Add a real TTF/OTF at `fonts/MyFont.ttf`. Font map keys `proportional`, `monospace`, `segoe`, and `list` replace
+those families. Other keys register a named family, referenced as `"family": { "Name": "MyFamily" }` in a font
+style. A theme can replace only its list font, for example, by using `"fonts": { "list": "fonts/MyFont.ttf" }`.
+App-specific painted controls use the palette and metrics; standard-control `style` fields apply to egui controls.
+A region may have its own partial `style`. Global style is applied before the region's style.
+
+### Toolbar and category pictures
+
+A theme can provide either or both directories:
+
+```json
+{
+  "version": 1,
+  "name": "My pictures",
+  "base": "ndm",
+  "toolbar_icons": "toolbar",
+  "category_icons": "categories"
+}
+```
+
+Both folders contain PNGs. Use the file names in [Custom toolbars](#custom-toolbars) and
+[Custom category icons](#custom-category-icons), including optional `-hot` and `-disabled` toolbar variants.
+A theme only replaces pictures it includes; other buttons/items keep the user's chosen picture set or the built-in icon.
+Changing themes or reloading clears the picture caches. To share a theme, zip its `theme.json` and referenced asset
+folders together. The recipient unzips it and selects Install theme.... Do not include your NDM settings or downloads.
 
 ## Custom toolbars
 

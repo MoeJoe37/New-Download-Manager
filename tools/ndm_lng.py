@@ -64,6 +64,7 @@ NOT_UI = re.compile(
     r"|^(NDM extension - (Chromium|Firefox)|NDM-Firefox\.xpi|INSTALL\.txt)$"
     r"|^&(gt|lt|nbsp|quot);$|^SHA256 \($"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
+    r"|^-(Command|NonInteractive|NoProfile)$|^(Imported-theme|My-theme)$"
 )
 
 

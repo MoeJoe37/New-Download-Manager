@@ -3,14 +3,14 @@
 <p class="lead">The look, the toolbar, the sizes of the main window's parts, the download list's columns, the language, the list font and the tray icon can all be changed.</p>
 
 <h2 id="Style">Styles</h2>
-<p><b>View → Toolbar</b> (or a right click on the toolbar) offers two looks:</p>
+<p><b>View → Themes</b> offers two built-in looks and any custom themes you install:</p>
 <ul>
 <li><b>Modern style</b>: chevrons in the category tree and grid lines in the download list.</li>
 <li><b>NDM Style</b>: NDM's own design for every window: rounded controls, one accent colour, line icons, a sidebar without tree lines, progress bars in the list and a status bar with the number of downloads and the total speed. With dark mode on, every window turns dark.</li>
 </ul>
 
 <h2 id="Toolbar">Toolbar</h2>
-<p>Right-click the toolbar to add, remove and reorder buttons and separators (<b>Customize...</b>), and choose the style. Use <b>View → Custom scale...</b> to change the toolbar size.</p>
+<p>Right-click the toolbar to add, remove and reorder buttons and separators (<b>Customize...</b>), and choose a picture set. Choose the style under <b>View → Themes</b>. Use <b>View → Custom scale...</b> to change the toolbar size.</p>
 <p>A <b>custom toolbar</b> puts your own pictures on the buttons: a folder of PNG files, one per button, in NDM's toolbars folder (<b>Open toolbars folder</b> creates and opens it). Every such folder is listed in the menu by its name; <b>Built-in toolbar</b> goes back to NDM's icons. <b>Help → Look for new toolbars</b> opens the guide to making and installing them on NDM's GitHub page.</p>
 
 <h2 id="CategoryIcons">Category icons</h2>
@@ -27,8 +27,74 @@
 <li><b>Language</b> changes the language of menus and windows: English, Spanish, French, Arabic, or a language file you added. Arabic is written right to left, so every window is mirrored.</li>
 <li><b>Font</b> changes the font of the download list; <b>Reset to default Font</b> undoes it.</li>
 <li><b>Dark Mode support</b> follows the system's dark mode: Windows' dark app mode, the desktop's dark style on Linux, or macOS's dark appearance.</li>
-<li><b>NDM tray icon</b> shows the notification area icon in 3D style, in 2D style, or not at all.</li>
+<li><b>NDM tray icon</b> offers Default (the flat NDM picture), Choose icon..., Custom icon after importing, or Don't show. App and tray icons are independent.</li>
+<li><b>NDM icon</b> changes the app's running window, title bar and taskbar icon, About picture, help logo, and drop target. Default restores the original app icon.</li>
 </ul>
+
+<h2 id="Icons">Custom app and tray icons</h2>
+<p>Choose <b>View → NDM tray icon → Choose icon...</b> or <b>View → NDM icon → Choose icon...</b>, then select a PNG, JPEG, WebP, BMP, GIF, ICO or self-contained SVG. NDM detects the image contents even if the extension is wrong, keeps transparency and proportions, and converts it to a square PNG. It also creates a Windows ICO with pictures from 16 to 256 pixels. Animated files use their first frame. SVGs must embed their pictures and must not refer to outside files or websites. Maximum file size is 16 MiB.</p>
+<p>NDM keeps converted copies beside its settings, in the icons folder. Choices survive restarting, and the original image can be moved or deleted. A damaged or unsupported image shows an error and keeps the current selection. Default restores the built-in picture. The old 3D tray choice now uses Default.</p>
+<p>The app icon updates running windows and their taskbar/title icons immediately. NDM also updates shortcuts belonging to your Windows account, a per-user Linux launcher and Wayland dock icon, and the macOS Dock and Finder app-bundle icon. Finder needs write access to the app bundle. Windows Explorer's image for the executable itself is embedded at build time; changing icons does not rewrite the executable. If a pinned launcher keeps an old cached picture, unpin and pin it again.</p>
+<p>Don't show hides the tray icon. Without a tray icon, closing minimizes NDM while downloads run, or exits when idle. Linux tray availability depends on the desktop.</p>
+
+<h2 id="Themes">Installing and using themes</h2>
+<p><b>View → Themes</b> holds Modern style, NDM Style, and installed custom themes. Toolbar picture sets remain under View → Toolbar. A theme is a JSON file and optional pictures/fonts, with no executable scripts.</p>
+<ol>
+<li>Unzip a theme, keeping theme.json and its asset folders together.</li>
+<li>Choose <b>Install theme...</b> and select theme.json. NDM validates it, copies its referenced assets to its own themes folder, and selects it. You no longer need the source folder.</li>
+<li>Use <b>Open themes folder</b> to find the installed copy. You can also put complete theme folders here yourself; reopen Themes to list them.</li>
+<li>Edit the installed theme.json and choose <b>Reload theme</b>. Images and fonts reload too. An invalid edit shows the error and leaves the previous working theme active.</li>
+<li>Select Modern style or NDM Style to restore a built-in appearance. Select another theme before deleting an installed theme folder. A missing or invalid theme at startup falls back to its built-in base.</li>
+</ol>
+<p>The themes folder is beside state.json: %APPDATA%\NewDownloadManager\themes on Windows; $XDG_CONFIG_HOME/NewDownloadManager/themes (or ~/.config/NewDownloadManager/themes) on Linux; ~/Library/Application Support/NewDownloadManager/themes on macOS.</p>
+
+<h2 id="CreateTheme">Creating a theme</h2>
+<p>Choose <b>Create theme...</b>. NDM opens a new My-theme folder with a working theme.json and two reference files: style-reference-light.json and style-reference-dark.json. The reference files show all current standard-control field names and value shapes; they are not applied automatically. Edit theme.json, select its name in Themes, then Reload theme after edits. The repository includes examples/themes/Aurora/theme.json.</p>
+<pre>{
+  "version": 1,
+  "name": "My violet theme",
+  "base": "ndm",
+  "common": {
+    "palette": { "accent": "#8465E8" }
+  }
+}</pre>
+<p>Version must be 1. Name is the menu label. Base is ndm or modern (ndm if omitted). All other fields are optional. NDM starts with the built-in base, applies common, then applies light or dark according to Dark Mode support and the operating system. Unspecified properties keep their base values. Remove a property to inherit it again. Your saved toolbar layout, scaling, list font, picture sets and download settings stay available when you switch back to a built-in theme.</p>
+<p>Common, light and dark may each contain palette, metrics, style and regions.</p>
+<ul>
+<li><b>Palette:</b> bg (background), surface (fields and surfaces), raised, border, text, muted, accent, accent_hot, accent_soft, on_accent, danger and success. Colors are #RRGGBB or #RRGGBBAA. NDM's painted controls use these too. toolbar.add-url and the other toolbar button file names can tint NDM Style's line icons.</li>
+<li><b>Metrics:</b> control_radius and card_radius; menu_font, toolbar_font, categories_font, list_font and status_font (6–96 points); toolbar_icon_size (0.25–4 multiplier); list_row_height (at least the text height). Custom scale is applied to the relevant main-window fonts and toolbar size. Use the NDM base for rounded painted controls.</li>
+<li><b>Regions:</b> app, menu, toolbar, sidebar, list, status, dialog, grabber, help and popup. Status is available in the NDM base. Each region can set fill, image, image_mode, image_opacity, border, border_width, corner_radius, margin and its own partial style.</li>
+</ul>
+<pre>"regions": {
+  "toolbar": {
+    "fill": "#203044",
+    "image": "images/toolbar.png",
+    "image_mode": "cover",
+    "image_opacity": 0.45,
+    "border": "#526680",
+    "border_width": 1,
+    "corner_radius": 8,
+    "margin": [8, 8, 4, 4]
+  }
+}</pre>
+<p>This regions object belongs inside common, light or dark. Put toolbar.png in the theme's images folder. Image modes are cover (fill and crop), contain (fit), stretch, and tile. Opacity is 0–1; margin is [left, right, top, bottom]. Regions have separate backgrounds: set each region you want to change. Popup margins use style.spacing.menu_margin. A popup region border decorates its content; its outer frame uses the standard visual style. Native title bars, file pickers and tray menus follow the operating system.</p>
+
+<h2 id="ThemeControls">Theme controls, fonts and pictures</h2>
+<p>Style is a partial standard-control style. Look in the generated reference files for all fields: visuals, widget states, selection, strokes, shadows, spacing, scrollbar settings and text_styles. Copy only properties you want to override, leaving the rest inherited. For example, put this inside common:</p>
+<pre>"style": {
+  "spacing": { "button_padding": { "x": 12, "y": 4 } },
+  "text_styles": { "Body": { "size": 12 } },
+  "visuals": {
+    "selection": { "bg_fill": "#6845AA" },
+    "widgets": { "hovered": {
+      "bg_fill": "#DACDFA", "weak_bg_fill": "#DACDFA"
+    } }
+  }
+}</pre>
+<p>Unknown fields and invalid values are rejected. App-specific painted controls use palette and metrics; standard-control style fields apply to egui controls. A region's own style is applied after the global style.</p>
+<p>A top-level fonts object maps family names to TTF/OTF files, for example "fonts": { "proportional": "fonts/MyFont.ttf" }. Special families are proportional, monospace, segoe and list. Other names create a named family, used as "family": { "Name": "MyFamily" } in a text style. Keep the real font files in the theme folder.</p>
+<p>Top-level toolbar_icons and category_icons point to PNG folders, for example "toolbar_icons": "toolbar", "category_icons": "categories". Use the file names in the custom toolbar and category-icon guides. Only included pictures override the user's picture sets; missing pictures keep their normal fallbacks. Toolbar -hot and -disabled variants are supported. Selecting another theme restores the underlying choices.</p>
+<p>All assets must be relative paths inside the theme folder, including after resolving symlinks. To share a theme, zip theme.json with its referenced asset folders. The recipient unzips it and uses Install theme.... Do not include state.json or downloads. The README's Custom themes section has complete examples and field tables.</p>
 
 <h2 id="Translate">Translating NDM</h2>
 <p>Languages/ndm_en.lng holds every text NDM shows. To add a language:</p>

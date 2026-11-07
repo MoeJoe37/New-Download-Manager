@@ -19,7 +19,8 @@ mod network;
 
 use self::desktop::{config_dir, home};
 pub use self::desktop::{
-    install_desktop_entry, installed_browsers, native_host, register_host, set_autostart,
+    install_desktop_entry, installed_browsers, native_host, register_host, set_application_icon,
+    set_autostart,
 };
 pub use self::drag_drop::{
     accept_drops, drop_target, drop_target_visible, keep_hidden, show_main, take_drops, take_show,

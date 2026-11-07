@@ -1,7 +1,7 @@
 use super::{
-    egui, fit, fit_block, fit_block_rtl, fit_cut, fit_font, ndm, pal, rtl_toggle, theme,
-    toggle_text, tr, Align, Color32, Layout, Pos2, Rect, Response, Sense, Stroke, Txt, Ui,
-    UiBuilder, Vec2, WidgetText, D, DX, DY, PRIMARY, R_CARD, R_CTRL, WIN_GREEN,
+    card_radius, control_radius, egui, fit, fit_block, fit_block_rtl, fit_cut, fit_font, ndm, pal,
+    rtl_toggle, theme, toggle_text, tr, Align, Color32, Layout, Pos2, Rect, Response, Sense,
+    Stroke, Txt, Ui, UiBuilder, Vec2, WidgetText, D, DX, DY, PRIMARY, WIN_GREEN,
 };
 
 impl<'a> D<'a> {
@@ -220,7 +220,7 @@ impl<'a> D<'a> {
             let t = theme(self.ui.visuals().dark_mode);
             self.ui.painter().rect(
                 r,
-                R_CTRL,
+                control_radius(),
                 t.raised,
                 Stroke::new(1.0_f32, c.edge),
                 egui::StrokeKind::Inside,
@@ -401,7 +401,7 @@ impl<'a> D<'a> {
             // it, so the caption needs no background of its own: groups sit on tab pages and dialogs alike)
             let stroke = Stroke::new(1.0_f32, c.edge);
             if t.is_empty() {
-                p.rect_stroke(frame, R_CARD, stroke, egui::StrokeKind::Inside);
+                p.rect_stroke(frame, card_radius(), stroke, egui::StrokeKind::Inside);
                 return;
             }
             let font = fit_font(
@@ -426,7 +426,7 @@ impl<'a> D<'a> {
             ] {
                 p.with_clip_rect(part.intersect(clip)).rect_stroke(
                     frame,
-                    R_CARD,
+                    card_radius(),
                     stroke,
                     egui::StrokeKind::Inside,
                 );
@@ -495,7 +495,7 @@ impl<'a> D<'a> {
         if ndm() {
             // a rounded track with the accent filling it
             let t = theme(self.ui.visuals().dark_mode);
-            let rad = (r.height() / 2.0).min(R_CTRL);
+            let rad = (r.height() / 2.0).min(control_radius());
             p.rect_filled(r, rad, t.raised);
             let w = r.width() * frac.clamp(0.0, 1.0);
             // filling from the right in right-to-left languages
@@ -512,11 +512,26 @@ impl<'a> D<'a> {
         }
         // msctls_progress32 isn't darkened: NDM's bars stay light in dark mode (E6E6E6 in a BCBCBC frame)
         let _ = c;
-        p.rect_filled(r, 0.0, Color32::from_gray(230));
+        p.rect_filled(
+            r,
+            0.0,
+            crate::appearance::themes::role(
+                "raised",
+                self.ui.visuals().dark_mode,
+                Color32::from_gray(230),
+            ),
+        );
         p.rect_stroke(
             r,
             0.0,
-            Stroke::new(1.0_f32, Color32::from_gray(188)),
+            Stroke::new(
+                1.0_f32,
+                crate::appearance::themes::role(
+                    "border",
+                    self.ui.visuals().dark_mode,
+                    Color32::from_gray(188),
+                ),
+            ),
             egui::StrokeKind::Inside,
         );
         let w = (r.width() - 2.0) * frac.clamp(0.0, 1.0);
@@ -528,7 +543,11 @@ impl<'a> D<'a> {
         } else {
             Rect::from_min_size(r.min + Vec2::splat(1.0), Vec2::new(w, r.height() - 2.0))
         };
-        p.rect_filled(fill, 0.0, WIN_GREEN);
+        p.rect_filled(
+            fill,
+            0.0,
+            crate::appearance::themes::role("accent", self.ui.visuals().dark_mode, WIN_GREEN),
+        );
     }
 
     /// Win32 tab control. Tabs wrap into rows like a multiline tab control, with the selected
@@ -639,7 +658,11 @@ impl<'a> D<'a> {
                         egui::pos2(r.right(), row_top + row_h - 1.0),
                     );
                     if resp.hovered() && !sel {
-                        p.rect_filled(full.shrink2(Vec2::new(1.0, 2.0)), R_CTRL, t.raised);
+                        p.rect_filled(
+                            full.shrink2(Vec2::new(1.0, 2.0)),
+                            control_radius(),
+                            t.raised,
+                        );
                     }
                     let ink = if sel { t.accent } else { t.muted };
                     p.text(
@@ -690,7 +713,7 @@ impl<'a> D<'a> {
         if ndm() {
             p.rect(
                 body,
-                R_CARD,
+                card_radius(),
                 c.field,
                 Stroke::new(1.0_f32, c.line),
                 egui::StrokeKind::Inside,
@@ -753,7 +776,7 @@ impl<'a> D<'a> {
         let font = egui::TextStyle::Body.resolve(self.ui.style());
         let p = self.ui.painter();
         let (rad, ndm) = if ndm() {
-            (R_CTRL, Some(theme(self.ui.visuals().dark_mode)))
+            (control_radius(), Some(theme(self.ui.visuals().dark_mode)))
         } else {
             (0.0, None)
         };

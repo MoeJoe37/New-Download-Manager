@@ -3,6 +3,7 @@ use crate::app::{
     cat_icon_files, cat_icon_sets, core, dlu, egui, explore, i18n, tb_picture, texture, tr, Align2,
     App, Color32, Dialog, FontId, HashSet, Path, Sense, Settings, Vec2, DARK_TREE, GENERAL,
 };
+use crate::appearance::themes;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(in crate::app) enum Which {
@@ -103,7 +104,8 @@ impl App {
         v: &Cat,
     ) -> Option<egui::TextureId> {
         let set = self.core.settings().cat_icons.clone();
-        if set.is_empty() {
+        let themed = themes::asset_dir("categories");
+        if set.is_empty() && themed.is_none() {
             return None;
         }
         let running = matches!(v, Cat::Queue(Some(q)) if self.core.queue_running(*q));
@@ -112,7 +114,10 @@ impl App {
             self.cat_pics
                 .entry((set.clone(), name.clone()))
                 .or_insert_with(|| {
-                    tb_picture(&dir.join(format!("{name}.png")), 64, 64)
+                    themed
+                        .as_ref()
+                        .and_then(|d| tb_picture(&d.join(format!("{name}.png")), 64, 64))
+                        .or_else(|| tb_picture(&dir.join(format!("{name}.png")), 64, 64))
                         .map(|px| texture(ctx, &format!("cat_{set}_{name}"), &px))
                 })
                 .as_ref()
@@ -197,7 +202,8 @@ impl App {
                 .interact(xr, ui.id().with("cats_x"), Sense::click())
                 .on_hover_text(tr("Hide categories"));
             if x.hovered() {
-                ui.painter().rect_filled(xr, dlu::R_CTRL, t.raised);
+                ui.painter()
+                    .rect_filled(xr, dlu::control_radius(), t.raised);
             }
             let d = 3.5 * sc;
             for (a, b) in [
@@ -220,7 +226,7 @@ impl App {
             ui.painter().rect_stroke(
                 head,
                 0.0,
-                egui::Stroke::new(1.0_f32, edge),
+                egui::Stroke::new(1.0_f32, themes::role("border", dark, edge)),
                 egui::StrokeKind::Inside,
             );
             if rtl {
@@ -392,12 +398,20 @@ impl App {
         let mut new_queue = false;
         let mut cat_dlg: Option<Option<String>> = None; // Some(None) = add, Some(Some(name)) = edit
         let mut toggle = None;
-        let fill = if dark { DARK_TREE } else { Color32::WHITE };
-        let line = if dark {
-            Color32::from_gray(110)
-        } else {
-            Color32::from_gray(160)
-        };
+        let fill = themes::role(
+            "surface",
+            dark,
+            if dark { DARK_TREE } else { Color32::WHITE },
+        );
+        let line = themes::role(
+            "border",
+            dark,
+            if dark {
+                Color32::from_gray(110)
+            } else {
+                Color32::from_gray(160)
+            },
+        );
         // NDM's tree at 125%: 19 px rows, 21 px indent
         let (row_h, indent) = (15.2 * sc, 17.0 * sc);
         let frame = if nt.is_some() {
@@ -410,7 +424,10 @@ impl App {
         } else {
             egui::Frame::new()
                 .fill(fill)
-                .stroke(egui::Stroke::new(1.0_f32, edge))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    themes::role("border", dark, edge),
+                ))
                 .inner_margin(egui::Margin {
                     left: 2,
                     right: 2,
@@ -454,7 +471,8 @@ impl App {
                 }
             }
         };
-        frame.show(ui, |ui| {
+        themes::frame("sidebar", frame, dark).show(ui, |ui| {
+            themes::paint(ui, "sidebar");
             ui.set_min_size(ui.available_size());
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
@@ -475,9 +493,9 @@ impl App {
                             let sel = self.cat == *value;
                             let pill = row.shrink2(Vec2::new(0.0, 1.0 * sc));
                             if sel {
-                                p.rect_filled(pill, dlu::R_CTRL, t.accent_soft);
+                                p.rect_filled(pill, dlu::control_radius(), t.accent_soft);
                             } else if resp.hovered() {
-                                p.rect_filled(pill, dlu::R_CTRL, t.raised);
+                                p.rect_filled(pill, dlu::control_radius(), t.raised);
                             }
                             let dir = if rtl { -1.0 } else { 1.0 };
                             let edge_x = if rtl { row.right() } else { row.left() };
@@ -549,7 +567,10 @@ impl App {
                             let font = dlu::fit_font(
                                 ui,
                                 label,
-                                FontId::new(10.4 * sc, egui::FontFamily::Name("segoe".into())),
+                                FontId::new(
+                                    themes::number("categories_font", dark, 10.4) * sc,
+                                    egui::FontFamily::Name("segoe".into()),
+                                ),
                                 room,
                             );
                             let label = if rtl {
@@ -642,7 +663,11 @@ impl App {
                                     pts,
                                     egui::Stroke::new(
                                         1.2_f32,
-                                        Color32::from_gray(if self.dark { 190 } else { 90 }),
+                                        themes::role(
+                                            "muted",
+                                            dark,
+                                            Color32::from_gray(if self.dark { 190 } else { 90 }),
+                                        ),
                                     ),
                                 ));
                                 if ui
@@ -693,7 +718,9 @@ impl App {
                                 );
                             }
                             x += 17.0 * sc * dir;
-                            let font = FontId::proportional(10.0 * sc);
+                            let font = FontId::proportional(
+                                themes::number("categories_font", dark, 10.0) * sc,
+                            );
                             let g = ui.painter().layout_no_wrap(
                                 label.clone(),
                                 font,

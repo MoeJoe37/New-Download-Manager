@@ -300,7 +300,11 @@ impl App {
                         220.0,
                         266.0,
                         9.0,
-                        RichText::new(error.as_str()).color(Color32::RED),
+                        RichText::new(error.as_str()).color(crate::appearance::themes::role(
+                            "danger",
+                            d2.ui.visuals().dark_mode,
+                            Color32::RED,
+                        )),
                     );
                 }
             } else {

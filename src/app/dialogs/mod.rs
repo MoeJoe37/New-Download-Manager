@@ -1,3 +1,4 @@
+use crate::appearance::themes;
 mod customize;
 mod download;
 mod grabber_projects;
@@ -457,13 +458,23 @@ pub(super) enum Dialog {
 }
 
 fn dialog_panel_frame(ctx: &egui::Context, d: &Dialog, fixed: Option<Vec2>) -> egui::Frame {
-    if fixed.is_some() {
+    let frame = if fixed.is_some() {
         egui::Frame::new().fill(ctx.style().visuals.panel_fill)
     } else if matches!(d, Dialog::Help { .. }) {
         egui::Frame::new()
     } else {
         egui::Frame::central_panel(&ctx.style())
-    }
+    };
+    let region = match d {
+        Dialog::Help { .. } => "help",
+        Dialog::Grabber { .. } => "grabber",
+        _ => "dialog",
+    };
+    themes::frame(
+        region,
+        themes::frame("dialog", frame, ctx.style().visuals.dark_mode),
+        ctx.style().visuals.dark_mode,
+    )
 }
 
 #[cfg(test)]
@@ -672,6 +683,7 @@ impl App {
             }
         }
         let mut vb = ViewportBuilder::default()
+            .with_icon(crate::appearance::icons::viewport())
             .with_title(i18n::tr_os(&title))
             .with_inner_size(size)
             .with_resizable(fixed.is_none())
@@ -741,6 +753,12 @@ impl App {
     }
 
     fn dialog_body(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, d: &mut Dialog) -> bool {
+        themes::paint(ui, "dialog");
+        match d {
+            Dialog::Help { .. } => themes::paint(ui, "help"),
+            Dialog::Grabber { .. } => themes::paint(ui, "grabber"),
+            _ => (),
+        };
         match d {
             Dialog::AddUrl {
                 url,

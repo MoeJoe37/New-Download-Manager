@@ -2,9 +2,9 @@
 use crate::app::LIMIT_ITEM;
 use crate::app::{
     clipboard, core, crash_diagnostics, dlu, egui, explore, help, i18n, issue_text, links,
-    open_url, rate, segoe, style, tr, tray_picture, win, Align, App, Col, Color32, Dialog, FontId,
-    Layout, PlaylistPicker, Relaxed, RichText, Row, Sense, Vec2, ViewportCommand, ALL_CJK,
-    LIST_FONT, UPDATE_REPO,
+    open_url, rate, segoe, style, tr, win, Align, App, Col, Color32, Dialog, FontId, Layout,
+    PlaylistPicker, Relaxed, RichText, Row, Sense, Vec2, ViewportCommand, ALL_CJK, LIST_FONT,
+    UPDATE_REPO,
 };
 
 /// A menu bar's layout: its menus start at the right edge in right-to-left languages (`menu::bar` rows
@@ -55,9 +55,10 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 |ui: &mut egui::Ui, px: f32| ui.spacing_mut().button_padding.x = px / 1.25 / 2.0;
             // NDM's menu font, at View -> Custom scale's text size
             let sc = self.core.settings().scale_text;
-            ui.style_mut()
-                .text_styles
-                .insert(egui::TextStyle::Button, segoe(12.2 * sc));
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Button,
+                segoe(crate::appearance::themes::number("menu_font", self.dark, 12.2) * sc),
+            );
             ui.spacing_mut().item_spacing.x = 0.0;
             let (font, ink) = (
                 egui::TextStyle::Button.resolve(ui.style()),
@@ -277,19 +278,15 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 });
                 ui.menu_button(tr("NDM tray icon"), |ui| {
                     crate::dlu::scale_popup(ui);
-                    // 0x45ada0: delete the icon, then add it back with the new picture unless "Don't show"
-                    let cur = self.core.settings().tray_icon;
-                    for (v, label) in [(1, "3D style"), (2, "2D style"), (3, "Don't show")] {
-                        if ui.radio(cur == v, tr(label)).clicked() {
-                            self.core.settings().tray_icon = v;
-                            self.core.save();
-                            if let Some((tray, ..)) = &self.tray {
-                                let _ = tray.set_icon(tray_picture(v));
-                                let _ = tray.set_visible(v != 3);
-                            }
-                            ui.close_menu();
-                        }
-                    }
+                    self.icon_menu(ui,false);
+                });
+                ui.menu_button(tr("NDM icon"), |ui| {
+                    crate::dlu::scale_popup(ui);
+                    self.icon_menu(ui,true);
+                });
+                ui.menu_button(tr("Themes"), |ui| {
+                    crate::dlu::scale_popup(ui);
+                    self.themes_menu(ui);
                 });
                 ui.separator();
                 if ui.button(tr("Customize URL List...")).clicked() {
@@ -452,10 +449,14 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                 bottom: 4,
             });
         let bar = egui::TopBottomPanel::bottom("status")
-            .frame(frame)
+            .frame(crate::appearance::themes::frame("status", frame, self.dark))
             .show_separator_line(false)
             .show(ctx, |ui| {
-                let font = FontId::new(10.0 * sc, egui::FontFamily::Name("segoe".into()));
+                crate::appearance::themes::paint(ui, "status");
+                let font = FontId::new(
+                    crate::appearance::themes::number("status_font", self.dark, 10.0) * sc,
+                    egui::FontFamily::Name("segoe".into()),
+                );
                 let running = rows.iter().filter(|r| r.running).count();
                 let speed: f64 = self.core.jobs().iter().map(|j| j.speed()).sum();
                 let limit = self.core.settings().limit_on;

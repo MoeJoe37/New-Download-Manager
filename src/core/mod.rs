@@ -125,6 +125,10 @@ pub struct Core {
 }
 
 impl Core {
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.store.parent().unwrap_or(Path::new("."))
+    }
+
     pub fn settings(&self) -> MutexGuard<'_, Settings> {
         self.settings.lock().unwrap()
     }

@@ -1,5 +1,3 @@
-#[cfg(target_os = "linux")]
-use crate::app::LIMIT_ITEM;
 #[cfg(not(windows))]
 use crate::app::MAIN_XID;
 use crate::app::{
@@ -11,6 +9,9 @@ use crate::app::{
 };
 #[cfg(windows)]
 use crate::app::{MouseButton, MouseButtonState, TrayIconEvent};
+#[cfg(target_os = "linux")]
+use crate::app::{LIMIT_ITEM, LINUX_TRAY_CREATED, LINUX_TRAY_HANDLE};
+use crate::appearance::themes;
 
 /// What the window's close button does.
 #[derive(Debug, PartialEq)]
@@ -63,6 +64,9 @@ impl App {
         if style == 3 || !win::tray_host() || !win::indicator_lib() {
             return None;
         }
+        if LINUX_TRAY_CREATED.swap(true, Relaxed) {
+            return None;
+        }
         let (core, ctx) = (core.clone(), ctx.clone());
         win::gtk_spawn(move || {
             // the desktop lays the menu out itself (right-to-left languages too)
@@ -89,6 +93,7 @@ impl App {
                 ])
                 .is_err()
             {
+                LINUX_TRAY_CREATED.store(false, Relaxed);
                 return;
             }
             let Some(tray) = tray_picture(style).and_then(|i| {
@@ -99,6 +104,7 @@ impl App {
                     .build()
                     .ok()
             }) else {
+                LINUX_TRAY_CREATED.store(false, Relaxed);
                 return;
             };
             LINUX_TRAY.store(true, Relaxed);
@@ -109,7 +115,9 @@ impl App {
                 limit.id().clone(),
                 exit.id().clone(),
             );
+            let menu_core = core.clone();
             MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+                let core = &menu_core;
                 let (open, startq, stopq, limit, exit) = &ids;
                 if e.id == *open {
                     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
@@ -135,9 +143,43 @@ impl App {
                 (exit, "Exit"),
             ];
             LIMIT_ITEM.with(|l| *l.borrow_mut() = Some((limit, items)));
-            std::mem::forget(tray); // lives as long as the app
+            let mode = core.settings().tray_icon;
+            let _ = tray.set_icon(tray_picture(mode));
+            let _ = tray.set_visible(mode != 3);
+            LINUX_TRAY.store(mode != 3, Relaxed);
+            LINUX_TRAY_HANDLE.with(|slot| *slot.borrow_mut() = Some(tray));
         });
         None
+    }
+
+    pub(in crate::app) fn refresh_tray(&mut self, ctx: &egui::Context) {
+        let mode = self.core.settings().tray_icon;
+        #[cfg(target_os = "linux")]
+        {
+            if !LINUX_TRAY_CREATED.load(Relaxed) && mode != 3 {
+                let _ = Self::tray(ctx, &self.core, &self.hwnd);
+            }
+            win::gtk_spawn(move || {
+                LINUX_TRAY_HANDLE.with(|slot| {
+                    if let Some(tray) = slot.borrow().as_ref() {
+                        let _ = tray.set_icon(tray_picture(mode));
+                        if tray.set_visible(mode != 3).is_ok() {
+                            LINUX_TRAY.store(mode != 3, Relaxed);
+                        }
+                    }
+                })
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            if self.tray.is_none() {
+                self.tray = Self::tray(ctx, &self.core, &self.hwnd);
+            }
+            if let Some((tray, ..)) = &self.tray {
+                let _ = tray.set_icon(tray_picture(mode));
+                let _ = tray.set_visible(mode != 3);
+            }
+        }
     }
 
     /// macOS: NDM's item in the menu bar, made on the main thread like the window; its menu shows on a click.
@@ -359,7 +401,9 @@ impl eframe::App for App {
             let queues: Vec<u32> = self.core.settings().queues.iter().map(|q| q.id).collect();
             let busy = self.core.jobs().iter().any(|j| j.running())
                 || queues.iter().any(|q| self.core.queue_running(*q));
-            match close_action(self.tray.is_some() || LINUX_TRAY.load(Relaxed), busy) {
+            let visible_tray = self.core.settings().tray_icon != 3
+                && (self.tray.is_some() || LINUX_TRAY.load(Relaxed));
+            match close_action(visible_tray, busy) {
                 Close::Hide => {
                     ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                     win::hide(self.hwnd.load(Relaxed));
@@ -612,10 +656,11 @@ impl eframe::App for App {
                 }),
         };
         egui::TopBottomPanel::top("menu")
-            .frame(menu_frame)
+            .frame(themes::frame("menu", menu_frame, self.dark))
             .show_separator_line(false)
             .show(ctx, |ui| {
-                if self.dark && nt.is_none() {
+                themes::paint(ui, "menu");
+                if self.dark && nt.is_none() && themes::active().is_none() {
                     ui.visuals_mut().widgets.hovered.weak_bg_fill = DARK_MENU_HOT;
                     ui.visuals_mut().widgets.open.weak_bg_fill = DARK_MENU_HOT;
                 }
@@ -647,9 +692,12 @@ impl eframe::App for App {
                 .inner_margin(m(0.0, 0.0, 0.0, 3.0)),
         };
         let tb = egui::TopBottomPanel::top("toolbar")
-            .frame(tb_frame)
+            .frame(themes::frame("toolbar", tb_frame, self.dark))
             .show_separator_line(false)
-            .show(ctx, |ui| self.toolbar(ui, &rows, &sel));
+            .show(ctx, |ui| {
+                themes::paint(ui, "toolbar");
+                self.toolbar(ui, &rows, &sel)
+            });
         if let Some(t) = &nt {
             // one hairline under the menu and toolbar
             let y = tb.response.rect.bottom() - 0.5;
@@ -683,13 +731,14 @@ impl eframe::App for App {
                     .inner_margin(m(6.0, 0.0, 3.0, 3.0)),
             };
             let sp = side
-                .frame(side_frame)
+                .frame(themes::frame("sidebar", side_frame, self.dark))
                 .show_separator_line(false)
                 .resizable(true)
                 .default_width(if nt.is_some() { 170.0 } else { 122.0 })
                 .min_width(80.0)
                 .show(ctx, |ui| {
                     main_font(ui);
+                    themes::paint(ui, "sidebar");
                     self.categories(ui)
                 });
             if let Some(t) = &nt {
@@ -710,7 +759,7 @@ impl eframe::App for App {
             Some(t) => egui::Frame::new()
                 .fill(t.surface)
                 .stroke(egui::Stroke::new(1.0_f32, t.border))
-                .corner_radius(dlu::R_CARD + 1.0)
+                .corner_radius(dlu::card_radius() + 1.0)
                 .inner_margin(egui::Margin {
                     left: 2,
                     right: 2,
@@ -739,12 +788,13 @@ impl eframe::App for App {
                 .inner_margin(m(5.0, 6.0, 3.0, 3.0))
         };
         egui::CentralPanel::default()
-            .frame(central)
+            .frame(themes::frame("app", central, self.dark))
             .show(ctx, |ui| {
+                themes::paint(ui, "app");
                 // View -> Custom scale: the list's text
                 let px = {
                     let s = self.core.settings();
-                    s.list_font_px * s.scale_text
+                    themes::number("list_font", self.dark, s.list_font_px) * s.scale_text
                 };
                 // the filter box: the list narrows to the downloads with the text in their name, address or description
                 ui.with_layout(menu_layout(), |ui| {
@@ -768,7 +818,10 @@ impl eframe::App for App {
                     egui::TextStyle::Body,
                     FontId::new(px, egui::FontFamily::Name("list".into())),
                 );
-                list.show(ui, |ui| self.table(ui, &rows));
+                themes::frame("list", list, self.dark).show(ui, |ui| {
+                    themes::paint(ui, "list");
+                    self.table(ui, &rows)
+                });
             });
 
         let mut ds = std::mem::take(&mut self.dialogs);

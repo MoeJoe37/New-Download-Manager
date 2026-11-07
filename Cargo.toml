@@ -6,7 +6,9 @@ edition = "2021"
 [dependencies]
 # wgpu: the renderer where OpenGL doesn't start (main.rs, `run`)
 eframe = { version = "0.31", features = ["wgpu"] }
-egui_extras = "0.31"
+egui_extras = { version = "0.31", features = ["svg"] }
+# Theme files can override every serialized egui style field.
+egui = { version = "0.31", features = ["serde"] }
 ab_glyph = "0.2"
 ureq = { version = "2", default-features = false, features = ["tls", "socks-proxy"] }
 # File Properties -> Checksum: SHA-256, SHA-1 and MD5 of a downloaded file (also MD5 for digest login off Windows)

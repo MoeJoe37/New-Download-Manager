@@ -333,6 +333,9 @@ impl App {
         } else {
             ROW_H.max(font_h * 1.5)
         };
+        let row_h =
+            crate::appearance::themes::number("list_row_height", ui.visuals().dark_mode, row_h)
+                .max(font_h * 1.5);
         // Q column: the queue's tree picture (main / synchronization, idle / running) like NDM's list
         let qpics: HashMap<u32, egui::TextureId> = self
             .core
@@ -519,7 +522,11 @@ impl App {
                             return;
                         }
                         let text = if *c == Col::Status && error {
-                            RichText::new(text).color(Color32::RED)
+                            RichText::new(text).color(crate::appearance::themes::role(
+                                "danger",
+                                ui.visuals().dark_mode,
+                                Color32::RED,
+                            ))
                         } else {
                             RichText::new(text)
                         };
@@ -632,7 +639,11 @@ impl App {
                 .max(area.top());
             let stroke = egui::Stroke::new(
                 1.0_f32,
-                Color32::from_gray(if self.dark { 85 } else { 225 }),
+                crate::appearance::themes::role(
+                    "border",
+                    self.dark,
+                    Color32::from_gray(if self.dark { 85 } else { 225 }),
+                ),
             );
             for r in &row_rects {
                 ui.painter().hline(

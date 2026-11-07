@@ -82,6 +82,7 @@ pub(crate) fn start() -> eframe::Result {
     win::register_host(core::state::store_path().parent().unwrap());
     #[cfg(not(windows))]
     win::install_desktop_entry();
+    crate::appearance::icons::initialize_store(&core::state::store_path());
     let (w, h, rgba) = app_icon();
     let viewport = ViewportBuilder::default()
         .with_title(TITLE)

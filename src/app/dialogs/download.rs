@@ -248,7 +248,11 @@ impl App {
             );
         }
         let size_text = if !error.is_empty() {
-            RichText::new(tr("Error")).color(Color32::RED)
+            RichText::new(tr("Error")).color(crate::appearance::themes::role(
+                "danger",
+                d.ui.visuals().dark_mode,
+                Color32::RED,
+            ))
         } else if !*applied {
             RichText::new(tr(""))
         } else {

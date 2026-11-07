@@ -1,3 +1,4 @@
+mod appearance;
 mod browser_setup;
 mod display;
 mod download_list;
@@ -62,6 +63,11 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 
 /// The Linux tray icon is up (its GTK thread owns it): closing the window hides it instead of quitting.
 static LINUX_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+static LINUX_TRAY_CREATED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "linux")]
+thread_local!(static LINUX_TRAY_HANDLE: std::cell::RefCell<Option<TrayIcon>> = const {std::cell::RefCell::new(None)});
 /// The main window's X11 window (0 on Wayland, or before the first frame).
 #[cfg(not(windows))]
 static MAIN_XID: AtomicIsize = AtomicIsize::new(0);
@@ -139,9 +145,8 @@ pub(crate) struct App {
     /// Expanded tree nodes ("all", "unf", "fin", "q").
     expanded: HashSet<String>,
     toolbar: Option<Toolbar>,
-    /// (skin, dark) the toolbar strips were loaded for
-    /// What the toolbar's pictures were made for: (set, NDM Style, scale %).
-    tb_key: (String, bool, u32),
+    /// What the toolbar pictures were made for: (set, NDM base, scaled size %, theme revision).
+    tb_key: (String, bool, u32, u64),
     icons: HashMap<String, Option<egui::TextureHandle>>,
     hwnd: Arc<AtomicIsize>,
     /// The tray icon, its Speed Limiter item and the other items with their English text (relabelled on a
@@ -159,6 +164,34 @@ pub(crate) struct App {
 impl App {
     pub(crate) fn new(ctx: &egui::Context) -> App {
         let core = Core::load();
+        let appearance_error = {
+            let mut s = core.settings();
+            crate::appearance::icons::initialize(
+                core::state::store_path().parent().unwrap(),
+                &s.app_icon,
+                &s.tray_custom_icon,
+            );
+            if s.theme.is_empty() {
+                crate::appearance::themes::activate(None);
+                None
+            } else {
+                match crate::appearance::themes::load_selected(
+                    &core::state::store_path().with_file_name("themes"),
+                    &s.theme,
+                ) {
+                    Ok(theme) => {
+                        s.ndm_style = theme.file.base == crate::appearance::themes::Base::Ndm;
+                        crate::appearance::themes::activate(Some(theme));
+                        None
+                    }
+                    Err(e) => {
+                        s.theme.clear();
+                        crate::appearance::themes::activate(None);
+                        Some(e)
+                    }
+                }
+            }
+        };
         #[cfg(not(target_os = "macos"))]
         {
             let on = core.settings().adv_integration;
@@ -188,6 +221,14 @@ impl App {
         });
         let tray = App::tray(ctx, &core, &hwnd);
         let mut app = Self::build(ctx, core, hwnd, rx, tray, dark);
+        let custom_icon = !app.core.settings().app_icon.is_empty();
+        app.apply_app_icon(ctx, custom_icon);
+        if let Some(text) = appearance_error {
+            app.open(Dialog::Info {
+                title: "Could not load theme".into(),
+                text,
+            });
+        }
         #[cfg(target_os = "macos")]
         if let Err(error) = mac_capture::restore() {
             app.open(Dialog::Info {
@@ -261,7 +302,7 @@ impl App {
             quitting: false,
             updating: false,
             toolbar: None,
-            tb_key: (String::new(), false, 0),
+            tb_key: (String::new(), false, 0, 0),
             icons: HashMap::new(),
             hwnd,
             tray,

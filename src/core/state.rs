@@ -57,6 +57,9 @@ impl Core {
             // The old macOS integration recorded this snapshot without changing system preferences.
             s.saved_proxy = None;
         }
+        if s.tray_icon == 1 {
+            s.tray_icon = 2;
+        }
         s.limit_on |= s.limit_startup;
         if !s.queues.iter().any(|q| q.id == MAIN_QUEUE) {
             s.queues.insert(0, Queue::default());

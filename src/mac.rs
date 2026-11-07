@@ -439,3 +439,30 @@ pub fn package_owner(_exe: &Path) -> Option<&'static str> {
 pub fn install_package(_file: &Path) -> Result<(), String> {
     Err("not on macOS".into())
 }
+
+/// Dock icon now; Finder's user icon on the app bundle when the user chooses a custom/default icon.
+pub fn set_application_icon(pixels: &Rgba, _icon: &Path, custom: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(image) = image_of(pixels, 256.0) else {
+        return;
+    };
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    // SAFETY: the image is a valid retained NSImage and this is the application's main thread.
+    unsafe {
+        app.setApplicationIconImage(Some(&image));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bundle) = exe
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "app"))
+        {
+            let _ = NSWorkspace::sharedWorkspace().setIcon_forFile_options(
+                if custom { Some(&image) } else { None },
+                &NSString::from_str(&bundle.to_string_lossy()),
+                objc2_app_kit::NSWorkspaceIconCreationOptions::empty(),
+            );
+        }
+    }
+}

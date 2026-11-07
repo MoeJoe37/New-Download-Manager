@@ -275,7 +275,7 @@ fn rtl_toggle(
     resp
 }
 
-/// View -> Toolbar -> "NDM Style": NDM's own look for every window (set by main's `style`).
+/// View -> Themes -> "NDM Style": NDM's own look for every window (set by main's `style`).
 pub static NDM_STYLE: AtomicBool = AtomicBool::new(false);
 
 pub fn ndm() -> bool {
@@ -300,7 +300,7 @@ pub struct Theme {
 
 pub fn theme(dark: bool) -> Theme {
     let c = Color32::from_rgb;
-    if dark {
+    let mut t = if dark {
         Theme {
             bg: c(0x15, 0x17, 0x1c),
             surface: c(0x1d, 0x20, 0x27),
@@ -330,12 +330,35 @@ pub fn theme(dark: bool) -> Theme {
             danger: c(0xd9, 0x3a, 0x3a),
             success: c(0x1f, 0x9d, 0x55),
         }
-    }
+    };
+    crate::appearance::themes::palette(dark, |name, c| match name {
+        "bg" => t.bg = c,
+        "surface" => t.surface = c,
+        "raised" => t.raised = c,
+        "border" => t.border = c,
+        "text" => t.text = c,
+        "muted" => t.muted = c,
+        "accent" => t.accent = c,
+        "accent_hot" => t.accent_hot = c,
+        "accent_soft" => t.accent_soft = c,
+        "on_accent" => t.on_accent = c,
+        "danger" => t.danger = c,
+        "success" => t.success = c,
+        _ => (),
+    });
+    t
 }
 
 /// NDM Style's corner radii: controls, and cards (groups, lists, tab pages).
 pub const R_CTRL: f32 = 5.0;
 pub const R_CARD: f32 = 7.0;
+pub static THEME_DARK: AtomicBool = AtomicBool::new(false);
+pub fn control_radius() -> f32 {
+    crate::appearance::themes::number("control_radius", THEME_DARK.load(Relaxed), R_CTRL)
+}
+pub fn card_radius() -> f32 {
+    crate::appearance::themes::number("card_radius", THEME_DARK.load(Relaxed), R_CARD)
+}
 
 /// Buttons NDM Style fills with the accent colour: the action a dialog is for.
 const PRIMARY: [&str; 6] = [
@@ -372,9 +395,9 @@ pub struct Pal {
 
 pub fn pal(ui: &Ui) -> Pal {
     let v = ui.visuals();
-    if ndm() {
+    let mut p = if ndm() {
         let t = theme(v.dark_mode);
-        return Pal {
+        Pal {
             field: t.surface,
             text: t.text,
             edge: t.border,
@@ -385,9 +408,8 @@ pub fn pal(ui: &Ui) -> Pal {
             line: t.border,
             panel: v.panel_fill,
             list: t.surface,
-        };
-    }
-    if v.dark_mode {
+        }
+    } else if v.dark_mode {
         Pal {
             field: v.extreme_bg_color,
             text: v.text_color(),
@@ -413,7 +435,25 @@ pub fn pal(ui: &Ui) -> Pal {
             panel: v.panel_fill,
             list: Color32::WHITE,
         }
-    }
+    };
+    crate::appearance::themes::palette(v.dark_mode, |name, c| match name {
+        "surface" => {
+            p.field = c;
+            p.list = c;
+        }
+        "text" => p.text = c,
+        "border" => {
+            p.edge = c;
+            p.etch_dark = c;
+            p.etch_light = c;
+            p.line = c;
+        }
+        "raised" => p.tab = c,
+        "accent_soft" => p.tab_hot = c,
+        "bg" => p.panel = c,
+        _ => (),
+    });
+    p
 }
 
 /// `font`, smaller (down to `MIN_FIT`) where `text` is wider than `width` in it.

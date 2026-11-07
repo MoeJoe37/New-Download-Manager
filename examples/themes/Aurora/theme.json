@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "Aurora",
+  "base": "ndm",
+  "common": {
+    "palette": {
+      "accent": "#8465E8",
+      "accent_hot": "#6F4CD2",
+      "accent_soft": "#EDE7FC"
+    },
+    "metrics": { "control_radius": 8, "card_radius": 10 },
+    "regions": { "toolbar": { "fill": "#F6F2FF" } }
+  },
+  "dark": {
+    "palette": {
+      "bg": "#15121E",
+      "surface": "#211C2D",
+      "raised": "#30283F",
+      "border": "#493C60",
+      "text": "#F3EDFF",
+      "muted": "#B9ABCE",
+      "accent": "#B69AFF",
+      "accent_hot": "#CEBCFF",
+      "accent_soft": "#3E315B"
+    },
+    "regions": { "toolbar": { "fill": "#211C2D" } }
+  }
+}

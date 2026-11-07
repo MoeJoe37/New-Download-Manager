@@ -1,8 +1,8 @@
 use crate::app::dialogs::Dialog;
 use crate::app::{
-    app_icon, core, dlu, egui, help_logo, human, i18n, install_update, open_url, texture, tr,
-    tr_os, win, App, Arc, Cat, Color32, Duration, Mutex, Relaxed, Release, RichText, Settings,
-    Vec2, ViewportCommand, ViewportId, Which, BAR, GENERAL, TITLE,
+    core, dlu, egui, help_logo, human, i18n, install_update, open_url, tr, tr_os, win, App, Arc,
+    Cat, Color32, Duration, Mutex, Relaxed, Release, RichText, Settings, Vec2, ViewportCommand,
+    ViewportId, Which, BAR, GENERAL, TITLE,
 };
 
 impl App {
@@ -80,7 +80,11 @@ impl App {
                 166.0,
                 240.0,
                 9.0,
-                RichText::new(error.as_str()).color(Color32::RED),
+                RichText::new(error.as_str()).color(crate::appearance::themes::role(
+                    "danger",
+                    d.ui.visuals().dark_mode,
+                    Color32::RED,
+                )),
             );
         }
         let ok = d.button(261.0, 13.0, 50.0, 14.0, "OK", true);
@@ -553,7 +557,7 @@ impl App {
     }
 
     pub(super) fn dialog_about(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) -> bool {
-        let icon = texture(ctx, "app_icon", &app_icon());
+        let icon = super::super::resources::app_icon_texture(ctx, "about_icon");
         let mut d = dlu::D::new(ui);
         d.ui.put(
             d.rect(7.0, 6.0, 20.0, 20.0),

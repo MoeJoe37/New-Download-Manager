@@ -279,3 +279,40 @@ fn detects_executables_and_flatpak_exports_without_listing_leftover_profiles() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Per-user launcher override, also used by Wayland docks to find the current application icon.
+pub fn set_application_icon((w, h, pixels): &super::Rgba, icon: &Path, _custom: bool) {
+    let png = icon.with_extension("png");
+    if image::save_buffer_with_format(
+        &png,
+        pixels,
+        *w as u32,
+        *h as u32,
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .is_err()
+    {
+        return;
+    }
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home().join(".local/share"));
+    let apps = data.join("applications");
+    if std::fs::create_dir_all(&apps).is_err() {
+        return;
+    }
+    let Some(exe) = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+    else {
+        return;
+    };
+    let icon_name = png.to_string_lossy();
+    if icon_name.contains(['\n', '\r']) {
+        return;
+    }
+    let entry = desktop_entry(&exe).replace("Icon=ndm\n", &format!("Icon={icon_name}\n"));
+    let _ = crate::file_ops::atomic_write(&apps.join("ndm.desktop"), entry.as_bytes());
+}

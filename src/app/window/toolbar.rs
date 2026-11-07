@@ -1,7 +1,7 @@
 use crate::app::{
-    core, dlu, egui, explore, i18n, segoe, style, toolbar_sets, toolbars_dir, tr, Align, Align2,
-    App, Color32, Dialog, FontId, Layout, Relaxed, Row, Sense, Status, Toolbar, Vec2, BAR,
-    TB_BUILTIN, TB_BUTTONS,
+    core, dlu, egui, explore, i18n, segoe, toolbar_sets, toolbars_dir, tr, Align, Align2, App,
+    Color32, Dialog, FontId, Layout, Row, Sense, Status, Toolbar, Vec2, BAR, TB_BUILTIN,
+    TB_BUTTONS,
 };
 
 /// (strip index, fallback glyph, label, tooltip, enabled, drop-down)
@@ -59,7 +59,11 @@ impl App {
             (
                 s.tb_skin.clone(),
                 dlu::ndm(),
-                (s.scale_toolbar * 100.0).round() as u32,
+                (s.scale_toolbar
+                    * crate::appearance::themes::number("toolbar_icon_size", self.dark, 1.0)
+                    * 100.0)
+                    .round() as u32,
+                crate::appearance::themes::revision(),
             )
         };
         if self.tb_key != key {
@@ -112,18 +116,19 @@ impl App {
     ) -> Option<usize> {
         // View -> Custom scale: the pictures are made at this size (Toolbar::load), the rest follows
         let sc = self.core.settings().scale_toolbar;
-        let font = segoe(11.6 * sc);
+        let font = segoe(crate::appearance::themes::number("toolbar_font", self.dark, 11.6) * sc);
         // NDM draws the strip 1:1 in screen pixels at any DPI, every button image width + 19 px wide with the
         // label cut to "..."
         let ppp = ui.ctx().pixels_per_point();
-        let cell = |v: f32| ((v * sc).round()).max(8.0) / ppp;
+        let icon_scale = crate::appearance::themes::number("toolbar_icon_size", self.dark, 1.0);
+        let cell = |v: f32| ((v * sc * icon_scale).round()).max(8.0) / ppp;
         let (iw, ih) = (cell(56.0), cell(42.0));
         let bw = iw + 19.0 * sc / ppp;
         let bh = ih + 28.0 * sc / ppp;
         let arrow_w = 19.0 * sc / ppp; // BTNS_DROPDOWN arrow: 19 px
         let dark = ui.visuals().dark_mode;
         let ndm = dlu::ndm().then(|| dlu::theme(dark));
-        let (hot_fill, hot_edge, down_fill) = if let Some(t) = &ndm {
+        let (mut hot_fill, mut hot_edge, mut down_fill) = if let Some(t) = &ndm {
             (t.raised, Color32::TRANSPARENT, t.accent_soft)
         } else if dark {
             (
@@ -138,6 +143,9 @@ impl App {
                 Color32::from_rgb(204, 232, 255),
             )
         };
+        hot_fill = crate::appearance::themes::role("raised", dark, hot_fill);
+        hot_edge = crate::appearance::themes::role("border", dark, hot_edge);
+        down_fill = crate::appearance::themes::role("accent_soft", dark, down_fill);
         let mut clicked = None;
         let mut drop: Option<(usize, egui::Rect)> = None;
         let bar = ui.horizontal(|ui| {
@@ -181,7 +189,11 @@ impl App {
                     } else {
                         hot_fill
                     };
-                    let rad = if ndm.is_some() { dlu::R_CARD } else { 2.0 };
+                    let rad = if ndm.is_some() {
+                        dlu::card_radius()
+                    } else {
+                        2.0
+                    };
                     p.rect_filled(
                         rect.shrink(if ndm.is_some() { 2.0 } else { 1.0 }),
                         rad,
@@ -372,7 +384,7 @@ impl App {
         clicked
     }
 
-    /// Toolbar customization, picture sets and the Modern / NDM styles (also View -> Toolbar).
+    /// Toolbar customization and picture sets (also View -> Toolbar).
     pub(in crate::app) fn toolbar_menu(&mut self, ui: &mut egui::Ui) {
         if ui.button(tr("Customize...")).clicked() {
             let layout = self.core.settings().tb_layout.clone();
@@ -407,17 +419,6 @@ impl App {
             let _ = std::fs::create_dir_all(&dir);
             explore(dir);
             ui.close_menu();
-        }
-        ui.separator();
-        let ndm = self.core.settings().ndm_style;
-        for (name, n) in [("Modern style", false), ("NDM Style", true)] {
-            if ui.radio(ndm == n, tr(name)).clicked() {
-                self.core.settings().ndm_style = n;
-                self.core.save();
-                dlu::NDM_STYLE.store(n, Relaxed);
-                style(ui.ctx(), self.dark);
-                ui.close_menu();
-            }
         }
     }
 }
