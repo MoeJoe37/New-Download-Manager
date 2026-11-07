@@ -5,6 +5,7 @@ use super::egui;
 struct PopupBasis {
     width: f32,
     button_padding: egui::Vec2,
+    scale: f32,
 }
 
 pub fn set_popup_scale(ctx: &egui::Context, scale: f32) {
@@ -22,16 +23,17 @@ pub fn scale_popup(ui: &mut egui::Ui) {
         .data(|data| data.get_temp::<f32>(egui::Id::new("ndm-popup-text-scale")))
         .unwrap_or(1.0);
     let id = ui.id().with("ndm-popup-basis");
-    let basis = ui
-        .data(|data| data.get_temp::<PopupBasis>(id))
-        .unwrap_or_else(|| PopupBasis {
-            width: if ui.available_width().is_finite() {
-                ui.available_width()
-            } else {
-                ui.spacing().menu_width
-            },
-            button_padding: ui.spacing().button_padding,
-        });
+    let previous = ui.data(|data| data.get_temp::<PopupBasis>(id));
+    let mut basis = previous.unwrap_or_else(|| PopupBasis {
+        width: if ui.available_width().is_finite() {
+            ui.available_width()
+        } else {
+            ui.spacing().menu_width
+        },
+        button_padding: ui.spacing().button_padding,
+        scale,
+    });
+    basis.scale = scale;
     ui.data_mut(|data| data.insert_temp(id, basis));
     let base = ui.ctx().style();
     let style = ui.style_mut();
@@ -58,8 +60,24 @@ pub fn scale_popup(ui: &mut egui::Ui) {
     spacing.icon_spacing = base.spacing.icon_spacing * scale;
     spacing.indent = base.spacing.indent * scale;
     spacing.menu_width = base.spacing.menu_width * scale;
-    // Reset the available width too, so an already-open menu can shrink after a live scale change.
-    ui.set_width(basis.width * scale);
+    if ui.is_sizing_pass() {
+        // egui measures natural content widths in this pass. A scaled minimum
+        // would instead stretch every menu to its initial available width.
+        ui.set_max_width(basis.width * scale);
+    } else if let Some(previous) = previous.filter(|previous| previous.scale != scale) {
+        let anchored = ui
+            .stack()
+            .iter()
+            .any(|stack| stack.kind() == Some(egui::UiKind::Popup));
+        // ComboBox popups already have their field's minimum width. Ordinary
+        // menus resize from their measured content, including when scaling down.
+        let width = if anchored {
+            basis.width
+        } else {
+            ui.available_width() * scale / previous.scale
+        };
+        ui.set_width(width);
+    }
 }
 
 #[cfg(test)]

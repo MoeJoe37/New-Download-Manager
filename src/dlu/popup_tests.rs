@@ -12,12 +12,17 @@ struct Label {
 struct Rendered {
     labels: HashMap<String, Label>,
     popups: HashMap<&'static str, Rect>,
+    areas: HashMap<&'static str, Rect>,
+    rows: HashMap<&'static str, Rect>,
+    combo: Rect,
 }
 
 struct Scene {
     ctx: egui::Context,
     time: f64,
     choice: usize,
+    combo_width: f32,
+    extra_choice: Option<&'static str>,
 }
 
 impl Scene {
@@ -29,6 +34,8 @@ impl Scene {
             ctx,
             time: 0.0,
             choice: 0,
+            combo_width: 100.0,
+            extra_choice: None,
         }
     }
 
@@ -36,6 +43,9 @@ impl Scene {
         set_popup_scale(&self.ctx, scale);
         self.time += 1.0 / 60.0;
         let mut popups = HashMap::new();
+        let mut area_ids = HashMap::new();
+        let mut rows = HashMap::new();
+        let mut combo = Rect::NOTHING;
         let output = self.ctx.run(
             egui::RawInput {
                 time: Some(self.time),
@@ -48,24 +58,52 @@ impl Scene {
                     egui::menu::bar(ui, |ui| {
                         ui.menu_button("Menu", |ui| {
                             scale_popup(ui);
-                            let _ = ui.button("Action one");
-                            let _ = ui.button("Action two");
+                            rows.insert("Action one", ui.button("Action one").rect);
+                            rows.insert("Action two", ui.button("Action two").rect);
                             ui.menu_button("More", |ui| {
                                 scale_popup(ui);
                                 let _ = ui.button("Nested action");
                                 popups.insert("nested", ui.min_rect());
                             });
+                            area_ids.insert(
+                                "menu",
+                                ui.stack()
+                                    .iter()
+                                    .find(|stack| stack.kind() == Some(egui::UiKind::Menu))
+                                    .unwrap()
+                                    .id,
+                            );
                             popups.insert("menu", ui.min_rect());
                         });
                     });
-                    egui::ComboBox::from_id_salt("scaled-combo")
+                    combo = egui::ComboBox::from_id_salt("scaled-combo")
+                        .width(self.combo_width)
                         .selected_text("Choice one")
                         .show_ui(ui, |ui| {
                             scale_popup(ui);
-                            ui.selectable_value(&mut self.choice, 0, "Choice one");
-                            ui.selectable_value(&mut self.choice, 1, "Choice two");
+                            rows.insert(
+                                "Choice one",
+                                ui.selectable_value(&mut self.choice, 0, "Choice one").rect,
+                            );
+                            rows.insert(
+                                "Choice two",
+                                ui.selectable_value(&mut self.choice, 1, "Choice two").rect,
+                            );
+                            if let Some(text) = self.extra_choice {
+                                ui.selectable_value(&mut self.choice, 2, text);
+                            }
+                            area_ids.insert(
+                                "combo",
+                                ui.stack()
+                                    .iter()
+                                    .find(|stack| stack.kind() == Some(egui::UiKind::Popup))
+                                    .unwrap()
+                                    .id,
+                            );
                             popups.insert("combo", ui.min_rect());
-                        });
+                        })
+                        .response
+                        .rect;
                 });
             },
         );
@@ -92,6 +130,17 @@ impl Scene {
         Rendered {
             labels: text,
             popups,
+            areas: area_ids
+                .into_iter()
+                .map(|(name, id)| {
+                    (
+                        name,
+                        self.ctx.memory(|memory| memory.area_rect(id)).unwrap(),
+                    )
+                })
+                .collect(),
+            rows,
+            combo,
         }
     }
 
@@ -141,7 +190,7 @@ fn popup_menu_scaling_tracks_live_changes_without_compounding() {
         let font = egui::TextStyle::Button.resolve(&scene.ctx.style()).size;
         scene.click(1.0, "Menu");
         let initial = scene.settled(1.0).popups["menu"];
-        for scale in [2.0, 0.5, 1.5, 1.0] {
+        for scale in [2.0, 0.5, 1.5, 1.0].into_iter().cycle().take(16) {
             let rendered = scene.settled(scale);
             assert_scaled(&rendered, "Action two", scale, font);
             let size = rendered.popups["menu"].size();
@@ -180,7 +229,7 @@ fn popup_combo_scaling_grows_labels_and_bounds() {
         let font = egui::TextStyle::Button.resolve(&scene.ctx.style()).size;
         scene.click(1.0, "Choice one");
         let initial = scene.settled(1.0).popups["combo"];
-        for scale in [2.0, 0.5, 1.5, 1.0] {
+        for scale in [2.0, 0.5, 1.5, 1.0].into_iter().cycle().take(16) {
             let rendered = scene.settled(scale);
             assert_scaled(&rendered, "Choice one", scale, font);
             let second = &rendered.labels["Choice two"];
@@ -188,10 +237,10 @@ fn popup_combo_scaling_grows_labels_and_bounds() {
             assert!(second.rect.right() <= second.clip.right() + 1.0);
             let size = rendered.popups["combo"].size();
             if scale > 1.0 {
-                assert!(size.x > initial.width() * 1.3 && size.y > initial.height() * 1.3);
+                assert!(size.y > initial.height() * 1.3);
             }
             if scale < 1.0 {
-                assert!(size.x < initial.width() * 0.8 && size.y < initial.height() * 0.8);
+                assert!(size.y < initial.height() * 0.8);
             }
             if scale == 1.0 {
                 assert!(
@@ -222,5 +271,61 @@ fn popup_combo_scaling_grows_labels_and_bounds() {
         scene.click(2.0, "Choice two");
         assert_eq!(scene.choice, 1);
         assert!(!scene.settled(2.0).popups.contains_key("combo"));
+    }
+}
+
+#[test]
+fn popup_width_follows_contents_without_scaling_field_width() {
+    for dpi in [1.0, 2.0] {
+        for scale in [0.5, 1.0, 1.5, 2.0] {
+            let mut menu = Scene::new(dpi);
+            menu.ctx.style_mut(|style| style.spacing.menu_width = 320.0);
+            menu.click(scale, "Menu");
+            let rendered = menu.settled(scale);
+            let text_width = rendered.labels["Action one"]
+                .rect
+                .width()
+                .max(rendered.labels["Action two"].rect.width());
+            assert!(
+                rendered.areas["menu"].width() < text_width + 64.0 * scale,
+                "menu has excessive empty space at {scale}"
+            );
+            assert!(
+                (rendered.rows["Action one"].width() - rendered.popups["menu"].width()).abs() < 2.0,
+                "menu row does not fill its popup"
+            );
+
+            let mut wide = Scene::new(dpi);
+            wide.combo_width = 320.0;
+            wide.click(scale, "Choice one");
+            let rendered = wide.settled(scale);
+            assert!(
+                (rendered.areas["combo"].width() - rendered.combo.width()).abs() < 2.0,
+                "dropdown field width was scaled again at {scale}: {:?}",
+                rendered.areas["combo"]
+            );
+            assert!(
+                (rendered.rows["Choice one"].width() - rendered.popups["combo"].width()).abs()
+                    < 2.0,
+                "dropdown row does not fill its popup"
+            );
+
+            let mut long = Scene::new(dpi);
+            let label = "A deliberately longer format label";
+            long.extra_choice = Some(label);
+            long.click(scale, "Choice one");
+            let rendered = long.settled(scale);
+            let text = &rendered.labels[label];
+            assert!(
+                text.rect.left() >= text.clip.left()
+                    && text.rect.right() <= text.clip.right() + 1.0,
+                "long label is clipped"
+            );
+            assert!(
+                rendered.areas["combo"].width()
+                    <= text.rect.width().max(rendered.combo.width()) + 64.0 * scale,
+                "dropdown has excessive empty space"
+            );
+        }
     }
 }
