@@ -1,5 +1,7 @@
 use crate::app::{copy_dir, core, explore, i18n, tr_os, App, Dialog, Path, PathBuf};
 
+mod export;
+
 /// The browser's own extensions page, for the browsers the extension (Chromium MV3) runs in.
 pub(in crate::app) fn extension_page(b: &core::settings::Browser) -> Option<String> {
     let k = core::settings::browser_kind(&format!("{} {}", b.name, b.exe));
@@ -97,6 +99,10 @@ fn extension_copy_refreshes() {
 
 impl App {
     pub(in crate::app) fn export_extension(&mut self) {
+        self.open(Dialog::ExtensionExport { firefox: false });
+    }
+
+    pub(in crate::app) fn export_extension_for(&mut self, firefox: bool) {
         let Some(src) = extension_dir() else {
             return self.open(Dialog::Info {
                 title: "Export extension".into(),
@@ -110,17 +116,35 @@ impl App {
         else {
             return;
         };
-        let dest = to.join("NDM extension");
-        let text = match copy_dir(&src, &dest) {
-            Ok(()) => {
+        let guide = export_guide(firefox);
+        let text = match export::write_export(&src, &to, firefox, &guide) {
+            Ok(dest) => {
                 explore(&dest);
-                i18n::trf_os("The browser extension is in this folder:\n%s\n\nChrome, Edge, Brave, Opera, Vivaldi: open the browser's extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select the folder.\nFirefox: open about:debugging, click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in the folder.", &[&i18n::ltr(&dest.display().to_string())])
+                format!(
+                    "{}\n\n{}",
+                    i18n::trf_os(
+                        "The browser extension is in this folder:\n%s",
+                        &[&i18n::ltr(&dest.display().to_string())]
+                    ),
+                    guide
+                )
             }
-            Err(e) => i18n::trf_os("The extension couldn't be saved there: %s", &[&e]),
+            Err(e) => i18n::trf_os(
+                "The extension couldn't be saved there: %s",
+                &[&i18n::tr_msg_os(&e.to_string())],
+            ),
         };
         self.open(Dialog::Info {
             title: "Export extension".into(),
             text,
         });
+    }
+}
+
+fn export_guide(firefox: bool) -> String {
+    if firefox {
+        tr_os("1. Open about:debugging#/runtime/this-firefox in your browser.\n2. Click \"Load Temporary Add-on...\" and select manifest.json in this folder.\n\nFirefox removes unsigned temporary add-ons when it closes. Load this folder again after restarting the browser. Permanent installation requires a Mozilla-signed add-on.\n\nKeep NDM running to receive downloads.")
+    } else {
+        tr_os("1. Open your browser's extensions page (chrome://extensions, edge://extensions or the browser's Manage extensions page).\n2. Turn on \"Developer mode\".\n3. Click \"Load unpacked\" and select this folder.\n\nKeep this folder in place and keep NDM running to receive downloads.")
     }
 }

@@ -1458,3 +1458,19 @@ Find "Find file" 320.9x236.8
   text 92.5,210.0 110.5,219.0 "Find"
   rect 183.0,203.0 252.5,225.5
   text 203.0,210.0 233.0,219.0 "Cancel"
+
+ExtensionExport "Export extension" 460.4x252.8
+  rect 0.0,0.0 460.5,253.0
+  text 14.0,14.0 223.0,23.0 "Choose the browser that will use the extension:"
+  circle 13.5,51.5 28.5,66.5
+  circle 18.5,56.5 23.5,62.0
+  text 32.0,54.5 150.0,63.5 "Chromium-based browsers"
+  text 32.0,78.5 324.0,88.5 "Chrome, Edge, Brave, Opera, Vivaldi and other Chromium browsers"
+  circle 13.5,111.0 28.5,126.0
+  text 32.0,114.0 174.0,124.0 "Firefox / Mozilla-based browsers"
+  text 32.0,138.0 333.0,148.0 "Firefox, Zen, Waterfox, LibreWolf, Floorp and other Firefox browsers"
+  text 14.0,167.5 432.0,187.5 "NDM exports a ready-to-load folder with installation steps. Firefox removes temporary add-ons when the browser closes."
+  rect 270.5,219.0 353.0,241.5
+  text 293.5,227.0 329.5,236.0 "Export..."
+  rect 362.5,219.0 445.0,241.5
+  text 389.0,226.0 419.0,235.0 "Cancel"

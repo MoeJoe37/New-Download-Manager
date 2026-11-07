@@ -140,6 +140,16 @@ fn desktop_interactions() {
         let core = Core::for_dialog_snapshots(root.join("state.json"), vec![]);
         core.settings().base_dir = root.display().to_string();
         let mut desktop = Desktop::new(core.clone(), scale);
+
+        desktop.app.export_extension();
+        let (_, mut export) = desktop.app.dialogs.pop().unwrap();
+        assert!(matches!(export, Dialog::ExtensionExport { firefox: false }));
+        assert!(desktop.click(&mut export, "Firefox / Mozilla-based browsers"));
+        assert!(matches!(export, Dialog::ExtensionExport { firefox: true }));
+        assert!(desktop.click(&mut export, "Chromium-based browsers"));
+        assert!(matches!(export, Dialog::ExtensionExport { firefox: false }));
+        assert!(!desktop.click(&mut export, "Cancel"));
+
         let mut dialog = file_info(&core, &root, "https://example.test/video".into(), true);
         desktop.frame(&mut dialog, vec![]);
         desktop.click(&mut dialog, "Best");

@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.NDM_TEST_PLAYWRIGHT || 'playwright');
-const extension = fileURLToPath(new URL('../extension', import.meta.url));
+const extension = process.env.NDM_TEST_EXTENSION_DIR || fileURLToPath(new URL('../extension', import.meta.url));
 const context = await chromium.launchPersistentContext('', {
   channel: 'chromium',
   headless: true,
+  ...(process.env.NDM_TEST_CHROMIUM ? { executablePath: process.env.NDM_TEST_CHROMIUM } : {}),
   args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
 });
 

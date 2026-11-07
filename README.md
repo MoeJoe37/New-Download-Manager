@@ -127,7 +127,11 @@ Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager
 2. Install the browser extension: open your browser's extensions page, turn on *Developer mode*, click
    *Load unpacked* and choose the `extension` folder in NDM's install folder
    (Start menu → New Download Manager → *Browser extension folder*). Or choose **Tasks → Export
-   extension...** in NDM to save a copy anywhere and see the steps for your browser.
+   extension...** in NDM, choose **Chromium-based browsers** or **Firefox / Mozilla-based browsers**,
+   and pick a destination. NDM opens the matching folder with an `INSTALL.txt` guide. Chromium browsers
+   use **Load unpacked**; Firefox, Zen, Waterfox and other Firefox browsers use **Load Temporary Add-on**
+   in `about:debugging#/runtime/this-firefox` and select `manifest.json`. Firefox removes unsigned
+   temporary add-ons on restart; permanent installation requires a Mozilla-signed add-on.
 3. Start NDM once, so the browser can reach it.
 
 **macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first

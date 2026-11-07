@@ -202,6 +202,7 @@ fn dialog_snapshots() {
         },
         Recovery: Dialog::Recovery { .. } => Dialog::Recovery { id: 2 },
         Find: Dialog::Find { .. } => Dialog::Find { text: String::new(), flags: 0 },
+        ExtensionExport: Dialog::ExtensionExport { .. } => Dialog::ExtensionExport { firefox: false },
     };
 
     let mut snapshot = String::new();

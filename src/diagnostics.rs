@@ -20,6 +20,7 @@ pub(crate) fn issue_text(version: &str, lang: &str) -> (String, String) {
 const CRASH_MODULES: &[&str] = &[
     "app",
     "app::browser_setup",
+    "app::browser_setup::export",
     "app::dialogs",
     "app::dialogs::browser",
     "app::dialogs::checksum",

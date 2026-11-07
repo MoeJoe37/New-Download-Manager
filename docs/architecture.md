@@ -65,6 +65,10 @@ partial data until the user explicitly chooses to restart it.
 
 ## Browser extension
 
+`app::browser_setup::export` creates browser-specific copies for the export dialog.
+It retains the Chromium key or Firefox add-on ID and leaves the bundled manifest
+unchanged. The browser integration tests load folders produced by this exporter.
+
 `background.js` registers listeners in a fixed order. Chrome synchronously loads
 its helpers with `importScripts`. Firefox loads the same helpers from the ordered
 `background.scripts` manifest list before the entry point.

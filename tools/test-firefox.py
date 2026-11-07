@@ -53,13 +53,13 @@ def stop(process):
         process.wait(timeout=5)
 
 
-def run(firefox):
+def run(firefox, extension):
     handoffs = queue.Queue()
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr("fixture.txt", "NDM Firefox fixture")
     payload = output.getvalue()
-    script = (ROOT / "extension/background/desktop.js").read_text()
+    script = (extension / "background/desktop.js").read_text()
     ports = json.loads("[" + re.search(r"const PORTS = \[([^]]+)\]", script)[1] + "]")
     marked_port = ports[-1]
 
@@ -120,7 +120,7 @@ def run(firefox):
                     time.sleep(0.1)
             browser = Marionette(cleanup.enter_context(connection))
             browser.call("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {}}})
-            installed = browser.call("Addon:Install", {"path": str(ROOT / "extension"), "temporary": True})
+            installed = browser.call("Addon:Install", {"path": str(extension), "temporary": True})
             addon = installed.get("value") if isinstance(installed, dict) else installed
             assert addon == "ndm@newdownloadmanager", installed
             browser.call("WebDriver:Navigate", {"url": site})
@@ -166,7 +166,8 @@ def run(firefox):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--firefox", default=shutil.which("firefox"))
+    parser.add_argument("--extension", type=lambda path: Path(path).resolve(), default=ROOT / "extension")
     args = parser.parse_args()
     if not args.firefox:
         parser.error("install Firefox or pass --firefox /path/to/firefox")
-    run(args.firefox)
+    run(args.firefox, args.extension)

@@ -5,6 +5,62 @@ use crate::app::{
 };
 
 impl App {
+    pub(super) fn dialog_extension_export(
+        &mut self,
+        ui: &mut egui::Ui,
+        firefox: &mut bool,
+    ) -> bool {
+        let mut d = dlu::D::new(ui);
+        d.text(
+            10.0,
+            8.0,
+            310.0,
+            18.0,
+            "Choose the browser that will use the extension:",
+        );
+        if d.radio(
+            10.0,
+            31.0,
+            310.0,
+            12.0,
+            !*firefox,
+            "Chromium-based browsers",
+        ) {
+            *firefox = false;
+        }
+        d.label(
+            23.0,
+            47.0,
+            297.0,
+            10.0,
+            "Chrome, Edge, Brave, Opera, Vivaldi and other Chromium browsers",
+        );
+        if d.radio(
+            10.0,
+            68.0,
+            310.0,
+            12.0,
+            *firefox,
+            "Firefox / Mozilla-based browsers",
+        ) {
+            *firefox = true;
+        }
+        d.label(
+            23.0,
+            84.0,
+            297.0,
+            10.0,
+            "Firefox, Zen, Waterfox, LibreWolf, Floorp and other Firefox browsers",
+        );
+        d.text(10.0, 104.0, 310.0, 24.0, "NDM exports a ready-to-load folder with installation steps. Firefox removes temporary add-ons when the browser closes.");
+        let export = d.button(194.0, 137.0, 59.0, 14.0, "Export...", true);
+        let cancel = d.button(260.0, 137.0, 59.0, 14.0, "Cancel", true);
+        if export {
+            self.export_extension_for(*firefox);
+        }
+        !(export || cancel)
+    }
+
     pub(super) fn dialog_cancelled(
         &mut self,
         ui: &mut egui::Ui,
