@@ -327,6 +327,39 @@ fn queues() {
 }
 
 #[test]
+fn removed_view_options_preserve_settings() {
+    // Old size/theme keys are ignored; the remaining style and custom scales still round-trip.
+    for ndm_style in [false, true] {
+        let legacy = serde_json::json!({
+            "classic": true,
+            "small_buttons": true,
+            "ndm_style": ndm_style,
+            "scale_toolbar": 0.75,
+            "scale_tree": 1.25,
+            "scale_text": 1.5,
+            "tray_icon": 2,
+            "tb_skin": "Sunset",
+            "tb_layout": [6, -1, 0],
+            "base_dir": "/downloads"
+        });
+        let settings: Settings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(settings.ndm_style, ndm_style);
+        assert_eq!(settings.scale_toolbar, 0.75);
+        assert_eq!(settings.scale_tree, 1.25);
+        assert_eq!(settings.scale_text, 1.5);
+        assert_eq!(settings.tray_icon, 2);
+        assert_eq!(settings.tb_skin, "Sunset");
+        assert_eq!(settings.tb_layout, [6, -1, 0]);
+        assert_eq!(settings.base_dir, "/downloads");
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("classic").is_none());
+        assert!(saved.get("small_buttons").is_none());
+        let restored: Settings = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), saved);
+    }
+}
+
+#[test]
 fn old_state_keeps_behaviour() {
     // what 1.0.4 saved: none of 1.1's fields
     let s: Settings = serde_json::from_str(

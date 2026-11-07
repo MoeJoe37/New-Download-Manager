@@ -325,7 +325,6 @@ impl App {
             .iter()
             .map(|r| self.icon(ui.ctx(), &core::ext(&r.cell(Col::Name))))
             .collect();
-        let modern = !self.core.settings().classic;
         let nt = dlu::ndm().then(|| dlu::theme(ui.visuals().dark_mode));
         let font_h = egui::TextStyle::Body.resolve(ui.style()).size;
         // taller rows for a bigger font; NDM Style gives every row room to breathe
@@ -619,7 +618,7 @@ impl App {
                     egui::Stroke::new(1.0_f32, t.raised),
                 );
             }
-        } else if modern {
+        } else {
             // NDM's list grid (LVS_EX_GRIDLINES / its dark-mode custom grid, 0x475710): a line under every row,
             // continued down the empty part of the list
             let area = ui.min_rect().intersect(ui.clip_rect()); // only the visible part

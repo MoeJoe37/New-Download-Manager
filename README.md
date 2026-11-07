@@ -77,7 +77,7 @@
 - Saved projects, templates and schedules
 
 **And**
-- Dark mode and three looks: Modern, Classic and **NDM Style**, NDM's own modern design for every window
+- Dark mode and two looks: Modern and **NDM Style**, NDM's own modern design for every window
 - Custom scale for the toolbar, the categories pane and the text, including dropdown menus and their contents (View → Custom scale...)
 - Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
 - Filter box above the list, clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
@@ -287,13 +287,11 @@ Optional, for each button:
 
 - `<button>-hot.png`: shown while the mouse is over the button (otherwise NDM lightens the normal picture)
 - `<button>-disabled.png`: shown while the button can't be used (otherwise NDM greys the normal picture)
-- `small/<button>.png` (and `small/<button>-hot.png`, `small/<button>-disabled.png`): drawn for
-  **Small Buttons** instead of the large picture made smaller
 
 Pictures should be square-ish with a transparent background. NDM fits each one into the button, keeping its
-proportions: large buttons are 56 × 42 pixels and small ones 32 × 32 at 100% scale, so draw them at least 112 × 84
-(or 96 × 96) to stay sharp at higher **View → Custom scale** sizes. A button without a picture keeps NDM's own icon,
-so a toolbar can change just a few buttons.
+proportions: the picture area is 56 × 42 pixels at 100% scale, so draw them at least 112 × 84
+to stay sharp at higher **View → Custom scale** sizes. A button without a picture keeps NDM's own icon,
+so a toolbar can change just a few buttons. Older sets with pictures only in a `small/` folder still work as a fallback.
 
 ```
 toolbars/
@@ -302,9 +300,7 @@ toolbars/
     ├── add-url-hot.png
     ├── resume.png
     ├── stop.png
-    ├── options.png
-    └── small/
-        └── add-url.png
+    └── options.png
 ```
 
 **4. Choose it:** **View → Toolbar → Sunset**. **Built-in toolbar** goes back to NDM's own icons. After changing
@@ -319,7 +315,7 @@ for others in [Issues](https://github.com/MoeJoe37/New-Download-Manager/issues).
 
 A category icon set replaces the pictures in the categories pane (All Downloads, Unfinished, Finished, the
 categories, Grabber projects and Queues) with your own. Like a toolbar, it is a folder of PNG files; NDM lists
-every such folder under **View → Category icons**. It works in all three styles (Modern, Classic and NDM Style).
+every such folder under **View → Category icons**. It works in both styles (Modern and NDM Style).
 
 **1. Find the category icons folder.** Choose **View → Category icons → Open category icons folder**. NDM creates
 and opens it:

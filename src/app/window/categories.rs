@@ -456,7 +456,6 @@ impl App {
         };
         frame.show(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            let modern = !self.core.settings().classic;
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
@@ -593,7 +592,7 @@ impl App {
                                 } else {
                                     row.left() + 7.0 * sc + d as f32 * indent
                                 }
-                            }; // centre of a level's +/- box
+                            }; // centre of a level's chevron
                             let my = row.center().y;
                             // dotted lines: to the item, down to the next sibling, and the parent's line passing by
                             let dots = |a: egui::Pos2, b: egui::Pos2| {
@@ -630,8 +629,8 @@ impl App {
                                 );
                             }
                             let open = !key.is_empty() && self.expanded.contains(*key);
-                            if *kids && modern {
-                                // NDM (Explorer-themed tree): a chevron instead of the +/- box
+                            if *kids {
+                                // Modern style: Explorer-themed tree chevrons
                                 let c = egui::pos2(cx(*depth), my);
                                 let v = |x: f32, y: f32| c + Vec2::new(x * dir, y);
                                 let pts = if open {
@@ -649,40 +648,6 @@ impl App {
                                 if ui
                                     .interact(
                                         egui::Rect::from_center_size(c, Vec2::splat(13.0)),
-                                        ui.id().with(("exp", k)),
-                                        Sense::click(),
-                                    )
-                                    .clicked()
-                                {
-                                    toggle = Some(key.to_string());
-                                }
-                            } else if *kids {
-                                let b = egui::Rect::from_center_size(
-                                    egui::pos2(cx(*depth), my),
-                                    Vec2::splat(9.0),
-                                );
-                                p.rect_filled(b, 0.0, fill);
-                                p.rect_stroke(
-                                    b,
-                                    0.0,
-                                    egui::Stroke::new(1.0_f32, line),
-                                    egui::StrokeKind::Inside,
-                                );
-                                p.hline(
-                                    b.x_range().shrink(2.0),
-                                    my,
-                                    egui::Stroke::new(1.0_f32, text),
-                                );
-                                if !open {
-                                    p.vline(
-                                        b.center().x,
-                                        b.y_range().shrink(2.0),
-                                        egui::Stroke::new(1.0_f32, text),
-                                    );
-                                }
-                                if ui
-                                    .interact(
-                                        b.expand(2.0),
                                         ui.id().with(("exp", k)),
                                         Sense::click(),
                                     )

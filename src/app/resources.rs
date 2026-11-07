@@ -45,7 +45,7 @@ pub(crate) fn app_icon() -> win::Rgba {
     (i.width as usize, i.height as usize, i.rgba)
 }
 
-/// Tray picture for View -> "NDM tray icon": 1 = 3D style (the app icon), 2 = Classic style (assets/ndm2d.png).
+/// Tray picture for View -> "NDM tray icon": 1 = 3D style (the app icon), 2 = 2D style (assets/ndm2d.png).
 pub(in crate::app) fn tray_picture(style: u8) -> Option<tray_icon::Icon> {
     let (w, h, rgba) = match style {
         2 => eframe::icon_data::from_png_bytes(include_bytes!(concat!(
@@ -79,11 +79,10 @@ struct TbPics {
     tint: bool,
 }
 
-/// The toolbar's pictures, large and small, one per button in `TB_BUTTONS` order: the built-in glyphs, or
+/// The toolbar's pictures at the custom toolbar scale, one per button in `TB_BUTTONS` order: the built-in glyphs, or
 /// a custom toolbar's PNGs (README, Custom toolbars) with the glyphs standing in for any it lacks.
 pub(in crate::app) struct Toolbar {
-    large: Vec<Option<TbPics>>,
-    small: Vec<Option<TbPics>>,
+    pictures: Vec<Option<TbPics>>,
 }
 
 pub(in crate::app) const TB_ICONS: usize = 12;
@@ -414,23 +413,19 @@ impl Toolbar {
     pub(super) fn load(ctx: &egui::Context, skin: &str, ndm: bool, scale: f32) -> Toolbar {
         let dir = Some(toolbars_dir().join(skin)).filter(|d| skin != TB_BUILTIN && d.is_dir());
         let px = |v: f32| ((v * scale).round() as usize).max(8);
-        let mut sizes = [vec![], vec![]];
-        // cells as the toolbar draws them: 56 x 42 px large, 32 x 32 px small (at 100%)
-        for (si, (cw, ch, glyph)) in [
-            (px(56.0), px(42.0), 34.0 * scale),
-            (px(32.0), px(32.0), 24.0 * scale),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            for k in 0..TB_ICONS {
+        let (cw, ch, glyph) = (px(56.0), px(42.0), 34.0 * scale);
+        let pictures = (0..TB_ICONS)
+            .map(|k| {
                 let file = |suffix: &str| {
                     let d = dir.as_ref()?;
                     let name = format!("{}{suffix}.png", TB_FILES[k]);
-                    // a small/ folder holds pictures drawn for the small buttons
-                    let f = Some(d.join("small").join(&name))
-                        .filter(|f| si == 1 && f.is_file())
-                        .unwrap_or_else(|| d.join(&name));
+                    let root = d.join(&name);
+                    // Keep older custom sets that stored pictures only in small/ usable.
+                    let f = if root.is_file() {
+                        root
+                    } else {
+                        d.join("small").join(&name)
+                    };
                     tb_picture(&f, cw, ch)
                 };
                 let pics = match file("") {
@@ -445,32 +440,28 @@ impl Toolbar {
                     None => glyph_strip(&[TB_GLYPHS[k]], cw, ch, glyph)
                         .map(|g| ([g.clone(), lighter(g.clone()), grayed(g)], false)),
                 };
-                sizes[si].push(pics.map(|(p, tint)| {
+                pics.map(|(p, tint)| {
                     let [a, b, c] = p;
-                    let t = |n: usize, b: &win::Rgba| texture(ctx, &format!("tb{si}_{k}_{n}"), b);
+                    let t = |n: usize, b: &win::Rgba| texture(ctx, &format!("tb{k}_{n}"), b);
                     TbPics {
                         pics: [t(0, &a), t(1, &b), t(2, &c)],
                         tint,
                     }
-                }));
-            }
-        }
-        let [large, small] = sizes;
-        Toolbar { large, small }
+                })
+            })
+            .collect();
+        Toolbar { pictures }
     }
 
     /// Button `k`'s picture for a state, and the colour to draw it in.
     pub(super) fn pic(
         &self,
-        small: bool,
         k: usize,
         enabled: bool,
         hot: bool,
         dark: bool,
     ) -> Option<(egui::TextureId, Color32)> {
-        let p = if small { &self.small } else { &self.large }
-            .get(k)?
-            .as_ref()?;
+        let p = self.pictures.get(k)?.as_ref()?;
         let state = if !enabled {
             2
         } else if hot {

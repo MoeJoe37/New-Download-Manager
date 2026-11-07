@@ -279,7 +279,7 @@ resumes broken downloads, has a scheduler, a site grabber and a browser button f
                     crate::dlu::scale_popup(ui);
                     // 0x45ada0: delete the icon, then add it back with the new picture unless "Don't show"
                     let cur = self.core.settings().tray_icon;
-                    for (v, label) in [(1, "3D style"), (2, "Classic style"), (3, "Don't show")] {
+                    for (v, label) in [(1, "3D style"), (2, "2D style"), (3, "Don't show")] {
                         if ui.radio(cur == v, tr(label)).clicked() {
                             self.core.settings().tray_icon = v;
                             self.core.save();

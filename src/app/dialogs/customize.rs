@@ -150,7 +150,7 @@ impl App {
             .map(|k| {
                 self.toolbar
                     .as_ref()
-                    .and_then(|t| t.pic(true, k, true, false, dark))
+                    .and_then(|t| t.pic(k, true, false, dark))
             })
             .collect();
         let list = |ui: &mut egui::Ui, items: &[i8], sel: &mut Option<usize>| {
@@ -173,8 +173,8 @@ impl App {
                                     ui.painter().image(
                                         t,
                                         egui::Rect::from_min_size(
-                                            r.0.min + Vec2::new(2.0, 2.0),
-                                            Vec2::splat(18.0),
+                                            r.0.min + Vec2::new(1.0, 2.0),
+                                            Vec2::new(24.0, 18.0),
                                         ),
                                         egui::Rect::from_min_max(
                                             egui::pos2(0.0, 0.0),

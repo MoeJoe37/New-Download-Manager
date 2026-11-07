@@ -36,8 +36,19 @@ impl Desktop {
     }
 
     fn frame(&mut self, dialog: &mut Dialog, events: Vec<Event>) -> (HashMap<String, Rect>, bool) {
-        self.time += 1.0 / 60.0;
         let mut alive = true;
+        let text = self.render(events, |app, ctx, ui| {
+            alive = app.dialog_body(ctx, ui, dialog);
+        });
+        (text, alive)
+    }
+
+    fn render(
+        &mut self,
+        events: Vec<Event>,
+        mut body: impl FnMut(&mut App, &egui::Context, &mut egui::Ui),
+    ) -> HashMap<String, Rect> {
+        self.time += 1.0 / 60.0;
         let output = self.ctx.run(
             egui::RawInput {
                 time: Some(self.time),
@@ -47,7 +58,7 @@ impl Desktop {
             },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    alive = self.app.dialog_body(ctx, ui, dialog);
+                    body(&mut self.app, ctx, ui);
                 });
             },
         );
@@ -67,7 +78,45 @@ impl Desktop {
         for shape in output.shapes {
             labels(&shape.shape, &mut text);
         }
-        (text, alive)
+        text
+    }
+
+    fn toolbar_style(&mut self, label: &str) {
+        let mut menu = |app: &mut App, _: &egui::Context, ui: &mut egui::Ui| {
+            dlu::scale_popup(ui);
+            app.toolbar_menu(ui);
+        };
+        self.render(vec![], &mut menu);
+        let labels = self.render(vec![], &mut menu);
+        for removed in ["Large Buttons", "Small Buttons", "Classic style"] {
+            assert!(
+                !labels.contains_key(&i18n::tr(removed)),
+                "{removed} is still in the menu"
+            );
+        }
+        for kept in [
+            "Customize...",
+            "Built-in toolbar",
+            "Modern style",
+            "NDM Style",
+        ] {
+            assert!(labels.contains_key(&i18n::tr(kept)), "Missing {kept}");
+        }
+        let pos = labels[&i18n::tr(label)].center();
+        for pressed in [true, false] {
+            self.render(
+                vec![
+                    Event::PointerMoved(pos),
+                    Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                &mut menu,
+            );
+        }
     }
 
     fn click_at(&mut self, dialog: &mut Dialog, pos: Pos2) -> bool {
@@ -140,6 +189,37 @@ fn desktop_interactions() {
         let core = Core::for_dialog_snapshots(root.join("state.json"), vec![]);
         core.settings().base_dir = root.display().to_string();
         let mut desktop = Desktop::new(core.clone(), scale);
+
+        for text_scale in [0.5, 1.0, 2.0] {
+            dlu::set_popup_scale(&desktop.ctx, text_scale);
+            for (label, ndm) in [("NDM Style", true), ("Modern style", false)] {
+                desktop.toolbar_style(label);
+                assert_eq!(core.settings().ndm_style, ndm);
+                assert_eq!(dlu::ndm(), ndm);
+                if text_scale == 1.0 {
+                    let mut previous_height = 0.0;
+                    for toolbar_scale in [0.5, 1.0, 2.0] {
+                        core.settings().scale_toolbar = toolbar_scale;
+                        let mut height = 0.0;
+                        desktop.render(vec![], |app, _, ui| {
+                            height = ui
+                                .horizontal(|ui| app.toolbar(ui, &[], &[]))
+                                .response
+                                .rect
+                                .height();
+                        });
+                        assert!(
+                            height > previous_height * 1.5,
+                            "toolbar did not grow with custom scale"
+                        );
+                        assert!(desktop.app.toolbar.is_some());
+                        previous_height = height;
+                    }
+                    core.settings().scale_toolbar = 1.0;
+                }
+            }
+        }
+        dlu::set_popup_scale(&desktop.ctx, 1.0);
 
         desktop.app.export_extension();
         let (_, mut export) = desktop.app.dialogs.pop().unwrap();

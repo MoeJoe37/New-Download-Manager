@@ -138,8 +138,6 @@ pub struct Settings {
     /// and !RememberDuplLinksA (ask with dialog 298)..
     pub dupl_action: u8,
     pub dupl_ask: bool,
-    /// View -> Toolbar -> Small Buttons.
-    pub small_buttons: bool,
     /// Options -> Connection "Download limits": no more than `quota_mb` every `quota_hours` (1-23).
     /// Scheduler\isLimitEnabled, m_MBytes, m_hours, showLimitExceededWarning.
     pub quota_on: bool,
@@ -192,16 +190,14 @@ pub struct Settings {
     /// The note "keeps downloading while minimized" was shown (closing without a tray icon).
     pub close_note_shown: bool,
     pub tip_next: usize,
-    /// View -> "Classic style" (3D toolbar, +/- tree boxes) instead of "Modern style".
-    pub classic: bool,
     /// View -> Toolbar -> "NDM Style": NDM's own modern look (rounded controls, accent colour, flat
-    /// sidebar, status bar); `classic` is kept for when it is turned off again.
+    /// sidebar, status bar). When off, use Modern style.
     pub ndm_style: bool,
     /// View -> "Custom scale...": the toolbar, the categories pane and the main window's text, 1.0 = 100%.
     pub scale_toolbar: f32,
     pub scale_tree: f32,
     pub scale_text: f32,
-    /// View -> "NDM tray icon": 1 3D style (app icon), 2 Classic style (2D icon), 3 Don't show.
+    /// View -> "NDM tray icon": 1 3D style (app icon), 2 2D style, 3 Don't show.
     pub tray_icon: u8,
     /// "Customize download progress dialog" (template 367, 0x435a00): Start view 0 normal / 1 minimized /
     /// 2 don't show (PrgrDlgVisiblity), Speed Limiter tab, Options on completion tab, "Hide tab" buttons.
@@ -430,7 +426,6 @@ impl Default for Settings {
             dbl_open: false,
             dupl_action: 0,
             dupl_ask: true,
-            small_buttons: false,
             quota_on: false,
             quota_mb: 200,
             quota_hours: 5,
@@ -464,7 +459,6 @@ impl Default for Settings {
             tips_startup: true,
             close_note_shown: false,
             tip_next: 0,
-            classic: false,
             ndm_style: false,
             scale_toolbar: 1.0,
             scale_tree: 1.0,

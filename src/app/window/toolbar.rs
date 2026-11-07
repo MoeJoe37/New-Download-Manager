@@ -26,7 +26,6 @@ impl App {
             .iter()
             .map(|q| (q.id, tr(&q.name), self.core.queue_running(q.id)))
             .collect();
-        let small = self.core.settings().small_buttons;
         let enabled = [
             true,
             can_resume,
@@ -67,7 +66,7 @@ impl App {
             self.toolbar = Some(Toolbar::load(ui.ctx(), &key.0, key.1, key.2 as f32 / 100.0));
             self.tb_key = key;
         }
-        if !self.core.settings().classic && !dlu::ndm() {
+        if !dlu::ndm() {
             // NDM draws an etched line between the menu and the toolbar
             let (r, w) = (ui.max_rect(), ui.ctx().screen_rect().x_range());
             for (dy, g) in [(0.0, 240), (1.0, 160), (2.0, 255)] {
@@ -80,11 +79,11 @@ impl App {
         }
         let clicked = if i18n::is_rtl() {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                self.tool_buttons(ui, &buttons, &queues, small)
+                self.tool_buttons(ui, &buttons, &queues)
             })
             .inner
         } else {
-            self.tool_buttons(ui, &buttons, &queues, small)
+            self.tool_buttons(ui, &buttons, &queues)
         };
         match clicked {
             Some(0) => self.add_url(),
@@ -110,7 +109,6 @@ impl App {
         ui: &mut egui::Ui,
         buttons: &[TbButton],
         queues: &[(u32, String, bool)],
-        small: bool,
     ) -> Option<usize> {
         // View -> Custom scale: the pictures are made at this size (Toolbar::load), the rest follows
         let sc = self.core.settings().scale_toolbar;
@@ -119,11 +117,7 @@ impl App {
         // label cut to "..."
         let ppp = ui.ctx().pixels_per_point();
         let cell = |v: f32| ((v * sc).round()).max(8.0) / ppp;
-        let (iw, ih) = if small {
-            (cell(32.0), cell(32.0))
-        } else {
-            (cell(56.0), cell(42.0))
-        };
+        let (iw, ih) = (cell(56.0), cell(42.0));
         let bw = iw + 19.0 * sc / ppp;
         let bh = ih + 28.0 * sc / ppp;
         let arrow_w = 19.0 * sc / ppp; // BTNS_DROPDOWN arrow: 19 px
@@ -237,7 +231,7 @@ impl App {
                 match self
                     .toolbar
                     .as_ref()
-                    .and_then(|t| t.pic(small, k, enabled, hot && !on_arrow, dark))
+                    .and_then(|t| t.pic(k, enabled, hot && !on_arrow, dark))
                 {
                     Some((tex, tint)) => {
                         if ndm.is_some() && hot && !on_arrow && tint != Color32::WHITE {
@@ -378,8 +372,7 @@ impl App {
         clicked
     }
 
-    /// NDM's toolbar menu (0x4613c0, also View -> Toolbar): Customize..., Large/Small Buttons, Look for new
-    /// toolbars, then Modern / Classic style.
+    /// Toolbar customization, picture sets and the Modern / NDM styles (also View -> Toolbar).
     pub(in crate::app) fn toolbar_menu(&mut self, ui: &mut egui::Ui) {
         if ui.button(tr("Customize...")).clicked() {
             let layout = self.core.settings().tb_layout.clone();
@@ -389,15 +382,6 @@ impl App {
                 cur: None,
             });
             ui.close_menu();
-        }
-        ui.separator();
-        let small = self.core.settings().small_buttons;
-        for (label, v) in [("Large Buttons", false), ("Small Buttons", true)] {
-            if ui.radio(small == v, tr(label)).clicked() {
-                self.core.settings().small_buttons = v;
-                self.core.save();
-                ui.close_menu();
-            }
         }
         ui.separator();
         // the built-in pictures, or a custom toolbar from the toolbars folder (README, Custom toolbars)
@@ -425,25 +409,10 @@ impl App {
             ui.close_menu();
         }
         ui.separator();
-        // Modern (tree chevrons, list grid lines), Classic (+/- tree boxes, 3D look) or NDM Style (NDM's own
-        // look for every window)
-        let (classic, ndm) = {
-            let s = self.core.settings();
-            (s.classic, s.ndm_style)
-        };
-        for (name, c, n) in [
-            ("Modern style", false, false),
-            ("Classic style", true, false),
-            ("NDM Style", classic, true),
-        ] {
-            if ui
-                .radio(ndm == n && (n || classic == c), tr(name))
-                .clicked()
-            {
-                {
-                    let mut s = self.core.settings();
-                    (s.classic, s.ndm_style) = (c, n);
-                }
+        let ndm = self.core.settings().ndm_style;
+        for (name, n) in [("Modern style", false), ("NDM Style", true)] {
+            if ui.radio(ndm == n, tr(name)).clicked() {
+                self.core.settings().ndm_style = n;
                 self.core.save();
                 dlu::NDM_STYLE.store(n, Relaxed);
                 style(ui.ctx(), self.dark);
