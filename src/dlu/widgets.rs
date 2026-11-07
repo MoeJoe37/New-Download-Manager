@@ -278,6 +278,7 @@ impl<'a> D<'a> {
                     ))
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show_ui(ui, |ui| {
+                        crate::dlu::scale_popup(ui);
                         for c in choices {
                             if ui
                                 .selectable_value(selected, c.to_string(), tr(c))

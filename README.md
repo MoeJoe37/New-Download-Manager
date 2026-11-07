@@ -78,7 +78,7 @@
 
 **And**
 - Dark mode and three looks: Modern, Classic and **NDM Style**, NDM's own modern design for every window
-- Custom scale for the toolbar, the categories pane and the text (View → Custom scale...)
+- Custom scale for the toolbar, the categories pane and the text, including dropdown menus and their contents (View → Custom scale...)
 - Customizable toolbar and columns, [custom toolbars](#custom-toolbars) and [custom category icons](#custom-category-icons) with your own pictures
 - Filter box above the list, clipboard monitor, drop target, command line (`/d URL /p folder /f name /n /a /q /s`)
 - Import and export of download lists, built-in help, automatic update check
@@ -127,15 +127,19 @@ Every file is on the [Releases](https://github.com/MoeJoe37/New-Download-Manager
 2. Install the browser extension: open your browser's extensions page, turn on *Developer mode*, click
    *Load unpacked* and choose the `extension` folder in NDM's install folder
    (Start menu → New Download Manager → *Browser extension folder*). Or choose **Tasks → Export
-   extension...** in NDM to save a copy anywhere and see the steps for your browser.
+   extension...** in NDM, choose **Chromium-based browsers** or **Firefox / Mozilla-based browsers**,
+   and pick a destination. NDM opens the matching folder with an `INSTALL.txt` guide. Chromium browsers
+   use **Load unpacked**. For Firefox, Zen, Waterfox and other Firefox browsers, open `about:addons`,
+   use the gear menu → **Install Add-on From File...**, select `NDM-Firefox.xpi` and confirm installation.
+   The Firefox add-on is signed by Mozilla and stays installed after browser restarts.
 3. Start NDM once, so the browser can reach it.
 
 **macOS:** open the `.dmg` and drag *NDM* onto *Applications*. NDM isn't notarized by Apple, so the first
 time, right-click (or Control-click) NDM in Applications and choose **Open**, then **Open** again; after that
 it starts normally. (Or run `xattr -dr com.apple.quarantine /Applications/NDM.app` once in Terminal.) Its
-icon sits in the menu bar while it runs; links can be dropped on its window or on the drop target. Load the browser extension from
+icon sits in the menu bar while it runs; links can be dropped on its window or on the drop target. Load the Chromium browser extension from
 `~/Library/Application Support/NewDownloadManager/extension`, the copy NDM keeps there so updates don't move
-it (*Options → General → Reintegrate All* shows the steps for each browser).
+it (*Options → General → Reintegrate All* shows the steps for each browser). For Firefox, use the signed export described above.
 
 **Linux:** download the package for your distribution and processor: `.deb` (Debian, Ubuntu, Mint, Raspberry
 Pi OS), `.rpm` (Fedora, RHEL, openSUSE), the AppImage (any distribution: make it executable with

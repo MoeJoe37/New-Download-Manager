@@ -5,6 +5,7 @@ import contextlib
 import http.server
 import io
 import json
+import os
 from pathlib import Path
 import queue
 import re
@@ -45,6 +46,8 @@ class Marionette:
 
 
 def stop(process):
+    if process.poll() is not None:
+        return
     process.terminate()
     try:
         process.wait(timeout=5)
@@ -53,13 +56,52 @@ def stop(process):
         process.wait(timeout=5)
 
 
-def run(firefox):
+def launch(cleanup, command, port, log):
+    # This isolated fixture needs privileged read access to Firefox's add-on state.
+    process = subprocess.Popen(command, stdout=log, stderr=log,
+                               env={**os.environ, "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"})
+    cleanup.callback(stop, process)
+    deadline = time.monotonic() + 30
+    while True:
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise RuntimeError("Firefox did not start its automation connection")
+        try:
+            connection = socket.create_connection(("127.0.0.1", port), timeout=15)
+            break
+        except ConnectionRefusedError:
+            time.sleep(0.1)
+    browser = Marionette(cleanup.enter_context(connection))
+    browser.call("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {}}})
+    return browser, process
+
+
+def assert_signed_and_permanent(browser):
+    browser.call("Marionette:SetContext", {"value": "chrome"})
+    state = browser.call("WebDriver:ExecuteAsyncScript", {"script": '''
+        const done = arguments[arguments.length - 1];
+        const { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
+        AddonManager.getAddonByID("ndm@newdownloadmanager").then(addon => done(addon && {
+            active: addon.isActive,
+            temporary: addon.temporarilyInstalled,
+            signed: addon.signedState,
+            disabled: addon.appDisabled || addon.userDisabled,
+        }));
+    ''', "args": []})
+    browser.call("Marionette:SetContext", {"value": "content"})
+    assert state and state["active"] and state["temporary"] is False and state["signed"] > 0 and not state["disabled"], state
+
+
+def run(firefox, extension, permanent=False):
     handoffs = queue.Queue()
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr("fixture.txt", "NDM Firefox fixture")
     payload = output.getvalue()
-    script = (ROOT / "extension/background/desktop.js").read_text()
+    if extension.is_file():
+        with zipfile.ZipFile(extension) as archive:
+            script = archive.read("background/desktop.js").decode()
+    else:
+        script = (extension / "background/desktop.js").read_text()
     ports = json.loads("[" + re.search(r"const PORTS = \[([^]]+)\]", script)[1] + "]")
     marked_port = ports[-1]
 
@@ -105,22 +147,11 @@ def run(firefox):
         profile = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="ndm-firefox-")))
         (profile / "user.js").write_text(f'user_pref("marionette.port", {automation_port});\n')
         log = cleanup.enter_context(tempfile.TemporaryFile(mode="w+"))
-        process = subprocess.Popen([firefox, "--headless", "--no-remote", "--profile", str(profile),
-                                    "--remote-allow-system-access", "--marionette"], stdout=log, stderr=log)
-        cleanup.callback(stop, process)
+        command = [firefox, "--headless", "--no-remote", "--profile", str(profile),
+                   "--remote-allow-system-access", "--marionette"]
         try:
-            deadline = time.monotonic() + 30
-            while True:
-                if process.poll() is not None or time.monotonic() >= deadline:
-                    raise RuntimeError("Firefox did not start its automation connection")
-                try:
-                    connection = socket.create_connection(("127.0.0.1", automation_port), timeout=15)
-                    break
-                except ConnectionRefusedError:
-                    time.sleep(0.1)
-            browser = Marionette(cleanup.enter_context(connection))
-            browser.call("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {}}})
-            installed = browser.call("Addon:Install", {"path": str(ROOT / "extension"), "temporary": True})
+            browser, process = launch(cleanup, command, automation_port, log)
+            installed = browser.call("Addon:Install", {"path": str(extension), "temporary": not permanent})
             addon = installed.get("value") if isinstance(installed, dict) else installed
             assert addon == "ndm@newdownloadmanager", installed
             browser.call("WebDriver:Navigate", {"url": site})
@@ -157,6 +188,13 @@ def run(firefox):
             assert download["url"] == site + "/file.zip" and download["check"] is True, download
             assert "session=ndm-fixture" in download["cookies"], download
             print("Firefox: shipped manifest, selected links, cookie handoff, download interception and alternate-port discovery")
+            if permanent:
+                assert_signed_and_permanent(browser)
+                browser.call("WebDriver:DeleteSession")
+                stop(process)
+                browser, _ = launch(cleanup, command, automation_port, log)
+                assert_signed_and_permanent(browser)
+                print("Firefox: Mozilla signature accepted; permanent add-on remains active after browser restart")
         except Exception:
             log.seek(0)
             print(log.read()[-8000:])
@@ -166,7 +204,9 @@ def run(firefox):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--firefox", default=shutil.which("firefox"))
+    parser.add_argument("--extension", type=lambda path: Path(path).resolve(), default=ROOT / "extension")
+    parser.add_argument("--permanent", action="store_true", help="require a signed, permanent install that survives restart")
     args = parser.parse_args()
     if not args.firefox:
         parser.error("install Firefox or pass --firefox /path/to/firefox")
-    run(args.firefox)
+    run(args.firefox, args.extension, args.permanent)

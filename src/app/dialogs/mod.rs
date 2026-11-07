@@ -120,6 +120,9 @@ pub(super) enum Dialog {
     Integrate {
         b: core::settings::Browser,
     },
+    ExtensionExport {
+        firefox: bool,
+    },
     /// "Using special keys" (template 229).
     Keys {
         k: core::settings::Keys,
@@ -497,6 +500,7 @@ impl App {
             ),
             Dialog::BrowserDetails { .. } => ("Browser details".into(), tpl(430.0, 94.0)),
             Dialog::Integrate { .. } => ("Browsers integration".into(), tpl(485.0, 200.0)),
+            Dialog::ExtensionExport { .. } => ("Export extension".into(), tpl(330.0, 158.0)),
             Dialog::Keys { .. } => ("Using special keys".into(), tpl(318.0, 234.0)),
             Dialog::PanelExc { .. } => ("Download panel exceptions".into(), tpl(254.0, 123.0)),
             Dialog::Panel { .. } => (
@@ -828,7 +832,8 @@ impl App {
             Dialog::Exceptions { list, sel, ask } => self.dialog_exceptions(ui, list, sel, ask),
             Dialog::ExcAdd { addr } => self.dialog_exc_add(ui, addr),
             Dialog::BrowserDetails { name } => self.dialog_browser_details(ui, name),
-            Dialog::Integrate { b } => Self::dialog_integrate(ui, b),
+            Dialog::Integrate { b } => self.dialog_integrate(ui, b),
+            Dialog::ExtensionExport { firefox } => self.dialog_extension_export(ui, firefox),
             Dialog::Keys { k } => self.dialog_keys(ui, k),
             Dialog::MenuItems { dl, all } => self.dialog_menu_items(ui, dl, all),
             Dialog::Panel {

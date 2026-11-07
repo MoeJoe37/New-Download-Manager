@@ -775,105 +775,114 @@ impl App {
                             toggle = Some(key.to_string());
                         }
                         // NDM's tree menus: category popup +0x220, grabber +0x224, queue +0x228.
-                        resp.context_menu(|ui| match value {
-                            Cat::Queue(q) => {
-                                let id = q.unwrap_or(core::queue::MAIN_QUEUE);
-                                let on = self.core.queue_running(id);
-                                if ui
-                                    .add_enabled(
-                                        q.is_some() && !on,
-                                        egui::Button::new(tr("Start now")),
-                                    )
-                                    .clicked()
-                                {
-                                    self.core.start_queue(id);
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .add_enabled(q.is_some() && on, egui::Button::new(tr("Stop")))
-                                    .clicked()
-                                {
-                                    self.core.stop_queue(id);
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                for (t, tab) in [("Edit queue", 1), ("Schedule", 0)] {
+                        resp.context_menu(|ui| {
+                            crate::dlu::scale_popup(ui);
+                            match value {
+                                Cat::Queue(q) => {
+                                    let id = q.unwrap_or(core::queue::MAIN_QUEUE);
+                                    let on = self.core.queue_running(id);
                                     if ui
-                                        .add_enabled(q.is_some(), egui::Button::new(tr(t)))
+                                        .add_enabled(
+                                            q.is_some() && !on,
+                                            egui::Button::new(tr("Start now")),
+                                        )
                                         .clicked()
                                     {
-                                        queue_dlg = Some((id, tab));
+                                        self.core.start_queue(id);
+                                        ui.close_menu();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            q.is_some() && on,
+                                            egui::Button::new(tr("Stop")),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.core.stop_queue(id);
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    for (t, tab) in [("Edit queue", 1), ("Schedule", 0)] {
+                                        if ui
+                                            .add_enabled(q.is_some(), egui::Button::new(tr(t)))
+                                            .clicked()
+                                        {
+                                            queue_dlg = Some((id, tab));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    ui.separator();
+                                    if ui
+                                        .add_enabled(
+                                            q.is_some_and(|q| {
+                                                self.core
+                                                    .settings()
+                                                    .queue(q)
+                                                    .is_some_and(|x| !x.builtin())
+                                            }),
+                                            egui::Button::new(tr("Delete")),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.core.delete_queue(id);
+                                        self.cat = Cat::Queue(None);
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button(tr("Create new queue")).clicked() {
+                                        new_queue = true;
                                         ui.close_menu();
                                     }
                                 }
-                                ui.separator();
-                                if ui
-                                    .add_enabled(
-                                        q.is_some_and(|q| {
-                                            self.core
-                                                .settings()
-                                                .queue(q)
-                                                .is_some_and(|x| !x.builtin())
-                                        }),
-                                        egui::Button::new(tr("Delete")),
-                                    )
-                                    .clicked()
-                                {
-                                    self.core.delete_queue(id);
-                                    self.cat = Cat::Queue(None);
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.button(tr("Create new queue")).clicked() {
-                                    new_queue = true;
-                                    ui.close_menu();
-                                }
-                            }
-                            Cat::Grabber(p) => {
-                                for (k, t) in [
-                                    "Open project",
-                                    "Schedule project",
-                                    "Rename project",
-                                    "Delete project",
-                                ]
-                                .into_iter()
-                                .enumerate()
-                                {
-                                    if ui
-                                        .add_enabled(p.is_some(), egui::Button::new(tr(t)))
-                                        .clicked()
+                                Cat::Grabber(p) => {
+                                    for (k, t) in [
+                                        "Open project",
+                                        "Schedule project",
+                                        "Rename project",
+                                        "Delete project",
+                                    ]
+                                    .into_iter()
+                                    .enumerate()
                                     {
-                                        grab_cmd = p.clone().map(|p| (k, p));
-                                        ui.close_menu();
+                                        if ui
+                                            .add_enabled(p.is_some(), egui::Button::new(tr(t)))
+                                            .clicked()
+                                        {
+                                            grab_cmd = p.clone().map(|p| (k, p));
+                                            ui.close_menu();
+                                        }
                                     }
                                 }
-                            }
-                            Cat::Files(_, c) => {
-                                let c = c.as_deref().unwrap_or(GENERAL);
-                                if ui.button(tr("Browse")).clicked() {
-                                    explore(self.core.settings().folder_for(c));
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .add_enabled(c != GENERAL, egui::Button::new(tr("Properties")))
-                                    .clicked()
-                                {
-                                    cat_dlg = Some(Some(c.to_string()));
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.button(tr("Add category")).clicked() {
-                                    cat_dlg = Some(None);
-                                    ui.close_menu();
-                                }
-                                if ui
-                                    .add_enabled(c != GENERAL, egui::Button::new(tr("Delete")))
-                                    .clicked()
-                                {
-                                    self.open(Dialog::CatDelete {
-                                        name: c.to_string(),
-                                    });
-                                    ui.close_menu();
+                                Cat::Files(_, c) => {
+                                    let c = c.as_deref().unwrap_or(GENERAL);
+                                    if ui.button(tr("Browse")).clicked() {
+                                        explore(self.core.settings().folder_for(c));
+                                        ui.close_menu();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            c != GENERAL,
+                                            egui::Button::new(tr("Properties")),
+                                        )
+                                        .clicked()
+                                    {
+                                        cat_dlg = Some(Some(c.to_string()));
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button(tr("Add category")).clicked() {
+                                        cat_dlg = Some(None);
+                                        ui.close_menu();
+                                    }
+                                    if ui
+                                        .add_enabled(c != GENERAL, egui::Button::new(tr("Delete")))
+                                        .clicked()
+                                    {
+                                        self.open(Dialog::CatDelete {
+                                            name: c.to_string(),
+                                        });
+                                        ui.close_menu();
+                                    }
                                 }
                             }
                         });

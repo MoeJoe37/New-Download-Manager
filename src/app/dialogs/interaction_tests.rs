@@ -140,6 +140,16 @@ fn desktop_interactions() {
         let core = Core::for_dialog_snapshots(root.join("state.json"), vec![]);
         core.settings().base_dir = root.display().to_string();
         let mut desktop = Desktop::new(core.clone(), scale);
+
+        desktop.app.export_extension();
+        let (_, mut export) = desktop.app.dialogs.pop().unwrap();
+        assert!(matches!(export, Dialog::ExtensionExport { firefox: false }));
+        assert!(desktop.click(&mut export, "Firefox / Mozilla-based browsers"));
+        assert!(matches!(export, Dialog::ExtensionExport { firefox: true }));
+        assert!(desktop.click(&mut export, "Chromium-based browsers"));
+        assert!(matches!(export, Dialog::ExtensionExport { firefox: false }));
+        assert!(!desktop.click(&mut export, "Cancel"));
+
         let mut dialog = file_info(&core, &root, "https://example.test/video".into(), true);
         desktop.frame(&mut dialog, vec![]);
         desktop.click(&mut dialog, "Best");
@@ -361,6 +371,8 @@ fn desktop_interactions() {
     assert_eq!(desktop.app.refreshing, Some(recovery_id));
     assert_eq!(recoverable.info().yt.quality, "720");
     assert_eq!(std::fs::read(&part).unwrap(), b"partial");
+    core.settings().scale_text = 2.0;
+    let mut desktop = Desktop::new(core.clone(), 1.0);
     let mut playlist = Dialog::Playlist(Box::new(PlaylistPicker {
         browsers: vec![crate::browsers::CookieBrowser {
             id: "zen",
@@ -368,9 +380,12 @@ fn desktop_interactions() {
         }],
         ..Default::default()
     }));
+    let (labels, _) = desktop.frame(&mut playlist, vec![]);
+    let closed_height = labels["Public access"].height();
     assert!(desktop.click(&mut playlist, "Public access"));
     let (labels, _) = desktop.frame(&mut playlist, vec![]);
     assert!(labels.contains_key("Zen"));
+    assert!(labels["Zen"].height() > closed_height * 1.5);
     assert!(!labels.contains_key("Chrome"));
     assert!(!labels.contains_key("Firefox"));
     assert!(!labels.contains_key("Safari (macOS)"));

@@ -61,6 +61,7 @@ NOT_UI = re.compile(
     r"|needs ffmpeg|no space left|partial download is shorter|permission denied|proxy authentication"
     r"|read-only file system|requires ffmpeg|saved download ranges are invalid|set yt-dlp)$"
     r"|^(AppData/Roaming|Naver/Naver Whale/Application|IsRelative|Profile|Profiles|ProgramFiles(?:\(x86\))?)$"
+    r"|^(NDM extension - (Chromium|Firefox)|NDM-Firefox\.xpi|INSTALL\.txt)$"
     r"|^&(gt|lt|nbsp|quot);$|^SHA256 \($"
     r"|^link drops on the main window|^see http://|^Environment$|^Requested format is not available$|^\[(Fixup|Merger\] |VideoConvertor\]|VideoRemuxer\])|^Fixup$|^Destination: $|^\[generic\]$|^Unsupported URL$"
 )

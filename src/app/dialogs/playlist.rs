@@ -48,6 +48,7 @@ impl App {
                 egui::ComboBox::from_id_salt("playlist-browser")
                     .selected_text(tr(label))
                     .show_ui(ui, |ui| {
+                        crate::dlu::scale_popup(ui);
                         if ui
                             .selectable_value(&mut pick.browser, String::new(), tr("Public access"))
                             .clicked()

@@ -425,6 +425,7 @@ impl App {
                     });
                     // NDM's header menu has one item (0x4613c0, popup +0x230)
                     resp.context_menu(|ui| {
+                        crate::dlu::scale_popup(ui);
                         if ui.button(tr("Columns...")).clicked() {
                             columns_dlg = true;
                             ui.close_menu();
@@ -538,6 +539,7 @@ impl App {
                 }
                 // the list's context menu
                 resp.context_menu(|ui| {
+                    crate::dlu::scale_popup(ui);
                     let done = r.status == Status::Complete;
                     let mut item = |ui: &mut egui::Ui, cmd: &'static str, enabled: bool| {
                         if ui
@@ -572,6 +574,7 @@ impl App {
                     ui.separator();
                     ui.add_enabled_ui(!done, |ui| {
                         ui.menu_button(tr("Add to download queue"), |ui| {
+                            crate::dlu::scale_popup(ui);
                             for (id, name) in &queues {
                                 if ui
                                     .add_enabled(
@@ -594,6 +597,7 @@ impl App {
                     item(ui, "Delete from queue", r.queued);
                     ui.separator();
                     ui.menu_button(tr("On Double click"), |ui| {
+                        crate::dlu::scale_popup(ui);
                         for (on, label) in [(true, "Open"), (false, "Properties")] {
                             if ui.radio(dbl_open == on, tr(label)).clicked() {
                                 dbl = Some(on);

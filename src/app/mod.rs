@@ -221,6 +221,7 @@ impl App {
         tray: Option<(TrayIcon, CheckMenuItem, Vec<(MenuItem, &'static str)>)>,
         dark: bool,
     ) -> App {
+        dlu::set_popup_scale(ctx, core.settings().scale_text);
         let expanded = core.settings().expanded.iter().cloned().collect();
         App {
             core,

@@ -313,6 +313,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         PAINTED.store(true, Relaxed);
+        dlu::set_popup_scale(ctx, self.core.settings().scale_text);
         no_zoom(ctx);
         let state_notice = self.core.state_notice.lock().unwrap().take();
         if let Some(text) = state_notice {

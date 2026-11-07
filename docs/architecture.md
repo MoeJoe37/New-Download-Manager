@@ -65,6 +65,12 @@ partial data until the user explicitly chooses to restart it.
 
 ## Browser extension
 
+`app::browser_setup::export` creates an unpacked Chromium copy or exports the
+unchanged Mozilla-signed Firefox XPI embedded from `assets/firefox/ndm.xpi`.
+The signed archive's metadata records its source revision and SHA-256. CI checks
+it against the extension source and tests a permanent Firefox install across a
+browser restart. Follow `assets/firefox/README.md` when updating extension code.
+
 `background.js` registers listeners in a fixed order. Chrome synchronously loads
 its helpers with `importScripts`. Firefox loads the same helpers from the ordered
 `background.scripts` manifest list before the entry point.

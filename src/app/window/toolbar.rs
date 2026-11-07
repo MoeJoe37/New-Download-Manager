@@ -336,9 +336,10 @@ impl App {
                 }
             }
         });
-        bar.response
-            .interact(Sense::click())
-            .context_menu(|ui| self.toolbar_menu(ui));
+        bar.response.interact(Sense::click()).context_menu(|ui| {
+            crate::dlu::scale_popup(ui);
+            self.toolbar_menu(ui)
+        });
         if let Some((k, rect)) = drop {
             let id = ui.id().with("tbdrop");
             ui.memory_mut(|m| m.toggle_popup(id));
@@ -354,6 +355,7 @@ impl App {
                 .fixed_pos(at)
                 .show(ui.ctx(), |ui| {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        crate::dlu::scale_popup(ui);
                         for (q, name, running) in queues {
                             if ui
                                 .add_enabled(*running != start, egui::Button::new(name))

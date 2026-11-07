@@ -33,7 +33,7 @@
 <p>On Wayland desktops NDM runs through XWayland when it is available, so it can hide its window and keep the drop target on top. Without XWayland it runs on Wayland directly, where hiding to the tray minimizes the window instead.</p>
 
 <h2 id="Extension">The browser extension</h2>
-<p>NDM keeps a copy of its browser extension in <kbd>~/.config/NewDownloadManager/extension</kbd>. Load that folder (see <a href="starting.htm#Browser">From your browser</a>): it stays in place when the AppImage is updated or moved, so the browser keeps finding it.</p>
+<p>NDM keeps a copy of its unpacked Chromium extension in <kbd>~/.config/NewDownloadManager/extension</kbd>. That folder stays in place when the AppImage is updated or moved. For Firefox browsers, choose <b>Tasks → Export extension...</b> to save the Mozilla-signed <kbd>NDM-Firefox.xpi</kbd>; see <a href="starting.htm#Browser">From your browser</a> for installation steps.</p>
 <ul>
 <li>NDM registers itself with Chrome, Chromium, Edge, Brave, Vivaldi, Opera and Firefox, including Firefox from Snap.</li>
 <li>Browsers installed as Flatpak, and Chromium from Snap, hand downloads to NDM while it is running, but their sandbox keeps them from starting it. Tick <b>Launch New Download Manager on startup</b> (Options → General) so NDM is always running.</li>

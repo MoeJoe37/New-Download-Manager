@@ -6,11 +6,11 @@
 <p>NDM's extension works in Chrome, Edge, Brave, Opera, Vivaldi and Firefox. When you click a link to a file of a listed type, the extension passes it to NDM and the browser doesn't download it. If NDM isn't running, the extension starts it in the notification area.</p>
 <p>To install the extension:</p>
 <ol>
-<li>Open the browser's extensions page (<kbd>chrome://extensions</kbd>, <kbd>edge://extensions</kbd> or <kbd>about:debugging</kbd> in Firefox).</li>
-<li>Turn on developer mode.</li>
-<li>Click <b>Load unpacked</b> and choose the <b>extension</b> folder in NDM's folder. In Firefox, click <b>Load Temporary Add-on</b> and choose manifest.json in that folder. On Linux, see <a href="linux.htm#Extension">The browser extension</a>.</li>
+<li>Choose <b>Tasks → Export extension...</b> in NDM, select your browser family and choose a destination folder.</li>
+<li>For Chromium browsers, open the browser's extensions page (<kbd>chrome://extensions</kbd> or <kbd>edge://extensions</kbd>), turn on developer mode, click <b>Load unpacked</b> and select the exported folder.</li>
+<li>For Firefox browsers, open <kbd>about:addons</kbd>, use the gear menu → <b>Install Add-on From File...</b>, select <kbd>NDM-Firefox.xpi</kbd> in the exported folder and confirm installation.</li>
 </ol>
-<p><b>Tasks → Export extension...</b> saves a copy of the extension to a folder you choose, to load in any browser, with these steps.</p>
+<p>The Firefox export is signed by Mozilla and remains installed after browser restarts. It supports Firefox, Zen, Waterfox, LibreWolf, Floorp and other Firefox browsers. The Chromium export supports Chrome, Edge, Brave, Opera, Vivaldi and other Chromium browsers. Each export includes an <kbd>INSTALL.txt</kbd> guide. On Linux, see <a href="linux.htm#Extension">The browser extension</a>.</p>
 <p>Before taking over a download, NDM makes sure the server sends it the same file the browser is getting. When it doesn't (files a page makes itself, like Telegram Web's videos and music, or links that only work inside the page), the extension fetches the file inside the page and hands it to NDM piece by piece, so it still arrives whole and shows in NDM's list. If that isn't possible either, the browser keeps the download.</p>
 <ul>
 <li>Only the file types in <a href="options.htm#FileTypes">Options → File types</a> are taken over. Sites and addresses on the exception lists stay with the browser.</li>

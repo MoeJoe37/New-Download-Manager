@@ -1,10 +1,12 @@
 use crate::app::{copy_dir, core, explore, i18n, tr_os, App, Dialog, Path, PathBuf};
 
-/// The browser's own extensions page, for the browsers the extension (Chromium MV3) runs in.
+mod export;
+
+/// The browser's own extensions page.
 pub(in crate::app) fn extension_page(b: &core::settings::Browser) -> Option<String> {
     let k = core::settings::browser_kind(&format!("{} {}", b.name, b.exe));
     if k == "firefox" {
-        return Some("about:debugging#/runtime/this-firefox".into());
+        return Some("about:addons".into());
     }
     matches!(
         k,
@@ -24,10 +26,9 @@ pub(in crate::app) fn extension_page(b: &core::settings::Browser) -> Option<Stri
     })
 }
 
-/// The browser-extension window's instructions (English keys): Firefox's temporary add-on, the other
-/// browsers' unpacked extension.
+/// The browser-extension window's instructions (English keys).
 pub(in crate::app) const GUIDES: [&str; 2] = [
-    "To capture downloads from Firefox, open its extensions page (about:debugging), click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in this folder. Firefox removes the add-on when it closes, so load it again after a restart:",
+    "To capture downloads from Firefox, export the signed add-on below. Open about:addons in your browser, choose \"Install Add-on From File...\" from the gear menu and select NDM-Firefox.xpi. Confirm installation; the add-on stays installed after a browser restart.",
     "To capture downloads from this browser, open its extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select this folder:",
 ];
 
@@ -97,30 +98,58 @@ fn extension_copy_refreshes() {
 
 impl App {
     pub(in crate::app) fn export_extension(&mut self) {
-        let Some(src) = extension_dir() else {
+        self.open(Dialog::ExtensionExport { firefox: false });
+    }
+
+    pub(in crate::app) fn export_extension_for(&mut self, firefox: bool) {
+        let src = if firefox { None } else { extension_dir() };
+        if !firefox && src.is_none() {
             return self.open(Dialog::Info {
                 title: "Export extension".into(),
                 text: "The browser extension isn't in NDM's folder: install NDM again to get it."
                     .into(),
             });
-        };
+        }
         let Some(to) = rfd::FileDialog::new()
             .set_title(tr_os("Export extension"))
             .pick_folder()
         else {
             return;
         };
-        let dest = to.join("NDM extension");
-        let text = match copy_dir(&src, &dest) {
-            Ok(()) => {
+        let guide = export_guide(firefox);
+        let result = if firefox {
+            export::write_firefox_export(&to, &guide)
+        } else {
+            export::write_chromium_export(src.as_deref().unwrap(), &to, &guide)
+        };
+        let text = match result {
+            Ok(dest) => {
                 explore(&dest);
-                i18n::trf_os("The browser extension is in this folder:\n%s\n\nChrome, Edge, Brave, Opera, Vivaldi: open the browser's extensions page, turn on \"Developer mode\", press \"Load unpacked\" and select the folder.\nFirefox: open about:debugging, click \"This Firefox\", press \"Load Temporary Add-on...\" and select manifest.json in the folder.", &[&i18n::ltr(&dest.display().to_string())])
+                format!(
+                    "{}\n\n{}",
+                    i18n::trf_os(
+                        "The browser extension is in this folder:\n%s",
+                        &[&i18n::ltr(&dest.display().to_string())]
+                    ),
+                    guide
+                )
             }
-            Err(e) => i18n::trf_os("The extension couldn't be saved there: %s", &[&e]),
+            Err(e) => i18n::trf_os(
+                "The extension couldn't be saved there: %s",
+                &[&i18n::tr_msg_os(&e.to_string())],
+            ),
         };
         self.open(Dialog::Info {
             title: "Export extension".into(),
             text,
         });
+    }
+}
+
+fn export_guide(firefox: bool) -> String {
+    if firefox {
+        tr_os("1. Open about:addons in your browser.\n2. Open the gear menu, choose \"Install Add-on From File...\" and select NDM-Firefox.xpi in this folder.\n3. Confirm the installation.\n\nThis add-on is signed by Mozilla and stays installed after restarting the browser.\n\nKeep NDM running to receive downloads.")
+    } else {
+        tr_os("1. Open your browser's extensions page (chrome://extensions, edge://extensions or the browser's Manage extensions page).\n2. Turn on \"Developer mode\".\n3. Click \"Load unpacked\" and select this folder.\n\nKeep this folder in place and keep NDM running to receive downloads.")
     }
 }

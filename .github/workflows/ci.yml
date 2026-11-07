@@ -48,6 +48,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Export browser-specific extension folders
+        run: |
+          python3 tools/test-signed-extension.py
+          python3 tools/test-extension-exports.py "$RUNNER_TEMP/ndm-extension-exports"
       - name: Install Chromium and FFmpeg
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1
@@ -60,10 +67,14 @@ jobs:
           tar -xJf "$RUNNER_TEMP/ndm-firefox.tar.xz" -C "$RUNNER_TEMP/ndm-firefox"
       - name: Installed Firefox integration
         run: python3 tools/test-firefox.py --firefox "$RUNNER_TEMP/ndm-firefox/firefox/firefox"
+      - name: Exported Firefox integration
+        run: python3 tools/test-firefox.py --firefox "$RUNNER_TEMP/ndm-firefox/firefox/firefox" --extension "$RUNNER_TEMP/ndm-extension-exports/NDM extension - Firefox/NDM-Firefox.xpi" --permanent
       - name: Extension video handoff
         run: node tools/test-extension.mjs
       - name: Packaged browser extension
         run: node tools/test-extension-browser.mjs
+      - name: Exported Chromium integration
+        run: NDM_TEST_EXTENSION_DIR="$RUNNER_TEMP/ndm-extension-exports/NDM extension - Chromium" node tools/test-extension-browser.mjs
       - name: Browser video panel
         run: node tools/test-panel.mjs
 
