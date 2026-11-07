@@ -151,6 +151,13 @@ pub(crate) fn load(path: &Path) -> Result<Loaded, String> {
 }
 
 fn toolbar_color(name: &str) -> bool {
+    // NDM Style's category tree icons: `categories.<picture name>` (all-downloads, video, queue-running...;
+    // a category of the user's own by its name in lower case, spaces as hyphens)
+    if let Some(n) = name.strip_prefix("categories.") {
+        return !n.is_empty()
+            && !n.starts_with('-')
+            && n.chars().all(|c| c.is_alphanumeric() || c == '-');
+    }
     name.strip_prefix("toolbar.").is_some_and(|n| {
         [
             "add-url",

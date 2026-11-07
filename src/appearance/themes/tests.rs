@@ -117,6 +117,8 @@ fn invalid_themes_are_rejected_before_installation() {
         json!({"version":1,"name":"Bad","common":{"regions":{"toolbar":{"image_opacity":2}}}}),
         json!({"version":1,"name":"Bad","common":{"regions":{"toolbar":{"image":"../outside.png"}}}}),
         json!({"version":1,"name":"Bad","fonts":{"proportional":"missing.ttf"}}),
+        json!({"version":1,"name":"Bad","common":{"palette":{"categories.":"#123456"}}}),
+        json!({"version":1,"name":"Bad","common":{"palette":{"categories.vi deo":"#123456"}}}),
     ] {
         let path = t.file(patch);
         assert!(
@@ -213,4 +215,13 @@ fn bundled_theme_and_readme_examples_load() {
     )
     .unwrap();
     assert_eq!(load(&t.0.join("theme.json")).unwrap().file.name, "Aurora");
+}
+
+/// NDM Style's category tree icons can be tinted per item, as the toolbar's can.
+#[test]
+fn category_icon_colors_are_palette_keys() {
+    let t = Temp::new();
+    let theme = load(&t.file(json!({"version":1,"name":"Neon","common":{"palette":{
+        "categories.video":"#112233","categories.queue-running":"#445566","categories.my-files":"#778899"}}})));
+    assert!(theme.is_ok(), "{:?}", theme.err());
 }

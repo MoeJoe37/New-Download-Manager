@@ -407,6 +407,43 @@ const TB_NEON: [([u8; 3], [u8; 3]); TB_ICONS] = [
     ([255, 110, 90], [222, 72, 52]),  // Tell a Friend: coral
 ];
 
+/// NDM Style's category tree colours, in the toolbar's neon palette (`TB_NEON`): (on dark, on light), by
+/// the tree item's picture name (`cat_icon_files`). A category of the user's own gets the aqua one.
+pub(in crate::app) fn cat_neon(name: &str) -> ([u8; 3], [u8; 3]) {
+    match name {
+        "all-downloads" => ([0, 229, 255], [0, 166, 204]), // cyan, as Add URL
+        "unfinished" => ([255, 145, 0], [226, 106, 0]),    // orange
+        "finished" => ([57, 255, 20], [26, 168, 30]),      // green
+        "compressed" => ([255, 234, 0], [190, 146, 0]),    // yellow
+        "documents" => ([44, 130, 255], [28, 92, 232]),    // blue
+        "music" => ([255, 32, 160], [212, 0, 122]),        // pink
+        "programs" => ([190, 80, 255], [136, 48, 230]),    // violet
+        "video" => ([255, 49, 70], [218, 28, 52]),         // red
+        "grabber-projects" | "grabber-project" => ([190, 255, 0], [108, 166, 0]), // lime, as Grabber
+        "queues" => ([44, 130, 255], [28, 92, 232]), // blue, as Start Queue
+        "queue" => ([255, 0, 230], [184, 0, 190]),   // magenta
+        "queue-running" => ([57, 255, 20], [26, 168, 30]), // green while it runs
+        _ => ([0, 255, 178], [0, 160, 116]),         // aqua
+    }
+}
+
+/// A category tree icon's neon in NDM Style: the theme's `categories.<name>` colour, else `cat_neon`'s;
+/// brighter when the row is hovered or selected, as a hovered toolbar icon is.
+pub(in crate::app) fn cat_tint(name: &str, dark: bool, hot: bool) -> Color32 {
+    let (on_dark, on_light) = cat_neon(name);
+    let [r, g, b] = if dark { on_dark } else { on_light };
+    let neon = crate::appearance::themes::role(
+        &format!("categories.{name}"),
+        dark,
+        Color32::from_rgb(r, g, b),
+    );
+    match (hot, dark) {
+        (true, true) => neon.lerp_to_gamma(Color32::WHITE, 0.3),
+        (true, false) => neon.lerp_to_gamma(Color32::BLACK, 0.12),
+        _ => neon,
+    }
+}
+
 impl Toolbar {
     /// `skin`: the built-in set or a folder in `toolbars_dir()`; `ndm`: NDM Style's one-colour glyphs;
     /// `scale`: View -> Custom scale's toolbar size.

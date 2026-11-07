@@ -1,4 +1,4 @@
-use crate::app::resources::{cached_texture, cat_icons_dir, glyph_strip};
+use crate::app::resources::{cached_texture, cat_icons_dir, cat_tint, glyph_strip};
 use crate::app::{
     cat_icon_files, cat_icon_sets, core, dlu, egui, explore, i18n, tb_picture, texture, tr, Align2,
     App, Color32, Dialog, FontId, HashSet, Path, Sense, Settings, Vec2, DARK_TREE, GENERAL,
@@ -547,6 +547,22 @@ impl App {
                                     Color32::WHITE,
                                 );
                             } else if let Some(tex) = glyph(side_glyph(value)) {
+                                // neon, one colour per item, as NDM Style's toolbar icons
+                                let is_running =
+                                    matches!(value, Cat::Queue(Some(q)) if running.contains(q));
+                                let name = cat_icon_files(value, is_running).swap_remove(0);
+                                let hot = sel || resp.hovered();
+                                let tint = cat_tint(&name, dark, hot);
+                                if hot {
+                                    // the toolbar's soft neon glow behind a hovered icon
+                                    for (f, a) in [(1.0, 0.07), (0.78, 0.09), (0.56, 0.11)] {
+                                        ui.painter().circle_filled(
+                                            ir.center(),
+                                            isz * 0.5 * f,
+                                            tint.gamma_multiply(if dark { a * 1.6 } else { a }),
+                                        );
+                                    }
+                                }
                                 ui.painter().image(
                                     tex,
                                     ir,
@@ -554,7 +570,7 @@ impl App {
                                         egui::pos2(0.0, 0.0),
                                         egui::pos2(1.0, 1.0),
                                     ),
-                                    if sel { t.accent } else { t.muted },
+                                    tint,
                                 );
                             }
                             let lx = ix + (isz + 7.0 * sc) * dir;
@@ -901,6 +917,52 @@ impl App {
         }
         if let Some(orig) = cat_dlg {
             self.edit_category(orig);
+        }
+    }
+}
+
+/// NDM Style: every built-in tree item gets a neon of its own from the toolbar's palette (no grey), each
+/// readable in light and dark mode, and a selected or hovered one is brighter.
+#[test]
+fn ndm_style_category_icons_are_neon() {
+    use crate::app::resources::{cat_neon, cat_tint};
+    let names = [
+        "all-downloads",
+        "unfinished",
+        "finished",
+        "compressed",
+        "documents",
+        "music",
+        "programs",
+        "video",
+        "grabber-projects",
+        "queues",
+        "queue",
+        "queue-running",
+        "my-own-category",
+    ];
+    let builtin: Vec<_> = names[..8].iter().map(|n| cat_neon(n)).collect();
+    for (k, c) in builtin.iter().enumerate() {
+        assert!(!builtin[..k].contains(c), "{} shares its colour", names[k]);
+    }
+    for n in names {
+        let (on_dark, on_light) = cat_neon(n);
+        let spread = |c: [u8; 3]| c.iter().max().unwrap() - c.iter().min().unwrap();
+        assert!(
+            spread(on_dark) > 150 && spread(on_light) > 120,
+            "{n} is not a neon colour"
+        );
+        assert!(
+            on_light.iter().map(|v| *v as u32).sum::<u32>()
+                < on_dark.iter().map(|v| *v as u32).sum::<u32>(),
+            "{n}: the light-mode colour is deeper, to stay readable on white"
+        );
+        for dark in [false, true] {
+            assert_ne!(
+                cat_tint(n, dark, true),
+                cat_tint(n, dark, false),
+                "{n}: hovered is brighter"
+            );
         }
     }
 }

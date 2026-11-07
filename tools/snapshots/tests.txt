@@ -7,6 +7,7 @@ batch_ranges
 browser_file_is_checked
 bundled_theme_and_readme_examples_load
 categories_and_capture
+category_icon_colors_are_palette_keys
 checksum_lists_require_an_unambiguous_exact_filename
 close_rules
 combo_closes_after_selecting_a_choice
@@ -98,6 +99,7 @@ mux_interleaves_fragments
 names
 names_read_as_written_in_a_left_to_right_window
 ndm_fetches_both_streams
+ndm_style_category_icons_are_neon
 negotiates_http2_and_multiplexes_within_server_limit
 nics_are_sane
 nmcli_lines
